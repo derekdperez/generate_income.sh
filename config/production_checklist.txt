@@ -1,0 +1,4 @@
+[x] Implement domain/subdomain Scrapy crawl, sitemap generation, and OpenAI-assisted URL expansion + final analysis output.
+[x] Enforce throttling across crawl and URL verification requests with configurable non-zero delays.
+[x] Persist crawl session-state and support resume mode to continue from saved frontier/state.
+[x] Generate end-of-run HTML report with tree sitemap, unique URLs, and API endpoints (standard or AI-authored mode).

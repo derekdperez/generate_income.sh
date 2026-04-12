@@ -1,0 +1,56 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --panel: #fffdf8;
+      --ink: #1d1713;
+      --muted: #6b6057;
+      --accent: #9a3d24;
+      --border: #d7c5b6;
+      --code: #f3e7da;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Cambria, Georgia, serif;
+      background: linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
+      color: var(--ink);
+      line-height: 1.65;
+      padding: 24px;
+    }
+    .sheet {
+      max-width: 960px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 28px;
+      box-shadow: 0 20px 40px rgba(29, 23, 19, 0.08);
+    }
+    h1, h2, h3 { color: var(--accent); }
+    .subtitle, .meta { color: var(--muted); }
+    pre, code {
+      font-family: Consolas, "Courier New", monospace;
+      background: var(--code);
+      border-radius: 6px;
+    }
+    code { padding: 0.1em 0.35em; }
+    pre { padding: 14px; overflow: auto; }
+    ul { padding-left: 22px; }
+  </style>
+</head>
+<body>
+  <article class="sheet">
+    <h1>{{TITLE}}</h1>
+    {{SUBTITLE_HTML}}
+    <div class="meta">{{GENERATED_AT_LABEL}}: {{GENERATED_AT}}</div>
+    <hr>
+    {{BODY_HTML}}
+  </article>
+</body>
+</html>

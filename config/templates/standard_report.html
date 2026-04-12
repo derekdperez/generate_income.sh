@@ -1,0 +1,111 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{PAGE_TITLE}}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f0e8;
+      --panel: #fffaf1;
+      --panel-strong: #f0e4d1;
+      --ink: #241a12;
+      --muted: #6f5c4d;
+      --accent: #a24b2a;
+      --accent-soft: #d9825b;
+      --border: #d8c4ac;
+      --shadow: rgba(36, 26, 18, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(circle at top, #fffaf2 0%, var(--bg) 58%, #e8dccb 100%);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    a { color: var(--accent); }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    .hero, .panel {
+      background: color-mix(in srgb, var(--panel) 94%, white 6%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: 0 18px 40px var(--shadow);
+    }
+    .hero {
+      padding: 28px;
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, #fff9ef 0%, #f6ead9 100%);
+    }
+    h1, h2 { margin: 0 0 12px; font-weight: 700; }
+    h1 { font-size: clamp(2rem, 4vw, 3rem); }
+    h2 { font-size: 1.2rem; color: var(--accent); }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-top: 20px;
+    }
+    .metric {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.6);
+      border: 1px solid var(--border);
+    }
+    .metric-label { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 1.6rem; font-weight: 700; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 24px;
+    }
+    .panel { padding: 22px; overflow: auto; }
+    ul { margin: 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    .footer { margin-top: 20px; color: var(--muted); font-size: 0.95rem; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>{{REPORT_HEADING}}</h1>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">{{LABEL_PAGES_CRAWLED}}</div>
+          <div class="metric-value">{{PAGES_CRAWLED}}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">{{LABEL_UNIQUE_URLS}}</div>
+          <div class="metric-value">{{UNIQUE_COUNT}}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">{{LABEL_API_ENDPOINTS}}</div>
+          <div class="metric-value">{{API_ENDPOINT_COUNT}}</div>
+        </div>
+      </div>
+    </section>
+    <div class="grid">
+      <section class="panel">
+        <h2>{{SECTION_TREE_VIEW}}</h2>
+        {{TREE_HTML}}
+      </section>
+      <section class="panel">
+        <h2>{{SECTION_UNIQUE_URLS}}</h2>
+        <ul>{{URL_ITEMS_HTML}}</ul>
+      </section>
+    </div>
+    <section class="panel" style="margin-top: 24px;">
+      <h2>{{SECTION_API_ENDPOINTS}}</h2>
+      <ul>{{API_ITEMS_HTML}}</ul>
+    </section>
+    <div class="footer">{{GENERATED_AT_LABEL}}: {{GENERATED_AT}}</div>
+  </div>
+</body>
+</html>
+

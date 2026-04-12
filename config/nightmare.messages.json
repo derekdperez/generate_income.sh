@@ -1,0 +1,14 @@
+﻿{
+  "generated_at_label": "Generated at",
+  "fallback_html_title": "Nightmare Report",
+  "empty_text_report_html": "<p><em>No report content was returned.</em></p>",
+  "standard_report_empty_api_item": "<li><em>No likely API endpoints were identified.</em></li>",
+  "standard_report_page_title": "Nightmare Report: {{ROOT_DOMAIN}}",
+  "standard_report_heading": "Nightmare Crawl Report for {{ROOT_DOMAIN}}",
+  "label_pages_crawled": "Pages crawled",
+  "label_unique_urls": "Unique URLs discovered",
+  "label_api_endpoints": "Likely API endpoints",
+  "section_tree_view": "Tree-view sitemap",
+  "section_unique_urls": "Unique URLs",
+  "section_api_endpoints": "API endpoints"
+}

@@ -1,0 +1,309 @@
+﻿# Change Log
+
+## 2026-04-11
+- Fixed crawl Ctrl+C shutdown behavior:
+  - Replaced the Scrapy/Twisted-owned crawl signal handling with an application-owned interrupt bridge.
+  - Ctrl+C during the crawl now crashes the reactor immediately, allowing the existing partial-artifact finalization path to run instead of waiting on a stuck in-flight request.
+  - Added periodic "still waiting for the first crawl response" progress output during startup stalls so slow first requests are visible.
+- Removed automatic Windows Quick Edit disabling at startup:
+  - Preserves normal console text selection/copy behavior during and after interrupted runs.
+  - Avoids making a stuck session feel like a frozen console when the process is still alive.
+- Fixed post-summary interrupt hang:
+  - Identified a surviving Twisted non-daemon worker thread after interrupted crawls.
+  - Added explicit Twisted threadpool shutdown during interrupted crawl teardown.
+  - After interrupted finalization prints and artifact writes complete, the CLI now flushes logs/stdout and force-exits with code `130` so the console does not remain stuck after the summary.
+
+- Added non-verbose crawl progress summaries:
+  - Non-verbose runs now print compact discovery progress lines during crawl execution instead of staying silent until final summary.
+  - Progress emission is threshold-based (coarse time/count cadence) so output stays informative without becoming verbose-mode noise.
+  - Summary text includes total URLs, new-this-session URLs, resumed URLs, and a direct-link vs inference/checking breakdown derived from discovery provenance.
+
+- Filtered image/style asset URLs out of AI payloads:
+  - Added an AI-only URL filter for image and stylesheet extensions.
+  - Applied that filter to AI sitemap compaction, AI URL list prioritization, and AI endpoint schema generation.
+  - Crawl artifacts remain unchanged; the filtering only affects data prepared for model input and the derived `ai-data.txt` schema artifact.
+
+- Narrowed the Windows Quick Edit mitigation:
+  - Quick Edit is now disabled only for the active crawl runtime instead of for the whole process lifetime.
+  - The original console mode is restored immediately after crawl shutdown so copy/select still works once the crawl exits.
+
+- Made `truncated_for_ai` configurable:
+  - Added config key `truncated_for_ai` (default `true`) plus CLI switches `--truncated-for-ai` and `--no-truncated-for-ai`.
+  - Threaded the setting through compact sitemap/schema payload generation for all AI request paths.
+
+- Moved static/AI asset extension lists into config:
+  - `static_asset_extensions` and `ai_excluded_url_extensions` now live in `config/nightmare.json`.
+  - Runtime filtering loads those lists from config instead of hardcoded module constants.
+  - JSON config reading now accepts UTF-8 BOM (`utf-8-sig`) so the extension config also works during import-time helper usage.
+## 2026-04-10
+
+- Added `nightmare.py` implementation for:
+  - Scrapy-based domain/subdomain crawl.
+  - Structured sitemap generation and JSON export.
+  - OpenAI step to suggest additional URLs.
+  - OpenAI final analysis pass over original + suggested URLs.
+- Added `.ai/*` project memory files to preserve architecture and conventions for future tasks.
+- Added `production_checklist.txt` with the requested feature tracked and marked complete.
+- Added adaptive crawl throttling:
+  - Enabled Scrapy AutoThrottle and safer per-domain concurrency defaults.
+  - Added custom downloader middleware to increase delay on HTTP 429/503 and gradually recover after successful responses.
+  - Added CLI knobs (`--crawl-delay`, `--max-delay`, `--backoff-factor`, `--recovery-factor`) for target-specific tuning.
+- Added OpenAI request retry with exponential backoff + jitter for transient/rate-limit errors.
+- Fixed `LOG_ENABLED` boolean literal in spider settings (`True` instead of `true`).
+- Added URL inventory and evidence artifact pipeline:
+  - New `url_inventory.json` output containing each URL, existence confirmation status, discovery source(s), and evidence file links.
+  - New `url_evidence/` artifact directory with raw request/response (base64 body) used to discover and verify URLs.
+  - Added existence probes for all URLs (crawled and guessed) with per-URL verification metadata.
+  - Added CLI flags for inventory output path, evidence directory, and existence probe timeout.
+- Added opt-in verbose progress reporting:
+  - New `--verbose` CLI flag.
+  - Verbose progress messages now cover crawl start/completion, OpenAI request retries, AI URL suggestion handling, and per-URL existence verification.
+  - Scrapy log level is elevated to `INFO` only when verbose mode is enabled.
+- Expanded in-page route discovery:
+  - The spider now extracts URLs from anchor `href`, form `action`, non-anchor `href`, `src`, and embedded quoted URL strings in page content.
+  - Recursive crawling now skips static-asset-like paths so broader route discovery does not consume crawl budget on scripts, images, and similar files.
+- Added `--no-ai` mode for testing:
+  - Skips all OpenAI API calls (both additional URL suggestion and final analysis).
+  - Allows running crawl + sitemap + URL inventory/existence verification without `OPENAI_API_KEY`.
+  - Final output now explicitly indicates when AI analysis is skipped.
+- Improved crawl-side route discovery diagnostics and coverage:
+  - Added extraction of escaped root-relative routes (for JS content like `\\/api\\/...`).
+  - Added generic attribute scanning (`//@*`) to capture route-like values outside standard link/form attributes.
+  - Added verbose per-page source counts for raw candidates and allowed internal URLs.
+  - Fixed seed-page evidence behavior so `crawl_response` evidence is always recorded even when `seed_input` evidence already exists.
+- Added config/output directory enforcement:
+  - Added `--config` and JSON config loading from `config/` (default: `config/nightmare.json`).
+  - Added merged settings model where CLI flags override config values.
+  - Updated default artifact behavior so relative sitemap, inventory, and evidence paths resolve under `output/`.
+  - Added default runtime config file at `config/nightmare.json`.
+- Added strict throttling and session resume support:
+  - Added non-zero validation for throttling controls (`crawl_delay`, `verify_delay`) and consistency check (`max_delay >= crawl_delay`).
+  - Added throttled verification request pacing (`verify_delay`) so non-Scrapy probe traffic is also rate-limited.
+  - Added persistent session-state save/load with crawl frontier and state snapshot (`session_state_output`).
+  - Added `--resume` mode to continue crawling from prior session frontier/state instead of restarting.
+- Added comprehensive configurable logging:
+  - Added application logger configuration with separate file + console levels (`log_file`, `log_level`, `console_log_level`).
+  - Added dedicated Scrapy file/level configuration (`scrapy_log_file`, `scrapy_log_level`).
+  - Added fatal exception logging at process entrypoint to preserve stack traces in app logs.
+  - Runtime summary now prints active application and Scrapy log file paths.
+- Added domain-based default artifact naming/layout:
+  - If output paths are not explicitly provided, artifacts now default to `output/<root-domain>/`.
+  - Default filenames now include the root domain (for sitemap, inventory, session state, app logs, and Scrapy logs).
+  - Default evidence directory is now domain-specific (`<root-domain>_evidence`).
+  - Updated `config/nightmare.json` path defaults to `null` so auto domain-based naming is applied.
+- Added sitemap URL schema deduplication:
+  - Sitemap writing now normalizes query parameter values to inferred data-type placeholders.
+  - URLs that only differ by query argument values are collapsed to one canonical sitemap URL.
+  - Sitemap counts/links now operate on these canonicalized URLs to avoid duplicate entries.
+- Made URL verification opt-in:
+  - Added `--verify-urls` / `verify_urls` config flag to explicitly enable end-of-run URL existence probes.
+  - Default behavior now skips URL verification unless that flag is set.
+  - Updated status output to clearly indicate when verification is skipped.
+- Fixed verbose logging precedence:
+  - `--verbose` now forces Scrapy console/file updates at `INFO` even when config default is `scrapy_log_level=WARNING`.
+  - Users can still override this explicitly with `--scrapy-log-level`.
+- Added HTML report feature:
+  - Added `--html-report` and `--html-report-output`.
+  - `--no-ai` mode now generates a built-in stylized HTML report with tree-view sitemap, unique URLs list, and inferred API endpoint list.
+  - AI mode now requests an HTML report document from the model and saves it directly.
+  - Report path and file URI are printed and the tool attempts to open the report automatically in the default browser.
+- Fixed live verbose crawl visibility:
+  - Added direct flushed console output for spider progress events (`[verbose][crawl] ...`) so crawl updates are visible during `process.start()` even if Scrapy logging streams are redirected.
+- Improved verbose discovery visibility:
+  - Added per-URL discovery messages for each newly discovered internal URL, including discovery source and originating page.
+- Enhanced standard HTML report linkability:
+  - Tree-view sitemap nodes and URL/API lists now render as clickable links to the live site.
+  - Report entries now include `(file)` links to local evidence artifacts when available.
+  - Added canonical-to-live URL metadata mapping so deduplicated sitemap URLs can still link to representative live endpoints.
+- Fixed OpenAI context-window failures on large crawls:
+  - Added prompt compaction/sampling helpers for sitemap URLs/pages and URL lists before OpenAI calls.
+  - Added multi-step prompt budget retries that automatically shrink payloads when context is exceeded.
+  - Added explicit detection/handling for `context_length_exceeded` API errors.
+- Fixed resume behavior with low `--max-pages`:
+  - Spider start now computes remaining budget from resumed visited count and avoids scheduling seeds when budget is exhausted.
+  - Seed scheduling is capped to remaining budget to prevent unnecessary queued requests.
+- Improved console progress reliability:
+  - Progress reporter verbose prints now flush immediately to reduce delayed output in PowerShell sessions.
+- Hardened AI execution flow against context-size failures:
+  - Added adaptive inner prompt shrinking loops (halving URL/page sample sizes) for additional URL suggestion, AI analysis, and AI HTML report generation.
+  - Additional URL suggestion now gracefully skips when no prompt can be made to fit, instead of raising a fatal runtime error.
+  - Main orchestration now catches AI-stage exceptions and continues execution; AI HTML report failures automatically fall back to the standard local report renderer.
+- Added condensed sitemap feature:
+  - New artifact generated from full sitemap: `output/<domain>/<domain>_sitemap_condensed.json`.
+  - Condensed output builds a single compact tree of distinct routes by host/path with chain-compression to reduce size.
+  - Dynamic-looking path segments are generalized (`{int}`, `{uuid}`, `{hex}`, `{token}`) to collapse repetitive route variants.
+  - Query shapes are summarized per page node using parameter-key signatures.
+  - Added CLI override `--condensed-sitemap-output` with config key support `condensed_sitemap_output`.
+- Improved OpenAI call robustness and interruptibility:
+  - Added configurable per-request OpenAI timeout (`--openai-timeout` / `openai_timeout`, default 90s).
+  - OpenAI request logs now include per-attempt timeout settings for visibility.
+  - AI stages continue to fail-safe behavior already in place, reducing long blocking failure modes.
+- Optimized evidence storage for disk efficiency:
+  - Evidence files are now written as compact gzip JSON (`.json.gz`) instead of pretty-printed JSON.
+  - Captured request/response bodies in evidence are size-capped and include truncation metadata + SHA256 digest for full-body traceability.
+  - AI guess evidence no longer duplicates full prompt/response text per URL; it stores hashed/truncated summaries.
+- Added non-interactive Scrapy runtime safeguards for Windows console stability:
+  - Disabled Scrapy Telnet console extension to avoid unnecessary console-interactive subsystems.
+  - Start crawler with `install_signal_handlers=False` to reduce terminal/input-handler interference in PowerShell sessions.
+- Improved final AI report presentation:
+  - Added a styled HTML renderer for textual AI report output (markdown-like headings, bullets, inline code/bold).
+  - AI HTML-report mode now gracefully handles non-HTML model output by converting it into a readable styled HTML page.
+  - When AI site analysis runs without `--html-report`, the analysis is now also rendered to HTML, saved, and auto-opened.
+- Added inspectable AI endpoint-schema export:
+  - New `ai-data.txt` artifact is generated each run under `output/<domain>/` by default.
+  - File contains merged endpoint/query schema (one canonical route per base URL with query placeholders by inferred type).
+  - Added optional override `--ai-data-output` / config key `ai_data_output`.
+- Added AI-guided next-request execution loop:
+  - New planning call asks AI to return explicit next HTTP requests (`GET`/`HEAD`) to try, scoped to the target domain and based on canonical endpoint schema.
+  - Tool now executes those AI-selected requests with throttling/timeout controls, saves per-request evidence, and records results in URL inventory.
+  - Probe response summaries are fed back into downstream AI analysis/report generation for iterative refinement.
+  - Added evidence type `ai_probe_plan` and `ai_probe_response`.
+- Added additional Windows console hang mitigation:
+  - Disable Quick Edit mode at startup (best effort) to prevent console input freeze behavior that often resumes only after Enter/Escape.
+  - Force line-buffered/writethrough stdout/stderr reconfiguration where supported to keep output flowing.
+- Added configurable AI probe budgets and per-host throttling:
+  - New config/CLI controls:
+    - `ai_probe_max_requests` / `--ai-probe-max-requests`
+    - `ai_probe_per_host_max` / `--ai-probe-per-host-max`
+    - `ai_probe_delay` / `--ai-probe-delay`
+  - AI request-planning prompt now includes per-host cap constraints.
+  - Post-planning prioritizer enforces total and per-host budgets before execution.
+  - AI probe execution now uses dedicated `ai_probe_delay` instead of reusing verification throttle delay.
+- Improved Ctrl+C behavior to perform graceful finalization:
+  - Interrupts during crawl/AI/probe/verification are now caught inside `main()` and converted into cooperative shutdown flow.
+  - On interrupt, run finalization still writes available artifacts (sitemap, condensed sitemap, ai-data, inventory) and report generation falls back to standard HTML when needed.
+  - Process exits with code `130` after cleanup and a clear interrupted-stage message.
+- Added graceful Ctrl+C handling at process entrypoint:
+  - `KeyboardInterrupt` now logs/prints a clean shutdown message and exits with code `130` without a noisy traceback.
+
+
+
+
+
+
+
+
+
+- Externalized configurable string resources:
+  - Moved argparse help text into `config/nightmare.help.json`.
+  - Moved reusable report labels/messages into `config/nightmare.messages.json`.
+  - Moved AI prompt bodies into `config/nightmare.prompts.json`.
+  - Moved generated HTML wrappers into `config/templates/*.html`.
+  - Added token-based resource rendering in `nightmare.py` so these files can be edited without changing Python code.
+- Fixed duplicate non-verbose progress lines by making `ProgressReporter.status()` print directly without also logging through the application logger's console handler.
+- Shutdown hardening for Ctrl+C:
+  - The top-level `KeyboardInterrupt` handler now force-exits instead of raising `SystemExit`, so secondary interrupts during finalization do not fall back to normal interpreter shutdown.
+  - Once a run is already interrupted, report generation/browser opening is skipped so finalization reaches the forced exit path faster.
+- Removed the Quick Edit workaround entirely:
+  - Deleted the Windows console-mode helpers and the crawl-time disable/restore calls.
+  - The application no longer modifies console input mode during startup, crawl, or shutdown.
+- Condensed AI payloads to remove redundant hashed bundle URLs:
+  - Added AI URL summarization that collapses repeated hashed JS/map bundle paths into a single representative URL before prompt construction.
+  - Applied the condensed URL set to compact sitemap lists, compact URL lists, and endpoint-schema payload generation so the first AI URL-suggestion pass spends context on route patterns instead of build artifacts.
+- Allowed AI stages to continue after a crawl-only Ctrl+C:
+  - If the user interrupts during `crawl`, the run now still executes downstream AI suggestion/analysis/report stages against the recovered partial crawl state.
+  - Browser auto-open remains skipped while interrupted so shutdown stays deterministic.
+- Verified with direct checks:
+  - example `_next/static/chunks/*.js` URLs now collapse to one summarized AI route,
+  - endpoint-schema payload no longer includes each chunk separately,
+  - post-crawl interrupt AI gating allows `crawl` interrupts and blocks later-stage interrupts.
+- Improved blocked-seed crawl handling:
+  - Added browser-like Scrapy request headers and user-agent.
+  - Crawl requests now opt into `handle_httpstatus_all=True` and use a shared errback.
+  - Blocked/error responses are recorded in URL inventory/evidence with `crawl_status_code` / `crawl_note` instead of being dropped.
+  - Added dedicated failure evidence for request-level crawl failures.
+- Verified behavior:
+  - Direct spider test confirmed crawl requests now carry the errback + `handle_httpstatus_all` and that a 403 response records `crawl_status_code=403` with a crawl note.
+  - Live `doordash.com` check with `--no-ai --max-pages 1` now records `Pages crawled: 1` instead of `0`, with the resulting inventory showing a crawled seed response (`302`) rather than a silent empty crawl.
+- Adjusted default HTML report naming: when `html_report_output` is not explicitly set, the report now defaults to `output/<root-domain>/report.html` instead of `<root-domain>_report.html` so the saved artifact matches the expected `report.html` filename.
+- Updated help text for `html_report_output`: the default generated report path is now `output/<root-domain>/report.html`.
+- Changed end-of-run HTML-report behavior: when analysis/report content has already been saved as HTML, the CLI now prints the report path/link and does not also dump the full analysis text to the console.
+- Expanded final AI report requirements:
+  - The site-analysis and AI HTML-report prompts now require dedicated sections for endpoint follow-up strategy, wordlist generation strategy, and fuzzing strategy.
+  - Endpoint reporting must now distinguish observed vs inferred endpoints, explain per-endpoint next steps, and derive both a starter wordlist and an expansion algorithm from the crawl data.
+- Fixed HTML analysis report saving: when the final AI site analysis already returns an HTML document, the run now saves that HTML directly instead of escaping it into the fallback text-report template.
+- Added per-domain source-of-truth artifact output as `.jsonn` (JSON content with a custom extension):
+  - Default path is `output/<root-domain>/<root-domain>_source_of_truth.jsonn`.
+  - The file is created on the first run and merged/updated on later runs for the same domain.
+  - Current schema includes filtered unique URLs, parameterized URLs with inferred data types and fuzz wordlists, and likely API endpoints with observed methods, observed parameters, fuzz methods, and per-parameter fuzz values.
+- Refined `.jsonn` source-of-truth schema:
+  - Removed stored parameter wordlists / fuzz value lists from `parameterized_urls` and `likely_api_endpoints`.
+  - The artifact now carries structural recon data only (URLs, parameters, types, observed methods, fuzz methods to try), leaving value-wordlist generation to the downstream tool.
+- Added a native Windows console control handler to the crawl interrupt bridge:
+  - Ctrl+C / Ctrl+Break during the crawl now set the interrupt event through `SetConsoleCtrlHandler` instead of relying only on Python's signal dispatch.
+  - This is intended to avoid the prior behavior where the crawl/output only resumed or shut down after an additional console input event such as Enter.
+- Fixed same-root redirect/resume handling:
+  - 3xx crawl responses now register in-domain `Location` targets as discovered URLs and schedule them for crawling.
+  - Resume no longer hard-fails when the requested start URL differs from the saved session start URL but both belong to the same root domain (for example `xoom.com` vs `www.xoom.com`).
+  - The requested start URL is added back into the resumed discovered set so the session can converge on the newer canonical host variant.
+- Changed the source-of-truth artifact from `.jsonn` to regular `.json`:
+  - Default path is now `output/<root-domain>/<root-domain>_source_of_truth.json`.
+  - If an older `.jsonn` file exists, the run will read/merge it as legacy input before writing the new `.json` file.
+- Added parameter companion artifacts per domain:
+  - `output/<root-domain>/<root-domain>.parameters.json`
+  - `output/<root-domain>/<root-domain>.parameters.txt`
+- The parameters JSON contains parameterized URLs with observed parameter names, inferred types, and observed values.
+- The parameters TXT contains full request strings with uniquely numbered type placeholders such as `{int1}`, `{int2}`, `{string1}`, `{url1}`.
+- Removed the native Windows console control handler from the crawl interrupt bridge.
+- The runtime no longer uses `ctypes`, `SetConsoleCtrlHandler`, or any other console-mode/control API hooks.
+- Added `force_noninteractive_stdin()` and enabled it on Windows during startup.
+- The runtime now rebinds `sys.stdin` to `os.devnull` so no dependency can block waiting for console input; this targets the recurring behavior where execution resumes only after Enter.
+- Added and validated a standalone `fozzy.py` parameter-fuzz workflow artifact layer:
+  - Reads `<domain>.parameters.json`, groups by host/path, and reports parameter counts.
+  - Infers definitely-valid combinations from observed requests, probes optional-vs-required parameters by removal testing, and generates bounded permutation sets.
+  - Writes both placeholder permutation URLs (`<domain>.fozzy.permutations.txt`) and concrete baseline permutation URLs (`<domain>.fozzy.baseline-urls.txt`).
+  - Persists route-level inventory (`<domain>.fozzy.inventory.json`) with required/optional inference and per-route permutation lists.
+  - Fuzz stage now includes `requested_url` in anomaly payloads to make each anomaly fully replayable.
+- Enhanced `fozzy.py --dry-run` to emit executable request planning as JSONL (`<domain>.fozzy.requests.jsonl`).
+- Dry-run now records one line per request that a live run would execute (requiredness baseline/probe requests, fuzz baselines, and fuzz mutations), each containing a copy/paste curl command, expected baseline response scaffold, and an empty `actual_response` object for later population.
+- Dry-run summary now reports `planned_requests` so plan cardinality can be validated against request-plan line count.
+- Updated `fozzy.py` fuzzing strategy to use quick-list-driven mutations from `resources/quick_fuzz_list.txt` (with fallback to `resources/wordlists/quick_fuzz_list.txt`).
+- Enforced fixed quick-fuzz volume: 50 fuzz requests per parameter per generated URL pattern by consuming the first 50 lines from the quick list.
+- Fuzz mutations now keep all non-target parameters at default typed baseline values and mutate exactly one parameter at a time through the quick list.
+- Removed hardcoded quick-fuzz count assumptions in `fozzy.py`: the full quick fuzz list file is now consumed dynamically, with only a non-empty-file requirement.
+- Improved `fozzy.py` runtime visibility and interrupt behavior:
+  - Per-group preflight now prints `estimated_requests` so large jobs are visible before network execution starts.
+  - Added periodic progress logging during fuzz execution (every 100 requests) for both dry-run planning and live mode.
+  - Added graceful Ctrl+C handling at group level: interrupts now stop the run cleanly, preserve partial artifacts, and write summary metadata (`interrupted`, `interrupted_group`) instead of emitting an uncaught traceback.
+- Added post-run anomaly summary artifact for `fozzy.py`: `anomalies/<root_domain>.anomaly_summary.json` is now written after every run.
+- Summary includes total anomaly count, unique discrepancy URL list, and per-discrepancy details (URL, mutated parameter/value, baseline/new status, baseline/new size, size delta, anomaly file path).
+- Added cumulative anomaly HTML reporting in `fozzy.py`: each run now writes `anomalies/<domain>.anomaly_summary.html` with table-based views.
+- Anomaly rollups are now folder-wide and cumulative: summaries are built from all `anomaly_*.json` files present in the anomalies directory, including prior runs.
+- Summary payload now includes grouped metrics (`totals`), URL-level aggregation (`by_url`), and full discrepancy rows with status/size deltas and anomaly file references.
+- Upgraded fozzy HTML anomaly report UX:
+  - Long cell fields are now truncated for one-screen readability with full values preserved in tooltips.
+  - Added baseline/new response code and baseline/new size (bytes) columns plus size-difference bytes in the detailed anomaly table.
+  - Added client-side sorting on every column, per-column filters, and global incremental search across all table data.
+- Updated fozzy permutation strategy to reduce request explosion: execution now uses only max-parameter permutations per route (`permutations_used=1` in normal cases) and skips subset/combination probing.
+- Main run status now reports both `permutations_generated` and `permutations_used` to make request-volume reduction explicit.
+- Route inventory JSON now records `permutations_generated_count` and `permutations_used_count`.
+- Migrated fozzy findings output from `anomalies/` to `results/`.
+- Added reflection result artifacts: when a fuzzed input value is reflected in the response body preview, fozzy now writes `reflection_*.json` alongside `anomaly_*.json`.
+- Results summaries (`*.results_summary.json/.html`) are now built from cumulative findings in `results/` and also include legacy `anomalies/` files for backward-compatible aggregation.
+- Run totals now include both `anomalies` and `reflections`.
+- Added explicit execution confirmation gate to `fozzy.py`: request-plan JSONL is always generated first, then (for non-dry-run) the user is prompted to approve live execution.
+- Pre-execution prompt now reports planned request count, configured inter-request delay, and estimated minimum runtime at that delay.
+- If user declines, run exits cleanly after writing planning/inventory artifacts with zero live requests executed.
+- Added request-plan endpoint breakdown output in fozzy: after generating `<domain>.fozzy.requests.jsonl`, fozzy now computes request counts by endpoint (`host+path`) and prints them sorted from most to least requests.
+- Added endpoint-count artifacts:
+  - `<domain>.fozzy.endpoint_request_counts.json`
+  - `<domain>.fozzy.endpoint_request_counts.txt`
+- Added endpoint-cap selection prompt to fozzy pre-execution flow: after showing endpoint request counts, non-dry runs now ask for a maximum requests-per-endpoint threshold and only execute endpoints at or below that cap.
+- Pre-execution summary now includes selected endpoint count, selected planned request count, and estimated runtime for the selected subset.
+- Added non-verbose live execution heartbeat output in fozzy request loop: each group now logs execution start/finish and emits pre-request progress lines at least every ~5s before network calls so users can see forward progress during slow handshakes/timeouts.
+- Updated `fozzy.py` HTML results report UX to keep full values copyable while constraining visual width: cells now use CSS ellipsis clipping (no string truncation), columns are user-resizable with drag handles, and referenced file paths are clickable `file:///` links in both discrepancy and results-file tables.
+- Updated report terminology to explicitly show `Baseline response code` and `Anomaly response code` columns in the detailed discrepancies table.
+- Expanded URL rollup data to include per-URL `baseline_response_codes` and `anomaly_response_codes` lists, surfaced in the `Discrepancies by URL` table.
+
+- Simplified ozzy.py HTML results report layout per request: removed Discrepancies by URL and Results folder files sections so the report now contains only the All discrepancies section/table in the body.
+- Added live results report refresh pipeline in `fozzy.py`: during live fuzz execution, the summary JSON/HTML are rebuilt from the results folder at most every 5 seconds, and a final forced refresh is executed on interrupt/finalization.
+- Added auto-refresh tag to the generated HTML summary (`<meta http-equiv="refresh" content="5">`) so an open report tab tracks the latest on-disk data during active runs.
+- Hardened `fozzy.py` summary loader to include result artifacts recursively (`rglob`) and accept legacy/misspelled anomaly naming (`anomoly_`) plus payload-shape detection (`baseline` + `anomaly/response`), preventing dropped discrepancy rows when folder structures or filenames vary.
+- Fozzy report state now persists across auto-refresh using `localStorage` (sort order, column filters, and table scroll position), so 5-second refresh no longer clears analyst context.
+- Added baseline/anomaly loading heuristics for legacy artifacts: when request URL mapping indicates inversion (including common `sampletoken` invalid-baseline pattern), baseline/anomaly are swapped during summary ingestion.
+- Baseline request seeding now prefers observed parameter values over synthetic defaults to reduce false baseline failures.
+- Updated discrepancy diff coloring: positive size deltas render green, negative deltas render red.
+- Added resumable fuzz execution to `fozzy.py` with persistent state file `<domain>.fozzy.resume_state.json`.
+- Resume state now tracks `requested` (completed request records with response snapshots) and `queued` (pending requests) using deterministic request keys.
+- Live execution now skips previously completed request keys and checkpoints each completed request immediately, enabling continuation after interruption.
+- Dry-run/request-plan generation now includes stable `request_key` on each plan line to support resume matching.
