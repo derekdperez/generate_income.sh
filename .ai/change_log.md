@@ -2,6 +2,22 @@
 
 ## 2026-04-12
 
+- Refactored `fozzy.py` results HTML rendering to avoid inlining large discrepancy datasets:
+  - `render_anomaly_summary_html()` now emits a lightweight shell and loads discrepancy rows from the companion `*.results_summary.json` file at page load.
+  - Added `summary_json_filename` to summary payloads in both single-domain and master summary writers.
+  - Added browser-side fallback messaging when local-file fetch/XHR of JSON is blocked by browser security.
+- Why: report table data should be sourced from on-disk files at load time rather than hardcoded into generated HTML.
+
+- Added dedicated incremental domain concurrency control in `fozzy.py`:
+  - New config key: `incremental_domain_workers` (added to `config/fozzy.json`).
+  - New CLI override: `--incremental-domain-workers`.
+  - `run_incremental_domains()` now uses `incremental_domain_workers` instead of reusing `max_background_workers`.
+- Why: separate multi-domain scheduling from per-domain fuzz worker settings so both can be tuned independently.
+- Updated master HTML extractor section rendering:
+  - Extractor table now renders even when there are zero extractor rows.
+  - Importance column label/filter updated to explicit `Importance score`.
+- Why: ensure generated HTML consistently includes the importance-score column/schema for downstream review and automation.
+
 - Fixed `fozzy.py` incremental multi-domain execution to honor configured worker concurrency:
   - `run_incremental_domains()` now runs domains in parallel via child-process workers instead of a serial `for` loop.
   - Worker count comes from effective `max_background_workers` (including config/CLI overrides).

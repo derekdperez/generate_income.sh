@@ -12,4 +12,6 @@
 - For path-wordlist runs, configured `max_pages` is treated as a floor: effective crawl budget is expanded to include all pending seed URLs so seed coverage is deterministic.
 - `fozzy.py` has two concurrency layers now:
   - Incremental `--scan-root` mode: parent scheduler runs multiple domains concurrently via child processes.
+    - Concurrency knob: `incremental_domain_workers` (config/CLI).
   - Per-domain fuzzing inside each child: constrained to single-worker in incremental mode to keep global concurrency bounded and avoid shared-global state races.
+- Results reporting model in `fozzy.py`: summary JSON remains source-of-truth; generated HTML reads discrepancy rows from sibling summary JSON at runtime (thin-shell HTML), reducing inline payload size and duplication.

@@ -93,6 +93,7 @@ def default_fozzy_config() -> dict[str, Any]:
         "output_dir": None,
         "dry_run": False,
         "max_background_workers": 8,
+        "incremental_domain_workers": 8,
         "max_workers_per_domain": 8,
         "max_workers_per_subdomain": 1,
         "max_requests_per_endpoint": None,
@@ -157,6 +158,10 @@ def normalize_fozzy_config(cfg: dict[str, Any]) -> None:
     cfg["delay_seconds"] = max(0.0, float(cfg.get("delay_seconds", 0.1)))
     cfg["max_permutations"] = max(1, int(cfg.get("max_permutations", 512)))
     cfg["max_background_workers"] = max(1, int(cfg.get("max_background_workers", 8)))
+    cfg["incremental_domain_workers"] = max(
+        1,
+        int(cfg.get("incremental_domain_workers", cfg["max_background_workers"])),
+    )
     cfg["max_workers_per_domain"] = max(1, int(cfg.get("max_workers_per_domain", 8)))
     cfg["max_workers_per_subdomain"] = max(1, int(cfg.get("max_workers_per_subdomain", 1)))
     if cfg["max_background_workers"] <= 1:
@@ -452,8 +457,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Override fozzy.json max_background_workers (default 8, same idea as nightmare.json batch_workers). "
-            "Per eTLD+1 and per-host caps also apply (max_workers_per_domain / max_workers_per_subdomain). "
-            "When running with no parameters file (--scan-root incremental mode), this also controls concurrent domain runs."
+            "Per eTLD+1 and per-host caps also apply (max_workers_per_domain / max_workers_per_subdomain)."
+        ),
+    )
+    parser.add_argument(
+        "--incremental-domain-workers",
+        type=int,
+        default=None,
+        help=(
+            "Override fozzy.json incremental_domain_workers (concurrent domain processes in "
+            "--scan-root incremental mode when no parameters file is given). "
+            "Defaults to max_background_workers when unset."
         ),
     )
     parser.add_argument(
@@ -564,6 +578,8 @@ def build_effective_fozzy_config(args: argparse.Namespace) -> dict[str, Any]:
         cfg["output_dir"] = str(args.output_dir).strip() or None
     if args.max_background_workers is not None:
         cfg["max_background_workers"] = int(args.max_background_workers)
+    if args.incremental_domain_workers is not None:
+        cfg["incremental_domain_workers"] = int(args.incremental_domain_workers)
     if args.max_workers_per_domain is not None:
         cfg["max_workers_per_domain"] = int(args.max_workers_per_domain)
     if args.max_workers_per_subdomain is not None:
@@ -1804,6 +1820,7 @@ def write_master_results_summary(
     )
     json_path = master_root / "all_domains.results_summary.json"
     html_path = master_root / "all_domains.results_summary.html"
+    payload["summary_json_filename"] = json_path.name
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     html_path.write_text(render_anomaly_summary_html(payload), encoding="utf-8")
     return json_path, html_path, len(pairs)
@@ -1833,6 +1850,7 @@ def write_results_summary(
         summary_scope="single_domain",
     )
     anomaly_summary_path = results_dir / f"{root_domain}.results_summary.json"
+    anomaly_summary_payload["summary_json_filename"] = anomaly_summary_path.name
     anomaly_summary_path.write_text(json.dumps(anomaly_summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
     anomaly_summary_html_path = results_dir / f"{root_domain}.results_summary.html"
     anomaly_summary_html_path.write_text(render_anomaly_summary_html(anomaly_summary_payload), encoding="utf-8")
@@ -1867,10 +1885,11 @@ def build_body_side_by_side_diff_html(baseline_body: str, anomaly_body: str) -> 
 
 
 def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
-    rows = payload.get("discrepancies", []) if isinstance(payload.get("discrepancies"), list) else []
-    include_domain = any(
-        str((item.get("source_domain") or "")).strip() for item in rows if isinstance(item, dict)
-    )
+    # Keep generated HTML lightweight: detailed discrepancy rows are loaded from the
+    # companion summary JSON on page load instead of being embedded inline.
+    rows: list[dict[str, Any]] = []
+    include_domain = str(payload.get("summary_scope", "")) == "master"
+    summary_json_filename = str(payload.get("summary_json_filename") or "").strip()
     report_heading = str(payload.get("report_heading") or "All discrepancies")
     doc_title = "Master results" if str(payload.get("summary_scope", "")) == "master" else "results summary"
     column_labels: list[str] = ["Type"]
@@ -2259,13 +2278,13 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
 """
 
     ext_rows = payload.get("extractor_matches")
-    if str(payload.get("summary_scope", "")) == "master" and isinstance(ext_rows, list) and ext_rows:
+    if str(payload.get("summary_scope", "")) == "master" and isinstance(ext_rows, list):
         ext_lines: list[str] = []
         ext_filter_placeholders = [
             "Filter domain",
             "Filter URL",
             "Filter name",
-            "Filter importance",
+            "Filter importance score",
             "Filter scope",
             "Filter side",
             "Filter match text",
@@ -2339,7 +2358,7 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
             <th data-type="string">Domain</th>
             <th data-type="string">URL</th>
             <th data-type="string">Filter name</th>
-            <th data-type="number">Importance</th>
+            <th data-type="number">Importance score</th>
             <th data-type="string">Scope</th>
             <th data-type="string">Side</th>
             <th data-type="string">Match preview</th>
@@ -2447,8 +2466,9 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
 
   <script>
     (function() {{
-      const responseData = {response_data_json};
-      const responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
+      let responseData = {response_data_json};
+      let responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
+      const summaryJsonFilename = {json.dumps(summary_json_filename, ensure_ascii=False).replace("</", "<\\/")};
       const stateStorageKey = "fozzy-report-state:" + String(window.location.href.split("#")[0]);
       const stateNamePrefix = "fozzy-report-state:";
 
@@ -2679,6 +2699,185 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         }});
       }}
 
+      function escapeHtml(value) {{
+        const s = String(value == null ? "" : value);
+        return s
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }}
+
+      function clipCellHtml(value) {{
+        const raw = String(value == null ? "" : value);
+        return `<span class='clip-cell' title='${{escapeHtml(raw)}}'>${{escapeHtml(raw)}}</span>`;
+      }}
+
+      function fileHref(pathValue) {{
+        const raw = String(pathValue == null ? "" : pathValue).trim();
+        if (!raw) return "";
+        const normalized = raw.replaceAll("\\\\", "/");
+        return "file:///" + encodeURI(normalized);
+      }}
+
+      function statusPhrase(code) {{
+        const map = {{
+          200: "OK",
+          201: "Created",
+          202: "Accepted",
+          204: "No Content",
+          301: "Moved Permanently",
+          302: "Found",
+          304: "Not Modified",
+          307: "Temporary Redirect",
+          308: "Permanent Redirect",
+          400: "Bad Request",
+          401: "Unauthorized",
+          403: "Forbidden",
+          404: "Not Found",
+          405: "Method Not Allowed",
+          408: "Request Timeout",
+          409: "Conflict",
+          410: "Gone",
+          413: "Payload Too Large",
+          415: "Unsupported Media Type",
+          418: "I'm a teapot",
+          422: "Unprocessable Entity",
+          429: "Too Many Requests",
+          500: "Internal Server Error",
+          501: "Not Implemented",
+          502: "Bad Gateway",
+          503: "Service Unavailable",
+          504: "Gateway Timeout"
+        }};
+        return map[Number(code)] || "";
+      }}
+
+      function extractElapsedMs(responseObj) {{
+        const rsp = responseObj && typeof responseObj === "object" ? responseObj : {{}};
+        const ms = Number(rsp.elapsed_ms);
+        if (Number.isFinite(ms)) return Math.round(ms);
+        const sec = Number(rsp.elapsed_seconds);
+        if (Number.isFinite(sec)) return Math.round(sec * 1000);
+        return null;
+      }}
+
+      function formatUtcTime(value) {{
+        const raw = String(value == null ? "" : value).trim();
+        if (!raw) return "";
+        const dt = new Date(raw);
+        if (Number.isNaN(dt.getTime())) return raw;
+        const h = String(dt.getUTCHours()).padStart(2, "0");
+        const m = String(dt.getUTCMinutes()).padStart(2, "0");
+        const s = String(dt.getUTCSeconds()).padStart(2, "0");
+        return `${{h}}:${{m}}:${{s}}`;
+      }}
+
+      function buildResponseDataFromDiscrepancies(discrepancies) {{
+        const out = [];
+        discrepancies.forEach((item, idx) => {{
+          if (!item || typeof item !== "object") return;
+          const id = `r${{idx + 1}}`;
+          const baseline = item.baseline_response && typeof item.baseline_response === "object" ? item.baseline_response : {{}};
+          const anomaly = item.anomaly_response && typeof item.anomaly_response === "object" ? item.anomaly_response : {{}};
+          out.push({{
+            id,
+            baseline,
+            anomaly,
+            diff: String(item.response_diff_text || ""),
+            diff_side_by_side_html: ""
+          }});
+        }});
+        return out;
+      }}
+
+      function renderDetailRows(discrepancies) {{
+        const includeDomain = {str(str(payload.get("summary_scope", "")) == "master").lower()};
+        const out = [];
+        discrepancies.forEach((item, idx) => {{
+          if (!item || typeof item !== "object") return;
+          const responseId = `r${{idx + 1}}`;
+          const baseline = item.baseline_response && typeof item.baseline_response === "object" ? item.baseline_response : {{}};
+          const anomaly = item.anomaly_response && typeof item.anomaly_response === "object" ? item.anomaly_response : {{}};
+          const typeRaw = String(item.result_type || "").trim() || "unknown";
+          const sourceDomainRaw = String(item.source_domain || "").trim();
+          const capturedRaw = String(item.captured_at_utc || "");
+          const capturedDisp = formatUtcTime(capturedRaw);
+          const urlRaw = String(item.url || "");
+          const paramRaw = String(item.mutated_parameter || "");
+          const valueRaw = String(item.mutated_value || "");
+          const resultRaw = String(item.result_file || "");
+          const baselineStatus = Number(item.baseline_status || 0) || 0;
+          const anomalyStatus = Number(item.new_status || 0) || 0;
+          const baselineSize = Number(item.baseline_size || 0) || 0;
+          const anomalySize = Number(item.new_size || 0) || 0;
+          const sizeDiff = anomalySize - baselineSize;
+          const baselineMs = extractElapsedMs(baseline);
+          const anomalyMs = extractElapsedMs(anomaly);
+          const diffMs = baselineMs == null || anomalyMs == null ? null : (anomalyMs - baselineMs);
+          const baselineLabel = `${{baselineStatus}} ${{statusPhrase(baselineStatus)}}`.trim();
+          const anomalyLabel = `${{anomalyStatus}} ${{statusPhrase(anomalyStatus)}}`.trim();
+          const bodySearch = `${{typeRaw}}\\n${{sourceDomainRaw}}\\n${{String(baseline.body_preview || "")}}\\n${{String(anomaly.body_preview || "")}}\\n${{baselineMs == null ? "" : baselineMs}}\\n${{anomalyMs == null ? "" : anomalyMs}}\\n${{diffMs == null ? "" : diffMs}}`.toLowerCase();
+          const diffClass = diffMs == null ? "size-diff-zero" : (diffMs > 0 ? "size-diff-pos" : (diffMs < 0 ? "size-diff-neg" : "size-diff-zero"));
+          const sizeDiffClass = sizeDiff > 0 ? "size-diff-pos" : (sizeDiff < 0 ? "size-diff-neg" : "size-diff-zero");
+          const resultCell = resultRaw
+            ? `<a class='clip-cell file-link' title='${{escapeHtml(resultRaw)}}' href='${{escapeHtml(fileHref(resultRaw))}}' target='_blank' rel='noopener noreferrer'>${{escapeHtml(resultRaw)}}</a>`
+            : "";
+          const domainCell = includeDomain
+            ? `<td data-raw='${{escapeHtml(sourceDomainRaw)}}'>${{clipCellHtml(sourceDomainRaw)}}</td>`
+            : "";
+          out.push(
+            `<tr class='detail-data-row' data-search-extra='${{escapeHtml(bodySearch)}}'>`
+            + `<td data-raw='${{escapeHtml(typeRaw)}}'>${{clipCellHtml(typeRaw)}}</td>`
+            + domainCell
+            + `<td data-raw='${{escapeHtml(capturedRaw)}}'>${{clipCellHtml(capturedDisp)}}</td>`
+            + `<td data-raw='${{escapeHtml(urlRaw)}}'>${{clipCellHtml(urlRaw)}}</td>`
+            + `<td data-raw='${{escapeHtml(paramRaw)}}'>${{clipCellHtml(paramRaw)}}</td>`
+            + `<td data-raw='${{escapeHtml(valueRaw)}}'>${{clipCellHtml(valueRaw)}}</td>`
+            + `<td data-raw='${{escapeHtml(String(baselineStatus))}}'><a href='#' class='resp-link' data-kind='baseline' data-id='${{escapeHtml(responseId)}}'>${{clipCellHtml(baselineLabel)}}</a></td>`
+            + `<td data-raw='${{escapeHtml(String(anomalyStatus))}}'><a href='#' class='resp-link' data-kind='anomaly' data-id='${{escapeHtml(responseId)}}'>${{clipCellHtml(anomalyLabel)}}</a></td>`
+            + (baselineMs == null ? "<td data-raw=''>—</td>" : `<td data-raw='${{baselineMs}}'>${{baselineMs}}</td>`)
+            + (anomalyMs == null ? "<td data-raw=''>—</td>" : `<td data-raw='${{anomalyMs}}'>${{anomalyMs}}</td>`)
+            + (diffMs == null ? "<td data-raw=''>—</td>" : `<td data-raw='${{diffMs}}'><span class='${{diffClass}}'>${{diffMs >= 0 ? "+" : ""}}${{diffMs}}</span></td>`)
+            + `<td data-raw='${{baselineSize}}'>${{baselineSize}}</td>`
+            + `<td data-raw='${{anomalySize}}'>${{anomalySize}}</td>`
+            + `<td data-raw='${{sizeDiff}}'><span class='${{sizeDiffClass}}'>${{sizeDiff >= 0 ? "+" : ""}}${{sizeDiff}}</span></td>`
+            + `<td data-raw='diff'><a href='#' class='tool-diff' data-id='${{escapeHtml(responseId)}}'>diff</a></td>`
+            + `<td data-raw='${{escapeHtml(resultRaw)}}'>${{resultCell}}</td>`
+            + "</tr>"
+          );
+        }});
+        return out.join("\\n");
+      }}
+
+      async function loadReportPayloadFromDisk() {{
+        const fallback = String(window.location.pathname || "").replace(/\\.html?$/i, ".json");
+        const target = String(summaryJsonFilename || "").trim() || fallback;
+        if (!target) return null;
+        try {{
+          const rsp = await fetch(target, {{ cache: "no-store" }});
+          if (rsp.ok) return await rsp.json();
+        }} catch {{
+        }}
+        try {{
+          const text = await new Promise((resolve, reject) => {{
+            const xhr = new XMLHttpRequest();
+            xhr.open("GET", target, true);
+            xhr.onreadystatechange = () => {{
+              if (xhr.readyState !== 4) return;
+              if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 0) resolve(xhr.responseText || "");
+              else reject(new Error(`HTTP ${{xhr.status}}`));
+            }};
+            xhr.onerror = () => reject(new Error("network error"));
+            xhr.send();
+          }});
+          return JSON.parse(text || "{{}}");
+        }} catch {{
+          return null;
+        }}
+      }}
+
       const modalBackdrop = document.getElementById("modalBackdrop");
       const viewerModal = document.getElementById("viewerModal");
       const modalTitle = document.getElementById("modalTitle");
@@ -2815,10 +3014,29 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         }}
       }});
 
-      {inventory_script_html}
-      {extractor_script_html}
-      setupTable("detailTable", "detailCount");
-      enableResizableColumns("detailTable");
+      async function bootstrapTables() {{
+        const detailTable = document.getElementById("detailTable");
+        const detailBody = detailTable ? detailTable.querySelector("tbody") : null;
+        const loadedPayload = await loadReportPayloadFromDisk();
+        if (loadedPayload && detailBody) {{
+          const discrepancies = Array.isArray(loadedPayload.discrepancies) ? loadedPayload.discrepancies : [];
+          responseData = buildResponseDataFromDiscrepancies(discrepancies);
+          responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
+          const renderedRows = renderDetailRows(discrepancies);
+          detailBody.innerHTML = renderedRows || "<tr><td colspan='{table_col_count}'>No discrepancies</td></tr>";
+        }} else if (detailBody) {{
+          detailBody.innerHTML =
+            "<tr><td colspan='{table_col_count}'>Unable to load summary JSON from disk at page load. " +
+            "Open this report via a local web server or allow local-file XHR/fetch in your browser.</td></tr>";
+        }}
+
+        {inventory_script_html}
+        {extractor_script_html}
+        setupTable("detailTable", "detailCount");
+        enableResizableColumns("detailTable");
+      }}
+
+      bootstrapTables();
     }})();
   </script>
 </body>
@@ -4010,7 +4228,7 @@ def run_incremental_domains(args: argparse.Namespace) -> None:
         return
 
     cfg = build_effective_fozzy_config(args)
-    domain_workers = max(1, int(cfg.get("max_background_workers", 1)))
+    domain_workers = max(1, int(cfg.get("incremental_domain_workers", cfg.get("max_background_workers", 1))))
     print(
         f"Incremental Fozzy: running {len(to_run)} domain(s) under {scan_root} "
         f"with {domain_workers} concurrent domain worker(s)"
