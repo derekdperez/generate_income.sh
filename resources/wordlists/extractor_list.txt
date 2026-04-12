@@ -4,447 +4,1000 @@
     "scope": "response_body",
     "regex": "<!--([\\s\\S]*?)-->",
     "description": "Extract HTML comments from response bodies. Useful for finding developer notes, disabled code hints, internal paths, and environment information.",
-    "output_filename": "extracted_comments.txt"
+    "output_filename": "extracted_comments.txt",
+    "importance_score": 4
   },
   {
     "name": "javascript_single_line_comments",
     "scope": "response_body",
     "regex": "(?m)^\\s*//(?![#@]).*$",
     "description": "Extract JavaScript single-line comments. Useful for finding notes, TODOs, debug markers, and commented hints in inline or served JavaScript.",
-    "output_filename": "javascript_single_line_comments.txt"
+    "output_filename": "javascript_single_line_comments.txt",
+    "importance_score": 3
   },
   {
     "name": "javascript_block_comments",
     "scope": "response_body",
     "regex": "/\\*([\\s\\S]*?)\\*/",
     "description": "Extract JavaScript block comments. Useful for finding developer notes, documentation, test references, and commented code fragments.",
-    "output_filename": "javascript_block_comments.txt"
+    "output_filename": "javascript_block_comments.txt",
+    "importance_score": 3
   },
   {
     "name": "css_comments",
     "scope": "response_body",
     "regex": "/\\*([\\s\\S]*?)\\*/",
     "description": "Extract CSS comments from stylesheets or inline style blocks. Useful for identifying notes, staging references, hidden selectors, and asset hints.",
-    "output_filename": "css_comments.txt"
+    "output_filename": "css_comments.txt",
+    "importance_score": 2
   },
   {
     "name": "email_addresses",
     "scope": "request_response",
     "regex": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b",
     "description": "Extract email addresses from requests or responses. Useful for identifying contact addresses, account identifiers, support aliases, and test data.",
-    "output_filename": "email_addresses.txt"
+    "output_filename": "email_addresses.txt",
+    "importance_score": 3
   },
   {
     "name": "internal_ip_addresses",
     "scope": "request_response",
     "regex": "\\b(?:10\\.(?:\\d{1,3}\\.){2}\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.(?:\\d{1,3})\\.\\d{1,3}|192\\.168\\.(?:\\d{1,3})\\.\\d{1,3})\\b",
     "description": "Extract RFC1918 private IPv4 addresses. Useful for identifying backend infrastructure references, internal service endpoints, and leaked network details.",
-    "output_filename": "internal_ip_addresses.txt"
+    "output_filename": "internal_ip_addresses.txt",
+    "importance_score": 6
   },
   {
     "name": "absolute_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://[^\\s\"'<>]+",
     "description": "Extract absolute HTTP and HTTPS URLs. Useful for collecting links to internal APIs, external integrations, callback endpoints, and referenced resources.",
-    "output_filename": "absolute_urls.txt"
+    "output_filename": "absolute_urls.txt",
+    "importance_score": 3
   },
   {
     "name": "api_paths",
     "scope": "request_response",
     "regex": "(?i)(?:/api|/rest|/graphql|/v[0-9]+)(?:/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)*",
     "description": "Extract likely API path references. Useful for finding API routes exposed in HTML, JavaScript, headers, or request bodies.",
-    "output_filename": "api_paths.txt"
+    "output_filename": "api_paths.txt",
+    "importance_score": 4
   },
   {
     "name": "graphql_operations",
     "scope": "request_response",
     "regex": "\\b(?:query|mutation|subscription)\\s+([A-Za-z_][A-Za-z0-9_]*)",
     "description": "Extract GraphQL operation names from request or response content. Useful for mapping GraphQL usage and identifying exposed functionality.",
-    "output_filename": "graphql_operations.txt"
+    "output_filename": "graphql_operations.txt",
+    "importance_score": 4
   },
   {
     "name": "bearer_tokens",
     "scope": "request_headers_response_body",
     "regex": "(?i)\\bBearer\\s+([A-Za-z0-9\\-._~+/]+=*)",
     "description": "Extract bearer token values referenced in headers or body content. Useful for detecting token exposure in logs, examples, or reflected data.",
-    "output_filename": "bearer_tokens.txt"
+    "output_filename": "bearer_tokens.txt",
+    "importance_score": 10
   },
   {
     "name": "jwt_tokens",
     "scope": "request_response",
     "regex": "\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+\\b",
     "description": "Extract JWT-like tokens. Useful for identifying authentication or session tokens exposed in requests, responses, scripts, or storage dumps.",
-    "output_filename": "jwt_tokens.txt"
+    "output_filename": "jwt_tokens.txt",
+    "importance_score": 10
   },
   {
     "name": "set_cookie_headers",
     "scope": "response_headers",
     "regex": "(?im)^Set-Cookie:\\s*([^\\r\\n]+)",
     "description": "Extract Set-Cookie header values from responses. Useful for auditing session cookies, flags, cookie names, and application state indicators.",
-    "output_filename": "set_cookie_headers.txt"
+    "output_filename": "set_cookie_headers.txt",
+    "importance_score": 7
   },
   {
     "name": "cookie_headers",
     "scope": "request_headers",
     "regex": "(?im)^Cookie:\\s*([^\\r\\n]+)",
     "description": "Extract Cookie header values from requests. Useful for identifying session cookies, application state, and custom tracking values.",
-    "output_filename": "cookie_headers.txt"
+    "output_filename": "cookie_headers.txt",
+    "importance_score": 8
   },
   {
     "name": "authorization_headers",
     "scope": "request_headers",
     "regex": "(?im)^Authorization:\\s*([^\\r\\n]+)",
     "description": "Extract Authorization header values from requests. Useful for locating Basic, Bearer, or custom authorization schemes in captured traffic.",
-    "output_filename": "authorization_headers.txt"
+    "output_filename": "authorization_headers.txt",
+    "importance_score": 10
   },
   {
     "name": "basic_auth_credentials",
     "scope": "request_headers",
     "regex": "(?im)^Authorization:\\s*Basic\\s+([A-Za-z0-9+/=]+)",
     "description": "Extract Base64-encoded Basic authorization credentials from request headers for later decoding and analysis.",
-    "output_filename": "basic_auth_credentials.txt"
+    "output_filename": "basic_auth_credentials.txt",
+    "importance_score": 10
   },
   {
     "name": "csrf_tokens",
     "scope": "request_response",
     "regex": "(?i)(?:csrf|xsrf|authenticity_token)[\"'\\]\\s:=><-]{1,20}([A-Za-z0-9._\\-+/=]{8,})",
     "description": "Extract likely CSRF/XSRF token values from HTML, JavaScript, JSON, headers, or request parameters.",
-    "output_filename": "csrf_tokens.txt"
+    "output_filename": "csrf_tokens.txt",
+    "importance_score": 5
   },
   {
     "name": "api_keys_generic",
     "scope": "request_response",
     "regex": "(?i)\\b(?:api[_-]?key|apikey|client[_-]?secret|access[_-]?token|secret[_-]?key)\\b[\"'\\]\\s:=><-]{1,20}([A-Za-z0-9._\\-+/=]{8,})",
     "description": "Extract values assigned to common key or secret variable names. Useful for detecting exposed API keys, secrets, and access tokens.",
-    "output_filename": "api_keys_generic.txt"
+    "output_filename": "api_keys_generic.txt",
+    "importance_score": 10
   },
   {
     "name": "aws_access_key_ids",
     "scope": "request_response",
     "regex": "\\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA)[A-Z0-9]{16}\\b",
     "description": "Extract AWS access key IDs from requests or responses. Useful for detecting accidentally exposed cloud credentials.",
-    "output_filename": "aws_access_key_ids.txt"
+    "output_filename": "aws_access_key_ids.txt",
+    "importance_score": 10
   },
   {
     "name": "private_key_blocks",
     "scope": "request_response",
     "regex": "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----",
     "description": "Extract PEM private key blocks. Useful for detecting severe credential leakage in responses, scripts, or uploaded content.",
-    "output_filename": "private_key_blocks.txt"
+    "output_filename": "private_key_blocks.txt",
+    "importance_score": 10
   },
   {
     "name": "stack_traces_java",
     "scope": "response_body",
     "regex": "(?m)^[\\w.$]+(?:Exception|Error):.*(?:\\n\\s+at\\s+[\\w.$_]+\\([\\w.$_]+:\\d+\\))+",
     "description": "Extract Java stack trace blocks from responses. Useful for finding server-side exceptions, class names, file names, and line numbers.",
-    "output_filename": "java_stack_traces.txt"
+    "output_filename": "java_stack_traces.txt",
+    "importance_score": 7
   },
   {
     "name": "stack_traces_python",
     "scope": "response_body",
     "regex": "Traceback \\(most recent call last\\):[\\s\\S]*?(?=\\n\\n|$)",
     "description": "Extract Python traceback blocks from responses. Useful for identifying internal file paths, function names, and framework details.",
-    "output_filename": "python_tracebacks.txt"
+    "output_filename": "python_tracebacks.txt",
+    "importance_score": 7
   },
   {
     "name": "stack_traces_dotnet",
     "scope": "response_body",
     "regex": "(?s)Server Error in '/' Application\\..*?(?:Stack Trace:.*?)(?=\\Z|<hr|</body>)",
     "description": "Extract ASP.NET style stack trace and error detail pages from response content.",
-    "output_filename": "dotnet_stack_traces.txt"
+    "output_filename": "dotnet_stack_traces.txt",
+    "importance_score": 7
   },
   {
     "name": "html_hidden_inputs",
     "scope": "response_body",
     "regex": "(?i)<input[^>]+type=[\"']hidden[\"'][^>]*name=[\"']([^\"']+)[\"'][^>]*value=[\"']([^\"']*)[\"'][^>]*>",
     "description": "Extract hidden input names and values from HTML. Useful for capturing state parameters, CSRF values, workflow fields, and internal IDs.",
-    "output_filename": "html_hidden_inputs.txt"
+    "output_filename": "html_hidden_inputs.txt",
+    "importance_score": 4
   },
   {
     "name": "script_src_urls",
     "scope": "response_body",
     "regex": "(?i)<script[^>]+src=[\"']([^\"']+)[\"']",
     "description": "Extract script source URLs from HTML. Useful for identifying JavaScript bundles, third-party integrations, and additional discovery targets.",
-    "output_filename": "script_src_urls.txt"
+    "output_filename": "script_src_urls.txt",
+    "importance_score": 3
   },
   {
     "name": "iframe_src_urls",
     "scope": "response_body",
     "regex": "(?i)<iframe[^>]+src=[\"']([^\"']+)[\"']",
     "description": "Extract iframe source URLs from HTML. Useful for identifying embedded applications, external integrations, and nested content.",
-    "output_filename": "iframe_src_urls.txt"
+    "output_filename": "iframe_src_urls.txt",
+    "importance_score": 4
   },
   {
     "name": "html_form_actions",
     "scope": "response_body",
     "regex": "(?i)<form[^>]+action=[\"']([^\"']+)[\"']",
     "description": "Extract form action URLs from HTML. Useful for identifying endpoints that process user input and multi-step workflows.",
-    "output_filename": "html_form_actions.txt"
+    "output_filename": "html_form_actions.txt",
+    "importance_score": 4
   },
   {
     "name": "openapi_swagger_paths",
     "scope": "request_response",
     "regex": "\\b(?:/swagger(?:\\.json)?|/openapi(?:\\.json|\\.ya?ml)?|/v[23]/api-docs|/swagger-ui(?:/index\\.html)?)\\b",
     "description": "Extract common Swagger/OpenAPI documentation and specification paths from content or traffic.",
-    "output_filename": "openapi_swagger_paths.txt"
+    "output_filename": "openapi_swagger_paths.txt",
+    "importance_score": 6
   },
   {
     "name": "filesystem_paths_unix",
     "scope": "response_body",
     "regex": "(?:/[^\\s\"'<>:]+)+",
     "description": "Extract Unix-style filesystem paths from response content. Useful for identifying deployment directories, source locations, and log paths.",
-    "output_filename": "filesystem_paths_unix.txt"
+    "output_filename": "filesystem_paths_unix.txt",
+    "importance_score": 6
   },
   {
     "name": "filesystem_paths_windows",
     "scope": "response_body",
     "regex": "\\b[A-Za-z]:\\\\(?:[^\\\\\\r\\n\"'<>|:*?]+\\\\)*[^\\\\\\r\\n\"'<>|:*?]*",
     "description": "Extract Windows-style filesystem paths from response content. Useful for identifying server paths, application roots, and developer machine references.",
-    "output_filename": "filesystem_paths_windows.txt"
+    "output_filename": "filesystem_paths_windows.txt",
+    "importance_score": 6
   },
   {
     "name": "hostnames_internal_like",
     "scope": "request_response",
     "regex": "\\b(?:[A-Za-z0-9-]+\\.)+(?:local|internal|intra|corp|lan|home|test|dev|staging)\\b",
     "description": "Extract internal-looking hostnames and non-public environment references from traffic or content.",
-    "output_filename": "internal_hostnames.txt"
+    "output_filename": "internal_hostnames.txt",
+    "importance_score": 6
   },
   {
     "name": "meta_refresh_urls",
     "scope": "response_body",
     "regex": "(?i)<meta[^>]+http-equiv=[\"']refresh[\"'][^>]+content=[\"'][^\"']*url=([^\"'>]+)",
     "description": "Extract URLs from HTML meta refresh tags. Useful for identifying client-side redirects and hidden navigation paths.",
-    "output_filename": "meta_refresh_urls.txt"
+    "output_filename": "meta_refresh_urls.txt",
+    "importance_score": 3
   },
   {
     "name": "html_anchor_hrefs",
     "scope": "response_body",
     "regex": "(?i)<a[^>]+href=[\"']([^\"'#]+)[\"']",
     "description": "Extract anchor href targets from HTML. Useful for collecting navigable routes and related resources.",
-    "output_filename": "html_anchor_hrefs.txt"
+    "output_filename": "html_anchor_hrefs.txt",
+    "importance_score": 2
   },
   {
     "name": "websocket_urls",
     "scope": "request_response",
     "regex": "\\bwss?://[^\\s\"'<>]+",
     "description": "Extract WebSocket URLs from content or traffic. Useful for identifying real-time APIs and bidirectional endpoints.",
-    "output_filename": "websocket_urls.txt"
+    "output_filename": "websocket_urls.txt",
+    "importance_score": 4
   },
   {
     "name": "localhost_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(?::\\d+)?[^\\s\"'<>]*",
     "description": "Extract localhost-referencing URLs. Useful for finding development references, callback targets, and internal examples.",
-    "output_filename": "localhost_urls.txt"
+    "output_filename": "localhost_urls.txt",
+    "importance_score": 5
   },
   {
     "name": "ipv4_public_or_private",
     "scope": "request_response",
     "regex": "\\b(?:(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\b",
     "description": "Extract IPv4 addresses from content or traffic. Useful for finding backend references, endpoints, and infrastructure clues.",
-    "output_filename": "ipv4_addresses.txt"
+    "output_filename": "ipv4_addresses.txt",
+    "importance_score": 4
   },
   {
     "name": "ipv6_addresses",
     "scope": "request_response",
     "regex": "\\b(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4}\\b",
     "description": "Extract IPv6 addresses from content or traffic. Useful for identifying modern network endpoints and leaked infrastructure details.",
-    "output_filename": "ipv6_addresses.txt"
+    "output_filename": "ipv6_addresses.txt",
+    "importance_score": 4
   },
   {
     "name": "subdomains_generic",
     "scope": "request_response",
     "regex": "\\b(?:[A-Za-z0-9-]+\\.)+[A-Za-z]{2,}\\b",
     "description": "Extract hostname-like values from content or traffic. Useful for collecting subdomains, partner domains, and environment references.",
-    "output_filename": "subdomains_generic.txt"
+    "output_filename": "subdomains_generic.txt",
+    "importance_score": 3
   },
   {
     "name": "url_parameters",
     "scope": "request_response",
     "regex": "(?:(?:\\?|&)|(?:\\b))(?:[A-Za-z0-9_.-]{1,64})=([^&#\\s\"']*)",
     "description": "Extract URL parameter values from query strings and similar content. Useful for identifying IDs, tokens, search values, and workflow state.",
-    "output_filename": "url_parameter_values.txt"
+    "output_filename": "url_parameter_values.txt",
+    "importance_score": 3
   },
   {
     "name": "url_parameter_names",
     "scope": "request_response",
     "regex": "(?:(?:\\?|&)|(?:\\b))([A-Za-z0-9_.-]{1,64})=(?:[^&#\\s\"']*)",
     "description": "Extract URL parameter names from query strings and similar content. Useful for mapping application input surfaces.",
-    "output_filename": "url_parameter_names.txt"
+    "output_filename": "url_parameter_names.txt",
+    "importance_score": 2
   },
   {
     "name": "json_key_names",
     "scope": "request_response",
     "regex": "\"([A-Za-z0-9_.$-]{1,128})\"\\s*:",
     "description": "Extract JSON object key names. Useful for identifying API fields, hidden data structures, and parameter vocabularies.",
-    "output_filename": "json_key_names.txt"
+    "output_filename": "json_key_names.txt",
+    "importance_score": 2
   },
   {
     "name": "base64_like_blobs",
     "scope": "request_response",
     "regex": "\\b(?:[A-Za-z0-9+/]{20,}={0,2})\\b",
     "description": "Extract long Base64-like strings. Useful for identifying encoded tokens, serialized state, embedded files, or credentials.",
-    "output_filename": "base64_like_blobs.txt"
+    "output_filename": "base64_like_blobs.txt",
+    "importance_score": 5
   },
   {
     "name": "hex_tokens_long",
     "scope": "request_response",
     "regex": "\\b[a-fA-F0-9]{32,}\\b",
     "description": "Extract long hexadecimal tokens. Useful for finding hashes, opaque IDs, session identifiers, and signatures.",
-    "output_filename": "hex_tokens_long.txt"
+    "output_filename": "hex_tokens_long.txt",
+    "importance_score": 4
   },
   {
     "name": "uuid_values",
     "scope": "request_response",
     "regex": "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\\b",
     "description": "Extract UUID values. Useful for identifying object IDs, workflow tokens, correlation IDs, and resource references.",
-    "output_filename": "uuid_values.txt"
+    "output_filename": "uuid_values.txt",
+    "importance_score": 2
   },
   {
     "name": "md5_hashes",
     "scope": "request_response",
     "regex": "\\b[a-fA-F0-9]{32}\\b",
     "description": "Extract MD5-length hashes and identifiers. Useful for finding weak hash references, checksums, and opaque IDs.",
-    "output_filename": "md5_hashes.txt"
+    "output_filename": "md5_hashes.txt",
+    "importance_score": 2
   },
   {
     "name": "sha1_hashes",
     "scope": "request_response",
     "regex": "\\b[a-fA-F0-9]{40}\\b",
     "description": "Extract SHA1-length hashes and identifiers. Useful for finding checksums, commit-like values, and object references.",
-    "output_filename": "sha1_hashes.txt"
+    "output_filename": "sha1_hashes.txt",
+    "importance_score": 2
   },
   {
     "name": "sha256_hashes",
     "scope": "request_response",
     "regex": "\\b[a-fA-F0-9]{64}\\b",
     "description": "Extract SHA256-length hashes and identifiers. Useful for finding checksums, signatures, and artifact references.",
-    "output_filename": "sha256_hashes.txt"
+    "output_filename": "sha256_hashes.txt",
+    "importance_score": 2
   },
   {
     "name": "oauth_parameters",
     "scope": "request_response",
     "regex": "\\b(?:client_id|client_secret|redirect_uri|response_type|scope|code_challenge|code_verifier|authorization_code|access_token|refresh_token)=([^&\\s\"']+)",
     "description": "Extract OAuth-related parameter values from URLs, bodies, or examples. Useful for identifying auth flows and token exchange parameters.",
-    "output_filename": "oauth_parameters.txt"
+    "output_filename": "oauth_parameters.txt",
+    "importance_score": 8
   },
   {
     "name": "oauth_parameter_names",
     "scope": "request_response",
     "regex": "\\b(client_id|client_secret|redirect_uri|response_type|scope|code_challenge|code_verifier|authorization_code|access_token|refresh_token)=",
     "description": "Extract OAuth-related parameter names. Useful for mapping OAuth and OIDC request surfaces.",
-    "output_filename": "oauth_parameter_names.txt"
+    "output_filename": "oauth_parameter_names.txt",
+    "importance_score": 3
   },
   {
     "name": "s3_bucket_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://[A-Za-z0-9.-]+\\.s3(?:[.-][A-Za-z0-9-]+)?\\.amazonaws\\.com[^\\s\"'<>]*",
     "description": "Extract Amazon S3 bucket URLs. Useful for identifying object storage references and exposed bucket endpoints.",
-    "output_filename": "s3_bucket_urls.txt"
+    "output_filename": "s3_bucket_urls.txt",
+    "importance_score": 5
   },
   {
     "name": "azure_blob_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://[A-Za-z0-9-]+\\.blob\\.core\\.windows\\.net/[^\\s\"'<>]+",
     "description": "Extract Azure Blob Storage URLs. Useful for identifying storage containers, shared artifacts, and public object references.",
-    "output_filename": "azure_blob_urls.txt"
+    "output_filename": "azure_blob_urls.txt",
+    "importance_score": 5
   },
   {
     "name": "gcs_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://storage\\.googleapis\\.com/[^\\s\"'<>]+",
     "description": "Extract Google Cloud Storage URLs. Useful for identifying public or referenced cloud storage objects and buckets.",
-    "output_filename": "gcs_urls.txt"
+    "output_filename": "gcs_urls.txt",
+    "importance_score": 5
   },
   {
     "name": "firebase_urls",
     "scope": "request_response",
     "regex": "\\bhttps?://[A-Za-z0-9-]+\\.firebaseio\\.com[^\\s\"'<>]*",
     "description": "Extract Firebase Realtime Database URLs. Useful for identifying backend data stores and referenced application environments.",
-    "output_filename": "firebase_urls.txt"
+    "output_filename": "firebase_urls.txt",
+    "importance_score": 6
   },
   {
     "name": "swagger_ui_titles",
     "scope": "response_body",
     "regex": "(?i)<title>\\s*(Swagger UI|OpenAPI Explorer|API documentation)\\s*</title>",
     "description": "Extract common API documentation UI titles from HTML responses. Useful for identifying browsable API docs.",
-    "output_filename": "swagger_ui_titles.txt"
+    "output_filename": "swagger_ui_titles.txt",
+    "importance_score": 5
   },
   {
     "name": "html_titles",
     "scope": "response_body",
     "regex": "(?is)<title>(.*?)</title>",
     "description": "Extract HTML page titles. Useful for classifying pages, admin panels, docs portals, and application areas.",
-    "output_filename": "html_titles.txt"
+    "output_filename": "html_titles.txt",
+    "importance_score": 2
   },
   {
     "name": "server_header_values",
     "scope": "response_headers",
     "regex": "(?im)^Server:\\s*([^\\r\\n]+)",
     "description": "Extract Server header values. Useful for passive fingerprinting of web server products and deployment stacks.",
-    "output_filename": "server_header_values.txt"
+    "output_filename": "server_header_values.txt",
+    "importance_score": 5
   },
   {
     "name": "powered_by_headers",
     "scope": "response_headers",
     "regex": "(?im)^X-Powered-By:\\s*([^\\r\\n]+)",
     "description": "Extract X-Powered-By header values. Useful for passive fingerprinting of frameworks and runtimes.",
-    "output_filename": "powered_by_headers.txt"
+    "output_filename": "powered_by_headers.txt",
+    "importance_score": 5
   },
   {
     "name": "cors_origins",
     "scope": "response_headers",
     "regex": "(?im)^Access-Control-Allow-Origin:\\s*([^\\r\\n]+)",
     "description": "Extract Access-Control-Allow-Origin header values. Useful for auditing CORS exposure and trust relationships.",
-    "output_filename": "cors_origins.txt"
+    "output_filename": "cors_origins.txt",
+    "importance_score": 6
   },
   {
     "name": "content_security_policy",
     "scope": "response_headers",
     "regex": "(?im)^Content-Security-Policy:\\s*([^\\r\\n]+)",
     "description": "Extract Content-Security-Policy header values. Useful for security posture review and allowed source mapping.",
-    "output_filename": "content_security_policy.txt"
+    "output_filename": "content_security_policy.txt",
+    "importance_score": 5
   },
   {
     "name": "location_headers",
     "scope": "response_headers",
     "regex": "(?im)^Location:\\s*([^\\r\\n]+)",
     "description": "Extract redirect target URLs from Location headers. Useful for tracing redirect flows and hidden endpoints.",
-    "output_filename": "location_headers.txt"
+    "output_filename": "location_headers.txt",
+    "importance_score": 3
   },
   {
     "name": "session_id_parameters",
     "scope": "request_response",
     "regex": "(?i)\\b(?:jsessionid|phpsessid|sessionid|sid|sessid)[\"'\\]\\s:=&?]{1,20}([A-Za-z0-9._-]{6,})",
     "description": "Extract likely session identifier values from content, URLs, or headers. Useful for session handling analysis and exposure detection.",
-    "output_filename": "session_id_parameters.txt"
+    "output_filename": "session_id_parameters.txt",
+    "importance_score": 8
   },
   {
     "name": "database_connection_strings",
     "scope": "request_response",
     "regex": "(?i)\\b(?:jdbc:[^\\s\"']+|Server=[^;\\r\\n]+;Database=[^;\\r\\n]+;(?:User Id|UID)=[^;\\r\\n]+;(?:Password|PWD)=[^;\\r\\n]+;?)",
     "description": "Extract likely database connection strings such as JDBC URLs or common SQL connection formats.",
-    "output_filename": "database_connection_strings.txt"
+    "output_filename": "database_connection_strings.txt",
+    "importance_score": 10
   },
   {
     "name": "version_strings",
     "scope": "request_response",
     "regex": "\\bv?\\d+\\.\\d+(?:\\.\\d+)?(?:[-._]?(?:alpha|beta|rc|snapshot|final)\\d*)?\\b",
     "description": "Extract version-like strings from content or traffic. Useful for passive component/version clue collection.",
-    "output_filename": "version_strings.txt"
+    "output_filename": "version_strings.txt",
+    "importance_score": 2
   },
   {
     "name": "git_commit_hashes",
     "scope": "request_response",
     "regex": "\\b[a-f0-9]{7,40}\\b",
     "description": "Extract Git-like commit hashes. Useful for finding build metadata, source references, and deployment identifiers.",
-    "output_filename": "git_commit_hashes.txt"
+    "output_filename": "git_commit_hashes.txt",
+    "importance_score": 2
   },
   {
     "name": "docker_image_references",
     "scope": "request_response",
     "regex": "\\b[a-z0-9]+(?:(?:[._-][a-z0-9]+)+)?/[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?\\b",
     "description": "Extract Docker-style image references from logs, configs, or scripts. Useful for identifying deployment artifacts and environments.",
-    "output_filename": "docker_image_references.txt"
+    "output_filename": "docker_image_references.txt",
+    "importance_score": 3
+  },
+
+  {
+    "name": "aws_secret_access_keys",
+    "scope": "request_response",
+    "regex": "(?i)\\baws(?:_|-|\\s)?secret(?:_|-|\\s)?access(?:_|-|\\s)?key\\b[\"'\\]\\s:=><-]{1,20}([A-Za-z0-9/+=]{20,})",
+    "description": "Extract likely AWS secret access key assignments from content, config fragments, or logs.",
+    "output_filename": "aws_secret_access_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "aws_session_tokens",
+    "scope": "request_response",
+    "regex": "(?i)\\baws(?:_|-|\\s)?session(?:_|-|\\s)?token\\b[\"'\\]\\s:=><-]{1,20}([A-Za-z0-9/+=]{16,})",
+    "description": "Extract likely AWS session tokens exposed in responses or scripts.",
+    "output_filename": "aws_session_tokens.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "google_api_keys",
+    "scope": "request_response",
+    "regex": "\\bAIza[0-9A-Za-z\\-_]{35}\\b",
+    "description": "Extract Google API key values.",
+    "output_filename": "google_api_keys.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "stripe_live_secret_keys",
+    "scope": "request_response",
+    "regex": "\\bsk_live_[0-9a-zA-Z]{16,}\\b",
+    "description": "Extract Stripe live secret keys.",
+    "output_filename": "stripe_live_secret_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "stripe_live_publishable_keys",
+    "scope": "request_response",
+    "regex": "\\bpk_live_[0-9a-zA-Z]{16,}\\b",
+    "description": "Extract Stripe live publishable keys. Lower criticality than secret keys but useful for environment confirmation.",
+    "output_filename": "stripe_live_publishable_keys.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "github_tokens",
+    "scope": "request_response",
+    "regex": "\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,255}\\b",
+    "description": "Extract GitHub token formats from logs, examples, or client-side code.",
+    "output_filename": "github_tokens.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "github_pat_tokens",
+    "scope": "request_response",
+    "regex": "\\bgithub_pat_[A-Za-z0-9_]{20,255}\\b",
+    "description": "Extract GitHub fine-grained personal access token formats.",
+    "output_filename": "github_pat_tokens.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "slack_tokens",
+    "scope": "request_response",
+    "regex": "\\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{10,200}\\b",
+    "description": "Extract Slack token formats that may permit workspace or bot access.",
+    "output_filename": "slack_tokens.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "slack_webhook_urls",
+    "scope": "request_response",
+    "regex": "\\bhttps://hooks\\.slack\\.com/services/[A-Za-z0-9/_-]+\\b",
+    "description": "Extract Slack incoming webhook URLs.",
+    "output_filename": "slack_webhook_urls.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "twilio_api_keys",
+    "scope": "request_response",
+    "regex": "\\bSK[0-9a-fA-F]{32}\\b",
+    "description": "Extract Twilio API key SIDs.",
+    "output_filename": "twilio_api_keys.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "sendgrid_api_keys",
+    "scope": "request_response",
+    "regex": "\\bSG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}\\b",
+    "description": "Extract SendGrid API key formats.",
+    "output_filename": "sendgrid_api_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "mailgun_api_keys",
+    "scope": "request_response",
+    "regex": "\\bkey-[0-9a-fA-F]{32}\\b",
+    "description": "Extract Mailgun API key formats.",
+    "output_filename": "mailgun_api_keys.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "shopify_tokens",
+    "scope": "request_response",
+    "regex": "(?i)\\bshpat_[A-Za-z0-9]{20,}\\b",
+    "description": "Extract Shopify access token formats.",
+    "output_filename": "shopify_tokens.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "npm_tokens",
+    "scope": "request_response",
+    "regex": "\\bnpm_[A-Za-z0-9]{36}\\b",
+    "description": "Extract npm authentication token formats.",
+    "output_filename": "npm_tokens.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "telegram_bot_tokens",
+    "scope": "request_response",
+    "regex": "\\b\\d{8,10}:[A-Za-z0-9_-]{35}\\b",
+    "description": "Extract Telegram bot token formats.",
+    "output_filename": "telegram_bot_tokens.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "discord_bot_tokens",
+    "scope": "request_response",
+    "regex": "\\b[A-Za-z0-9_-]{24}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27}\\b",
+    "description": "Extract Discord bot token-like values.",
+    "output_filename": "discord_bot_tokens.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "rsa_private_keys",
+    "scope": "request_response",
+    "regex": "-----BEGIN RSA PRIVATE KEY-----[\\s\\S]*?-----END RSA PRIVATE KEY-----",
+    "description": "Extract RSA private key blocks.",
+    "output_filename": "rsa_private_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "openssh_private_keys",
+    "scope": "request_response",
+    "regex": "-----BEGIN OPENSSH PRIVATE KEY-----[\\s\\S]*?-----END OPENSSH PRIVATE KEY-----",
+    "description": "Extract OpenSSH private key blocks.",
+    "output_filename": "openssh_private_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "pgp_private_keys",
+    "scope": "request_response",
+    "regex": "-----BEGIN PGP PRIVATE KEY BLOCK-----[\\s\\S]*?-----END PGP PRIVATE KEY BLOCK-----",
+    "description": "Extract PGP private key blocks.",
+    "output_filename": "pgp_private_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "pem_certificates",
+    "scope": "request_response",
+    "regex": "-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----",
+    "description": "Extract PEM certificate blocks. Usually informational unless paired with private keys.",
+    "output_filename": "pem_certificates.txt",
+    "importance_score": 3
+  },
+  {
+    "name": "ssh_public_keys",
+    "scope": "request_response",
+    "regex": "\\bssh-(?:rsa|ed25519|dss)\\s+[A-Za-z0-9+/=]+(?:\\s+[^\\r\\n]+)?",
+    "description": "Extract SSH public key values that may identify users, hosts, or infrastructure.",
+    "output_filename": "ssh_public_keys.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "jdbc_urls_detailed",
+    "scope": "request_response",
+    "regex": "\\bjdbc:(?:mysql|mariadb|postgresql|oracle|sqlserver|db2|h2):[^\\s\"']+",
+    "description": "Extract detailed JDBC URLs for common database platforms.",
+    "output_filename": "jdbc_urls_detailed.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "mongodb_connection_strings",
+    "scope": "request_response",
+    "regex": "\\bmongodb(?:\\+srv)?:\\/\\/[^\\s\"']+",
+    "description": "Extract MongoDB connection strings.",
+    "output_filename": "mongodb_connection_strings.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "redis_connection_strings",
+    "scope": "request_response",
+    "regex": "\\bredis(?:s)?:\\/\\/[^\\s\"']+",
+    "description": "Extract Redis connection strings.",
+    "output_filename": "redis_connection_strings.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "amqp_connection_strings",
+    "scope": "request_response",
+    "regex": "\\bamqps?:\\/\\/[^\\s\"']+",
+    "description": "Extract AMQP or RabbitMQ connection strings.",
+    "output_filename": "amqp_connection_strings.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "elasticsearch_urls",
+    "scope": "request_response",
+    "regex": "\\bhttps?://[^\\s\"']+:9200(?:/[^\\s\"']*)?",
+    "description": "Extract likely Elasticsearch service URLs.",
+    "output_filename": "elasticsearch_urls.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "kibana_urls",
+    "scope": "request_response",
+    "regex": "\\bhttps?://[^\\s\"']+:5601(?:/[^\\s\"']*)?",
+    "description": "Extract likely Kibana service URLs.",
+    "output_filename": "kibana_urls.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "spring_boot_actuator_paths",
+    "scope": "request_response",
+    "regex": "\\b/actuator(?:/(?:health|info|env|metrics|heapdump|loggers|mappings|beans|configprops|threaddump|prometheus))?\\b",
+    "description": "Extract Spring Boot Actuator endpoint paths that often expose operational details.",
+    "output_filename": "spring_boot_actuator_paths.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "heapdump_references",
+    "scope": "request_response",
+    "regex": "\\b(?:heapdump|threaddump|jmx-console|web-console|status\\?full=true)\\b",
+    "description": "Extract references to operational dump or admin-style endpoints that may leak internals.",
+    "output_filename": "heapdump_references.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "aem_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:crx|crx/de|system/console|etc/packages|content/dam|bin/querybuilder|libs/granite|dispatcher/invalidate\\.cache)\\b",
+    "description": "Extract Adobe Experience Manager administrative or high-value application paths.",
+    "output_filename": "aem_paths.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "tomcat_manager_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:manager/html|manager/status|host-manager/html|docs|examples)\\b",
+    "description": "Extract common Tomcat management or sample application paths.",
+    "output_filename": "tomcat_manager_paths.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "jboss_admin_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:jmx-console|web-console|management|invoker/JMXInvokerServlet)\\b",
+    "description": "Extract common JBoss or WildFly administration paths.",
+    "output_filename": "jboss_admin_paths.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "jetty_default_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:test/|cgi-bin/|doc/|javadoc/|webapps/)\\b",
+    "description": "Extract Jetty-like default content or deployment path hints.",
+    "output_filename": "jetty_default_paths.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "wordpress_sensitive_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:wp-admin|wp-login\\.php|xmlrpc\\.php|wp-json|wp-content/debug\\.log|wp-content/uploads/)\\b",
+    "description": "Extract high-value WordPress paths associated with admin access, APIs, or debug leakage.",
+    "output_filename": "wordpress_sensitive_paths.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "magnolia_paths",
+    "scope": "request_response",
+    "regex": "\\b/(?:magnoliaAuthor|magnoliaPublic|\\.magnolia/admincentral|\\.rest/|modules/)\\b",
+    "description": "Extract Magnolia CMS administrative or API-related paths.",
+    "output_filename": "magnolia_paths.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "sql_error_messages",
+    "scope": "response_body",
+    "regex": "(?is)(?:SQL syntax.*?MySQL|Warning.*?mysql_.*|PostgreSQL.*?ERROR|ORA-\\d{5}|Microsoft OLE DB Provider for SQL Server|Unclosed quotation mark after the character string|ODBC SQL Server Driver|JDBC[^\\n]{0,80}(?:Exception|Error))",
+    "description": "Extract common SQL error message fragments that may indicate injection points or verbose error handling.",
+    "output_filename": "sql_error_messages.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "template_injection_errors",
+    "scope": "response_body",
+    "regex": "(?is)(?:TemplateSyntaxError|Jinja2|Freemarker template error|org\\.thymeleaf|VelocityException|PebbleException|MustacheException)",
+    "description": "Extract server-side template engine error references that may indicate SSTI opportunities.",
+    "output_filename": "template_injection_errors.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "deserialization_errors_java",
+    "scope": "response_body",
+    "regex": "(?is)(?:InvalidClassException|java\\.io\\.OptionalDataException|ObjectInputStream|Cannot deserialize|SerializationException|com\\.fasterxml\\.jackson\\.databind\\.[A-Za-z.$]+Exception)",
+    "description": "Extract Java serialization or JSON binding errors that may reveal unsafe parsing or deserialization surfaces.",
+    "output_filename": "deserialization_errors_java.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "ldap_error_messages",
+    "scope": "response_body",
+    "regex": "(?is)(?:javax\\.naming\\.[A-Za-z.]+Exception|LDAPException|Invalid DN Syntax|Size Limit Exceeded|No Such Object)",
+    "description": "Extract LDAP-related exception text that may reveal directory integrations or injection surfaces.",
+    "output_filename": "ldap_error_messages.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "ssrf_candidate_parameters",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:url|uri|dest|destination|redirect|redirect_uri|return(?:To|Url)?|next|continue|callback|feed|image_url|link|site|domain|endpoint|proxy|target|path)=([^&\\s\"']+)",
+    "description": "Extract common SSRF or open redirect style parameter values.",
+    "output_filename": "ssrf_candidate_parameters.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "file_upload_parameters",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:filename|file|upload|attachment|multipart/form-data|Content-Disposition:\\s*form-data;\\s*name=\"[^\"]*file[^\"]*\")",
+    "description": "Extract indicators of file upload surfaces useful for file handling and validation assessment.",
+    "output_filename": "file_upload_parameters.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "path_traversal_indicators",
+    "scope": "request_response",
+    "regex": "(?:\\.\\./|\\.\\.\\\\|%2e%2e%2f|%2e%2e/|%252e%252e%252f|/etc/passwd|boot\\.ini|win\\.ini|web\\.xml)",
+    "description": "Extract path traversal payloads or sensitive file references observed in requests or responses.",
+    "output_filename": "path_traversal_indicators.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "sensitive_env_variable_names",
+    "scope": "request_response",
+    "regex": "\\b(?:AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|DATABASE_URL|DB_PASSWORD|SECRET_KEY|JWT_SECRET|SPRING_DATASOURCE_PASSWORD|GOOGLE_APPLICATION_CREDENTIALS|REDIS_URL|MONGO_URL)\\b",
+    "description": "Extract sensitive environment variable names that often appear in debug pages or config leaks.",
+    "output_filename": "sensitive_env_variable_names.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "dotenv_file_references",
+    "scope": "request_response",
+    "regex": "\\b(?:\\.env(?:\\.[A-Za-z0-9._-]+)?|application\\.properties|application\\.ya?ml|bootstrap\\.ya?ml|config\\.php|settings\\.php|web\\.config)\\b",
+    "description": "Extract references to sensitive configuration files commonly exposed by mistake.",
+    "output_filename": "dotenv_file_references.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "directory_listing_titles",
+    "scope": "response_body",
+    "regex": "(?i)<title>\\s*(?:Index of /|Directory listing for|Index of)\\s*.*?</title>",
+    "description": "Extract directory listing page titles.",
+    "output_filename": "directory_listing_titles.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "git_directory_references",
+    "scope": "request_response",
+    "regex": "\\b/(?:\\.git/HEAD|\\.git/config|\\.git/index|\\.gitignore|\\.gitmodules)\\b",
+    "description": "Extract references to exposed Git repository artifacts.",
+    "output_filename": "git_directory_references.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "svn_directory_references",
+    "scope": "request_response",
+    "regex": "\\b/(?:\\.svn/entries|\\.svn/wc\\.db)\\b",
+    "description": "Extract references to exposed Subversion metadata.",
+    "output_filename": "svn_directory_references.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "dockerfile_references",
+    "scope": "request_response",
+    "regex": "\\b(?:Dockerfile|docker-compose\\.ya?ml|compose\\.ya?ml|\\.dockerignore)\\b",
+    "description": "Extract references to Docker build or deployment files.",
+    "output_filename": "dockerfile_references.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "kubernetes_config_references",
+    "scope": "request_response",
+    "regex": "\\b(?:kubeconfig|\\.kube/config|serviceaccount/token|serviceaccount/ca\\.crt|kind:\\s*(?:Deployment|Secret|ConfigMap))\\b",
+    "description": "Extract Kubernetes configuration or secret handling references.",
+    "output_filename": "kubernetes_config_references.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "cloud_metadata_endpoints",
+    "scope": "request_response",
+    "regex": "\\b(?:169\\.254\\.169\\.254|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)\\b",
+    "description": "Extract cloud instance metadata endpoint references that may indicate SSRF impact paths.",
+    "output_filename": "cloud_metadata_endpoints.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "debug_mode_indicators",
+    "scope": "response_body",
+    "regex": "(?is)(?:debug\\s*=\\s*true|DEBUG\\s*=\\s*True|display_errors\\s*=\\s*On|development mode|whitelabel error page|stacktrace|trace=true)",
+    "description": "Extract indicators that debugging or verbose error handling is enabled.",
+    "output_filename": "debug_mode_indicators.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "http_only_missing_cookie_candidates",
+    "scope": "response_headers",
+    "regex": "(?im)^Set-Cookie:\\s*([^\\r\\n]+)$",
+    "description": "Capture raw Set-Cookie lines for downstream checks of missing HttpOnly, Secure, or SameSite flags.",
+    "output_filename": "http_only_missing_cookie_candidates.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "csp_unsafe_directives",
+    "scope": "response_headers",
+    "regex": "(?im)^Content-Security-Policy:\\s*[^\\r\\n]*(?:'unsafe-inline'|'unsafe-eval'|data:|\\*)[^\\r\\n]*",
+    "description": "Extract CSP headers containing weak directives that may reduce XSS protection.",
+    "output_filename": "csp_unsafe_directives.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "permissive_cors_indicators",
+    "scope": "response_headers",
+    "regex": "(?im)^Access-Control-Allow-Origin:\\s*\\*|^Access-Control-Allow-Credentials:\\s*true",
+    "description": "Extract permissive CORS settings that may be dangerous depending on credential usage and origin reflection.",
+    "output_filename": "permissive_cors_indicators.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "cache_control_sensitive_absence_candidates",
+    "scope": "response_headers",
+    "regex": "(?im)^(?:Cache-Control|Pragma|Expires):\\s*([^\\r\\n]+)",
+    "description": "Capture cache-related headers for review of sensitive content caching behavior.",
+    "output_filename": "cache_control_sensitive_absence_candidates.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "idor_candidate_identifiers",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:user_id|userid|account_id|order_id|invoice_id|customer_id|profile_id|document_id|file_id|tenant_id|org_id)=([A-Za-z0-9._:-]{1,64})",
+    "description": "Extract direct object reference style parameter values commonly associated with IDOR testing.",
+    "output_filename": "idor_candidate_identifiers.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "redirect_parameter_names",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:redirect|redirect_uri|return|returnTo|returnUrl|next|continue|dest|destination|target)=",
+    "description": "Extract common open redirect parameter names.",
+    "output_filename": "redirect_parameter_names.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "xml_external_entity_indicators",
+    "scope": "request_response",
+    "regex": "(?is)(?:<!DOCTYPE\\s+[^>]+\\s+\\[|<!ENTITY\\s+[^>]+SYSTEM\\s+[\"'][^\"']+[\"'])",
+    "description": "Extract XML DTD or external entity references relevant to XXE testing and parser exposure.",
+    "output_filename": "xml_external_entity_indicators.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "soap_endpoints",
+    "scope": "request_response",
+    "regex": "\\bhttps?://[^\\s\"']+\\?(?:wsdl|WSDL)\\b|\\b/(?:services|soap|axis2|ws)/[^\\s\"']*\\b",
+    "description": "Extract SOAP/WSDL endpoints and service paths.",
+    "output_filename": "soap_endpoints.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "saml_artifacts",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:SAMLRequest|SAMLResponse|RelayState)=([^&\\s\"']+)",
+    "description": "Extract SAML message artifacts from authentication flows.",
+    "output_filename": "saml_artifacts.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "openid_connect_artifacts",
+    "scope": "request_response",
+    "regex": "(?i)\\b(?:id_token|nonce|state|code_challenge_method|code_verifier)=([^&\\s\"']+)",
+    "description": "Extract OIDC flow artifacts that help identify auth implementation details.",
+    "output_filename": "openid_connect_artifacts.txt",
+    "importance_score": 6
   }
 ]

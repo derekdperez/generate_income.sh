@@ -1367,6 +1367,7 @@ class DomainSpider(scrapy.Spider):
         session_state_path: str | None = None,
         verbose: bool = False,
         progress: ProgressReporter | None = None,
+        wordlist_path_seeds: frozenset[str] | set[str] | None = None,
         *args: Any,
         **kwargs: Any,
     ):
@@ -1386,6 +1387,7 @@ class DomainSpider(scrapy.Spider):
         self.session_state_path = Path(session_state_path) if session_state_path else None
         self.verbose = verbose
         self.progress = progress
+        self.wordlist_path_seeds = frozenset(wordlist_path_seeds or ())
         self.initial_discovered_url_count = len(self.state.discovered_urls)
         self._last_nonverbose_progress_at = time.monotonic()
         self._last_nonverbose_new_url_count = 0
@@ -1394,12 +1396,15 @@ class DomainSpider(scrapy.Spider):
         self._nonverbose_progress_interval_seconds = 10.0
         self._nonverbose_progress_new_url_step = 10
 
-    def _build_crawl_request(self, url: str) -> scrapy.Request:
+    def _build_crawl_request(self, url: str, *, wordlist_path_guess: bool = False) -> scrapy.Request:
+        meta: dict[str, Any] = {"handle_httpstatus_all": True}
+        if wordlist_path_guess:
+            meta["wordlist_path_guess"] = True
         return scrapy.Request(
             url,
             callback=self.parse,
             errback=self.handle_request_failure,
-            meta={"handle_httpstatus_all": True},
+            meta=meta,
         )
 
     def _emit_verbose(self, message: str) -> None:
@@ -1463,7 +1468,8 @@ class DomainSpider(scrapy.Spider):
             if not is_allowed_domain(seed_url, self.root_domain):
                 continue
             scheduled += 1
-            yield self._build_crawl_request(seed_url)
+            wl_guess = seed_url in self.wordlist_path_seeds
+            yield self._build_crawl_request(seed_url, wordlist_path_guess=wl_guess)
         self._emit_nonverbose_progress_if_needed(force=True)
 
     def parse(self, response: scrapy.http.Response):
@@ -3321,24 +3327,91 @@ def probe_url_existence(
     }
 
 
+def load_file_path_wordlist_seed_urls(normalized_start_url: str, root_domain: str) -> list[str]:
+    """Build absolute http(s) URLs from ``resources/wordlists/file_path_list.txt`` for the crawl origin."""
+    if not FILE_PATH_WORDLIST_PATH.is_file():
+        return []
+    parsed = urlparse(normalized_start_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return []
+    origin_rd = get_root_domain(parsed.hostname)
+    if not origin_rd or origin_rd.lower() != str(root_domain).strip().lower():
+        return []
+    origin = urlunparse((parsed.scheme, parsed.netloc, "/", "", "", ""))
+    out: list[str] = []
+    try:
+        text = FILE_PATH_WORDLIST_PATH.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        path_part = raw if raw.startswith("/") else f"/{raw}"
+        full = normalize_url(urljoin(origin, path_part))
+        if not is_allowed_domain(full, root_domain):
+            continue
+        out.append(full)
+    return list(dict.fromkeys(out))
+
+
+def write_wordlist_guessed_paths_index(site_output_dir: Path, state: CrawlState) -> Path | None:
+    """Write ``guessed_paths/guessed_paths_index.json`` for wordlist crawl outcomes (hits = not 404/410)."""
+    seeds = getattr(state, "wordlist_path_seeds", None) or []
+    if not seeds:
+        return None
+    guessed_dir = site_output_dir / "guessed_paths"
+    guessed_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    hits = 0
+    visited_count = 0
+    for url in seeds:
+        rec = state.url_inventory.get(url)
+        visited = bool(rec and rec.was_crawled)
+        if visited:
+            visited_count += 1
+        code = rec.crawl_status_code if rec else None
+        try:
+            code_i = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            code_i = None
+        is_hit = visited and code_i is not None and code_i not in NOT_FOUND_STATUSES
+        if is_hit:
+            hits += 1
+        entries.append({"url": url, "visited": visited, "http_status": code_i, "hit": is_hit})
+    payload: dict[str, Any] = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "wordlist_source": FILE_PATH_WORDLIST_DISCOVERED_FROM,
+        "wordlist_paths_total": len(seeds),
+        "visited_count": visited_count,
+        "hits_count": hits,
+        "entries": entries,
+    }
+    out_path = guessed_dir / "guessed_paths_index.json"
+    write_json(out_path, payload)
+    return out_path
+
+
 def effective_crawl_seeds(
     start_urls: list[str],
     state: CrawlState,
     root_domain: str,
     max_pages: int,
+    wordlist_seed_urls: set[str] | None = None,
 ) -> list[str]:
     """URLs the spider would actually schedule in ``start()`` (matches DomainSpider logic)."""
     normalized_seeds = [normalize_url(u) for u in start_urls if isinstance(u, str) and u.strip()]
     remaining_budget = max(0, max_pages - len(state.visited_urls))
     if remaining_budget <= 0:
         return []
+    wl = wordlist_seed_urls or set()
     out: list[str] = []
     for seed_url in normalized_seeds:
         if seed_url in state.visited_urls:
             continue
         if not is_allowed_domain(seed_url, root_domain):
             continue
-        if not should_crawl_url(seed_url):
+        if seed_url not in wl and not should_crawl_url(seed_url):
             continue
         out.append(seed_url)
         if len(out) >= remaining_budget:
@@ -3449,6 +3522,24 @@ def crawl_domain(
             evidence_file=seed_evidence_file,
         )
 
+    wl_from_file = load_file_path_wordlist_seed_urls(normalized_start_url, root_domain)
+    state.wordlist_path_seeds = sorted(set(state.wordlist_path_seeds) | set(wl_from_file))
+    if wl_from_file:
+        seen_seed = set(start_urls)
+        for u in wl_from_file:
+            if u not in seen_seed:
+                start_urls.append(u)
+                seen_seed.add(u)
+        if progress is not None:
+            progress.info(
+                f"Appended {len(wl_from_file)} URL(s) from {FILE_PATH_WORDLIST_DISCOVERED_FROM} as crawl seeds "
+                f"({len(state.wordlist_path_seeds)} unique paths tracked; max_pages may limit how many run)"
+            )
+    elif progress is not None and not FILE_PATH_WORDLIST_PATH.is_file():
+        progress.info(f"No path wordlist crawl seeds: missing file {FILE_PATH_WORDLIST_PATH}")
+
+    wordlist_seed_set = set(state.wordlist_path_seeds)
+
     if session_path is not None:
         save_session_state(
             session_state_path=session_path,
@@ -3471,7 +3562,9 @@ def crawl_domain(
     if scrapy_log_file:
         process_settings["LOG_FILE"] = scrapy_log_file
 
-    queued = effective_crawl_seeds(start_urls, state, root_domain, max_pages)
+    queued = effective_crawl_seeds(
+        start_urls, state, root_domain, max_pages, wordlist_seed_urls=wordlist_seed_set
+    )
     if not queued and progress is not None:
         session_hint = f" Session file: {session_path.resolve()}" if session_path else ""
         progress.info(
@@ -3493,6 +3586,7 @@ def crawl_domain(
         session_state_path=str(session_path) if session_path is not None else None,
         verbose=verbose,
         progress=progress,
+        wordlist_path_seeds=wordlist_seed_set,
     )
     logging.getLogger("nightmare").info(
         "Scrapy reactor starting - Ctrl+C stops the crawl. "
@@ -3539,9 +3633,26 @@ BATCH_STATE_SCHEMA_VERSION = 1
 def _atomic_write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    # Antivirus/indexers can briefly lock JSON files on Windows right as we rotate state snapshots.
+    # Retry a few times instead of failing the entire batch run.
+    max_attempts = 8
+    try:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(0.05 * attempt)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def process_is_running(pid: int) -> bool:
@@ -3804,7 +3915,13 @@ def run_multi_target_orchestrator(
 
     def persist() -> None:
         state["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
-        _atomic_write_json(state_path, state)
+        try:
+            _atomic_write_json(state_path, state)
+        except OSError as exc:
+            print(
+                f"[batch] warning: state persist failed for {state_path}: {exc}. Continuing...",
+                flush=True,
+            )
 
     def terminate_running_workers() -> None:
         for _eid, (proc, lock_path, _ent) in list(active.items()):

@@ -28,6 +28,7 @@ import hashlib
 import html
 import itertools
 import json
+import os
 import re
 import signal
 import sys
@@ -1711,7 +1712,39 @@ def build_results_summary_payload(
         anomaly_summary_payload["master_per_route_inventory"] = master_routes
     if extras.get("master_per_route_inventory_truncated"):
         anomaly_summary_payload["master_per_route_inventory_truncated"] = True
+    ext_rows = extras.get("extractor_matches")
+    if isinstance(ext_rows, list):
+        anomaly_summary_payload["extractor_matches"] = ext_rows
     return anomaly_summary_payload
+
+
+def load_extractor_match_rows_for_master(
+    _master_root: Path, pairs: list[tuple[str, Path]]
+) -> list[dict[str, Any]]:
+    """Load per-domain ``extractor/summary.json`` rows for the master HTML table."""
+    rows: list[dict[str, Any]] = []
+    for _domain_label, domain_output in pairs:
+        summary_path = domain_output / "extractor" / "summary.json"
+        if not summary_path.is_file():
+            continue
+        try:
+            data = read_json(summary_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for item in data.get("rows", []):
+            if isinstance(item, dict):
+                rows.append(dict(item))
+    rows.sort(
+        key=lambda x: (
+            str(x.get("domain_label", "")).lower(),
+            str(x.get("url", "")).lower(),
+            str(x.get("filter_name", "")).lower(),
+            str(x.get("match_file", "")).lower(),
+        )
+    )
+    return rows
 
 
 def write_master_results_summary(
@@ -1748,6 +1781,7 @@ def write_master_results_summary(
     )
     folder_files = list_results_files_for_master(pairs)
     domain_inv_rows, per_route_rows, per_route_truncated = build_master_domain_inventory_tables(pairs)
+    extractor_match_rows = load_extractor_match_rows_for_master(master_root, pairs)
     payload = build_results_summary_payload(
         root_domain="all_domains",
         parameters_path=master_root,
@@ -1763,6 +1797,7 @@ def write_master_results_summary(
             "master_domain_inventory": domain_inv_rows,
             "master_per_route_inventory": per_route_rows,
             "master_per_route_inventory_truncated": per_route_truncated,
+            "extractor_matches": extractor_match_rows,
         },
     )
     json_path = master_root / "all_domains.results_summary.json"
@@ -2071,6 +2106,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
 
     inventory_sections_html = ""
     inventory_script_html = ""
+    extractor_section_html = ""
+    extractor_script_html = ""
     master_inv_rows = payload.get("master_domain_inventory")
     master_route_rows = payload.get("master_per_route_inventory")
     if str(payload.get("summary_scope", "")) == "master" and isinstance(master_inv_rows, list) and master_inv_rows:
@@ -2219,6 +2256,105 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
       enableResizableColumns("masterRouteInventoryTable");
 """
 
+    ext_rows = payload.get("extractor_matches")
+    if str(payload.get("summary_scope", "")) == "master" and isinstance(ext_rows, list) and ext_rows:
+        ext_lines: list[str] = []
+        ext_filter_placeholders = [
+            "Filter domain",
+            "Filter URL",
+            "Filter name",
+            "Filter importance",
+            "Filter scope",
+            "Filter side",
+            "Filter match text",
+            "Filter result file",
+            "Filter match file",
+        ]
+        ext_filter_cells = []
+        for col_idx, ph in enumerate(ext_filter_placeholders):
+            ext_filter_cells.append(
+                f'<th><input data-col="{col_idx}" type="text" placeholder="{html.escape(ph)}"></th>'
+            )
+        ext_thead_filters = '<tr class="filters">\n          ' + "\n          ".join(ext_filter_cells) + "\n        </tr>"
+        for er in ext_rows:
+            if not isinstance(er, dict):
+                continue
+            dl = str(er.get("domain_label", "") or "")
+            u = str(er.get("url", "") or "")
+            fn = str(er.get("filter_name", "") or "")
+            try:
+                imp = int(er.get("importance_score", 0) or 0)
+            except (TypeError, ValueError):
+                imp = 0
+            sc = str(er.get("scope", "") or "")
+            side = str(er.get("response_side", "") or "")
+            prev = str(er.get("match_preview", "") or "")
+            rf = str(er.get("result_file", "") or "")
+            mf = str(er.get("match_file", "") or "")
+            rt = str(er.get("result_type", "") or "")
+            extra = f"{prev}\n{rt}\n{fn}\n{imp}\n{sc}\n{side}".lower()
+            rf_h = file_href(rf)
+            mf_h = file_href(mf)
+            rf_cell = (
+                f"<td data-raw='{html.escape(rf)}'><a class='file-link' title='{html.escape(rf)}' "
+                f"href='{html.escape(rf_h)}' target='_blank' rel='noopener noreferrer'>result JSON</a></td>"
+                if rf
+                else "<td data-raw=''>—</td>"
+            )
+            mf_cell = (
+                f"<td data-raw='{html.escape(mf)}'><a class='file-link' title='{html.escape(mf)}' "
+                f"href='{html.escape(mf_h)}' target='_blank' rel='noopener noreferrer'>match record</a></td>"
+                if mf
+                else "<td data-raw=''>—</td>"
+            )
+            ext_lines.append(
+                f"<tr class='detail-data-row' data-search-extra='{html.escape(extra)}'>"
+                f"<td data-raw='{html.escape(dl)}'><span class='clip-cell' title='{html.escape(dl)}'>{html.escape(dl)}</span></td>"
+                f"<td data-raw='{html.escape(u)}'><span class='clip-cell' title='{html.escape(u)}'>{html.escape(u)}</span></td>"
+                f"<td data-raw='{html.escape(fn)}'><span class='clip-cell' title='{html.escape(fn)}'>{html.escape(fn)}</span></td>"
+                f"<td data-raw='{imp}'>{imp}</td>"
+                f"<td data-raw='{html.escape(sc)}'>{html.escape(sc)}</td>"
+                f"<td data-raw='{html.escape(side)}'>{html.escape(side)}</td>"
+                f"<td data-raw='{html.escape(prev)}'><span class='clip-cell' title='{html.escape(prev)}'>{html.escape(prev)}</span></td>"
+                f"{rf_cell}"
+                f"{mf_cell}"
+                "</tr>"
+            )
+        ext_tbody = "\n".join(ext_lines) if ext_lines else "<tr><td colspan='9'>No extractor matches</td></tr>"
+        nex = len([x for x in ext_rows if isinstance(x, dict)])
+        extractor_section_html = f"""
+  <section class="inventory-section">
+    <h3>Extractor matches (regex vs Fozzy responses)</h3>
+    <p class="inventory-note">
+      {nex} row(s) from per-domain <code>extractor/summary.json</code> (run <code>python extractor.py</code> after new Fozzy results).
+      Each match is also stored under <code>extractor/matches/</code> as its own JSON file.
+    </p>
+    <div class="count-note" id="extractorMatchesCount"></div>
+    <div class="scroll-inventory">
+      <table id="extractorMatchesTable" class="data-table">
+        <thead>
+          <tr>
+            <th data-type="string">Domain</th>
+            <th data-type="string">URL</th>
+            <th data-type="string">Filter name</th>
+            <th data-type="number">Importance</th>
+            <th data-type="string">Scope</th>
+            <th data-type="string">Side</th>
+            <th data-type="string">Match preview</th>
+            <th data-type="string">Result JSON</th>
+            <th data-type="string">Match record</th>
+          </tr>
+          {ext_thead_filters}
+        </thead>
+        <tbody>{ext_tbody}</tbody>
+      </table>
+    </div>
+  </section>"""
+        extractor_script_html = """
+      setupTable("extractorMatchesTable", "extractorMatchesCount");
+      enableResizableColumns("extractorMatchesTable");
+"""
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2282,6 +2418,7 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
 <body>
   <h2>{html.escape(report_heading)}</h2>
   {inventory_sections_html}
+  {extractor_section_html}
   <div class="detail-toolbar">
     {detail_group_by_select_html}
     <span class="detail-toolbar-hint">Click a group header to collapse or expand rows.</span>
@@ -2676,6 +2813,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         }}
       }});
 
+      {inventory_script_html}
+      {extractor_script_html}
       setupTable("detailTable", "detailCount");
       enableResizableColumns("detailTable");
     }})();
@@ -3080,15 +3219,25 @@ def folder_tree_max_mtime_ns(root: Path) -> int:
     max_ns = 0
     if not root.is_dir():
         return 0
-    try:
-        for path in root.rglob("*"):
-            try:
-                if path.is_file():
-                    max_ns = max(max_ns, path.stat().st_mtime_ns)
-            except OSError:
-                continue
-    except OSError:
-        pass
+    pending: list[str] = [os.fspath(root)]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if st.st_mtime_ns > max_ns:
+                        max_ns = st.st_mtime_ns
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return max_ns
 
 
@@ -3834,11 +3983,19 @@ def run_incremental_domains(args: argparse.Namespace) -> None:
         print(f"Master results summary HTML: {master_html} ({n_dom} domain output tree(s))")
         return
 
-    to_run = [
-        (domain_dir, params_path)
-        for domain_dir, params_path in pairs
-        if args.incremental_force or domain_folder_is_dirty_for_incremental(domain_dir, state)
-    ]
+    to_run: list[tuple[Path, Path]] = []
+    if args.incremental_force:
+        to_run = list(pairs)
+    else:
+        total = len(pairs)
+        print(
+            f"Incremental Fozzy: checking {total} domain folder(s) for changes under {scan_root}",
+            flush=True,
+        )
+        for idx, (domain_dir, params_path) in enumerate(pairs, start=1):
+            print(f"  [{idx}/{total}] {domain_dir.name}", flush=True)
+            if domain_folder_is_dirty_for_incremental(domain_dir, state):
+                to_run.append((domain_dir, params_path))
 
     if not to_run:
         print(
@@ -3902,5 +4059,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nFozzy interrupted by user (Ctrl+C). Partial outputs may have been saved.", flush=True)
         raise SystemExit(130)
-
-
