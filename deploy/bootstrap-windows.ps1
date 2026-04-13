@@ -11,9 +11,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Get-ScriptPaths {
-    $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $rootPath = Resolve-Path (Join-Path $scriptPath "..")
-    $deployPath = Resolve-Path $scriptPath
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir) {
+        if ($PSCommandPath) {
+            $scriptDir = Split-Path -Parent $PSCommandPath
+        } else {
+            $scriptDir = (Get-Location).Path
+        }
+    }
+    $rootPath = Resolve-Path (Join-Path $scriptDir "..")
+    $deployPath = Resolve-Path $scriptDir
     [pscustomobject]@{
         Root   = $rootPath.Path
         Deploy = $deployPath.Path

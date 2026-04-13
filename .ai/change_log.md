@@ -242,3 +242,6 @@
   - Central flow generates strong credentials, detects coordinator base URL, creates TLS PEM cert/key, writes deploy/.env and deploy/worker.env.generated, and starts central compose stack.
   - Worker flow writes worker .env from passed args (or copied worker.env.generated) and starts worker compose stack.
 - Why: enable end-to-end setup on Windows VMs without Bash/WSL.
+- Fixed deploy/bootstrap-windows.ps1 script-path resolution bug on Windows PowerShell where $MyInvocation.MyCommand.Path inside function scope can be absent.
+- Updated path bootstrap to use $PSScriptRoot with $PSCommandPath fallback.
+- Why: script crashed at startup with "property 'Path' cannot be found".
