@@ -37,5 +37,6 @@
   "no_truncated_for_ai_help": "Disable the truncated_for_ai flag in compact AI payloads.",
   "targets_file_help": "Text file of target hosts/URLs (one per line, # comments allowed). Used when no url argument is given. Relative paths resolve against the repo root (nightmare.py directory).",
   "batch_workers_help": "Maximum concurrent domain crawls when running without a url (each crawl runs in its own subprocess). Overrides config batch_workers.",
-  "batch_state_dir_help": "Directory for batch_run_state.json and per-domain lock files. Relative paths resolve under output/. Default: output/batch_state."
+  "batch_state_dir_help": "Directory for batch_run_state.json and per-domain lock files. Relative paths resolve under output/. Default: output/batch_state.",
+  "status_help": "Print a quick aggregate status report from on-disk output artifacts and exit."
 }

@@ -93,3 +93,10 @@
   - Initialized `master_log_files = payload.get("log_files")` before building JSON-escaped JS constants.
   - Removed later duplicate assignment and reused the initialized variable for master-only log viewer section checks.
 - Why: child domain workers crashed during `write_results_summary()` with `local variable 'master_log_files' referenced before assignment`, causing incremental domain failures.
+
+- Added `--status` quick-report mode to `nightmare.py`:
+  - New CLI flag `--status` prints aggregate progress without running crawl/batch work.
+  - Report fields include spidered target-domain coverage, total unique requested URLs, total unique parameterized GET routes, and top 10 domains by URL volume.
+  - Per-domain top-list rows include: unique URLs, parameterized GET count, extractor matches, anomalies, and reflections.
+  - Metrics are loaded from on-disk artifacts (`*_url_inventory.json`, `*.parameters.json`, `fozzy.summary.json`, `extractor/summary.json`) with safe fallbacks.
+- Why: provide a fast operational snapshot of campaign progress directly from existing output files.

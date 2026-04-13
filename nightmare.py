@@ -4088,6 +4088,189 @@ def run_multi_target_orchestrator(
         force_process_exit(1)
 
 
+def _read_json_dict_safe(path: Path) -> dict[str, Any]:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _count_results_json_files(results_dir: Path) -> tuple[int, int]:
+    anomalies = 0
+    reflections = 0
+    if not results_dir.is_dir():
+        return anomalies, reflections
+    for path in results_dir.iterdir():
+        if not path.is_file():
+            continue
+        lower = path.name.lower()
+        if not lower.endswith(".json"):
+            continue
+        if lower.startswith("anomaly_") or lower.startswith("anomoly_"):
+            anomalies += 1
+        elif lower.startswith("reflection_"):
+            reflections += 1
+    return anomalies, reflections
+
+
+def collect_status_metrics(output_root: Path) -> dict[str, dict[str, Any]]:
+    metrics_by_domain: dict[str, dict[str, Any]] = {}
+    if not output_root.is_dir():
+        return metrics_by_domain
+
+    for domain_dir in sorted(output_root.iterdir(), key=lambda p: p.name.lower()):
+        if not domain_dir.is_dir() or domain_dir.name.startswith("."):
+            continue
+        domain = domain_dir.name.strip().lower()
+        if not domain:
+            continue
+
+        unique_urls = 0
+        parameterized_get_requests = 0
+        extractor_matches = 0
+        anomalies = 0
+        reflections = 0
+
+        inventory_path = domain_dir / f"{domain}_url_inventory.json"
+        if not inventory_path.is_file():
+            candidates = sorted(
+                domain_dir.glob("*_url_inventory.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            inventory_path = candidates[0] if candidates else inventory_path
+        if inventory_path.is_file():
+            inv = _read_json_dict_safe(inventory_path)
+            try:
+                unique_urls = int(inv.get("total_urls", 0) or 0)
+            except Exception:
+                unique_urls = 0
+            if unique_urls <= 0:
+                entries = inv.get("entries", [])
+                if isinstance(entries, list):
+                    unique_urls = len(entries)
+
+        parameters_path = domain_dir / f"{domain}.parameters.json"
+        if not parameters_path.is_file():
+            candidates = sorted(
+                domain_dir.glob("*.parameters.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            parameters_path = candidates[0] if candidates else parameters_path
+        if parameters_path.is_file():
+            params_payload = _read_json_dict_safe(parameters_path)
+            entries = params_payload.get("entries", [])
+            if isinstance(entries, list):
+                parameterized_get_requests = len(entries)
+
+        fozzy_domain_dir = domain_dir / "fozzy-output" / domain
+        fozzy_summary_path = fozzy_domain_dir / f"{domain}.fozzy.summary.json"
+        if fozzy_summary_path.is_file():
+            fozzy_summary = _read_json_dict_safe(fozzy_summary_path)
+            totals = fozzy_summary.get("totals", {})
+            if isinstance(totals, dict):
+                try:
+                    anomalies = int(totals.get("anomalies", 0) or 0)
+                except Exception:
+                    anomalies = 0
+                try:
+                    reflections = int(totals.get("reflections", 0) or 0)
+                except Exception:
+                    reflections = 0
+        if anomalies <= 0 and reflections <= 0:
+            fallback_results_dir = fozzy_domain_dir / "results"
+            anomalies, reflections = _count_results_json_files(fallback_results_dir)
+
+        extractor_summary_path = fozzy_domain_dir / "extractor" / "summary.json"
+        if extractor_summary_path.is_file():
+            extractor_summary = _read_json_dict_safe(extractor_summary_path)
+            try:
+                extractor_matches = int(extractor_summary.get("match_count", 0) or 0)
+            except Exception:
+                extractor_matches = 0
+            if extractor_matches <= 0:
+                rows = extractor_summary.get("rows", [])
+                if isinstance(rows, list):
+                    extractor_matches = len(rows)
+
+        spidered = unique_urls > 0 or parameterized_get_requests > 0
+        metrics_by_domain[domain] = {
+            "domain": domain,
+            "spidered": spidered,
+            "unique_urls": max(0, int(unique_urls)),
+            "parameterized_get_requests": max(0, int(parameterized_get_requests)),
+            "extractor_matches": max(0, int(extractor_matches)),
+            "anomalies": max(0, int(anomalies)),
+            "reflections": max(0, int(reflections)),
+        }
+
+    return metrics_by_domain
+
+
+def resolve_target_domains_for_status(args: argparse.Namespace, config: dict[str, Any]) -> set[str]:
+    targets_raw = merged_value(args.targets_file, config, "targets_file", "targets.txt")
+    targets_path = Path(str(targets_raw)).expanduser()
+    if not targets_path.is_absolute():
+        targets_path = (BASE_DIR / targets_path).resolve()
+    if not targets_path.is_file():
+        return set()
+
+    target_rows = load_target_file_entries(targets_path)
+    roots: set[str] = set()
+    for row in target_rows:
+        entry: dict[str, Any] = {"raw": row.get("raw", "")}
+        prepare_target_entry_fields(entry)
+        root_domain = str(entry.get("root_domain", "") or "").strip().lower()
+        if root_domain:
+            roots.add(root_domain)
+    return roots
+
+
+def print_quick_status_report(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    metrics_by_domain = collect_status_metrics(OUTPUT_DIR)
+    spidered = [row for row in metrics_by_domain.values() if bool(row.get("spidered"))]
+    spidered_domains = len(spidered)
+    total_unique_urls = sum(int(row.get("unique_urls", 0) or 0) for row in spidered)
+    total_parameterized = sum(int(row.get("parameterized_get_requests", 0) or 0) for row in spidered)
+    target_domains = resolve_target_domains_for_status(args, config)
+
+    if target_domains:
+        spidered_target_count = sum(
+            1 for domain in target_domains if bool(metrics_by_domain.get(domain, {}).get("spidered"))
+        )
+        print(f"Spidered {spidered_target_count:,}/{len(target_domains):,} target domains.")
+    else:
+        print(f"Spidered {spidered_domains:,} domains.")
+
+    print(f"Requested {total_unique_urls:,} unique URLs from {spidered_domains:,} domains")
+    print(f"Discovered {total_parameterized:,} unique get requests with parameters")
+    print("Top Domains:")
+
+    ranked = sorted(
+        spidered,
+        key=lambda row: (
+            -int(row.get("unique_urls", 0) or 0),
+            -int(row.get("parameterized_get_requests", 0) or 0),
+            str(row.get("domain", "")),
+        ),
+    )
+    for row in ranked[:10]:
+        domain = str(row.get("domain", "") or "")
+        unique_urls = int(row.get("unique_urls", 0) or 0)
+        parameterized_get_requests = int(row.get("parameterized_get_requests", 0) or 0)
+        extractor_matches = int(row.get("extractor_matches", 0) or 0)
+        anomalies = int(row.get("anomalies", 0) or 0)
+        reflections = int(row.get("reflections", 0) or 0)
+        print(
+            f"{domain} - {unique_urls:,} unique URLs - "
+            f"{parameterized_get_requests:,} get requests with parameters - "
+            f"{extractor_matches:,} extractor matches / "
+            f"{anomalies:,} anomalies found / {reflections:,} reflections found"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     ensure_string_resources_loaded()
     parser = argparse.ArgumentParser(
@@ -4305,6 +4488,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=get_string_config_value(HELP_TEXTS, "batch_state_dir_help"),
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help=get_string_config_value(HELP_TEXTS, "status_help"),
+    )
     return parser.parse_args()
 
 
@@ -4332,6 +4520,10 @@ def main() -> None:
     config_path = resolve_config_path(args.config)
     config = read_json_file(config_path)
     apply_extension_config(config)
+
+    if bool(getattr(args, "status", False)):
+        print_quick_status_report(args, config)
+        return
 
     url_arg = optional_string(args.url)
     if not url_arg:
