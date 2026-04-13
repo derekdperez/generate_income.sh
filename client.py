@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shlex
+import ssl
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,23 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-def _http_get_json(base_url: str, path: str, token: str = "", query: dict[str, Any] | None = None) -> dict[str, Any]:
+def _normalize_server_base_url(raw: str) -> str:
+    s = str(raw or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if "://" not in s:
+        s = f"https://{s}"
+    return s
+
+
+def _http_get_json(
+    base_url: str,
+    path: str,
+    token: str = "",
+    query: dict[str, Any] | None = None,
+    *,
+    insecure_tls: bool = False,
+) -> dict[str, Any]:
     q = urlencode(query or {})
     suffix = f"{path}?{q}" if q else path
     url = f"{base_url.rstrip('/')}{suffix}"
@@ -41,8 +58,13 @@ def _http_get_json(base_url: str, path: str, token: str = "", query: dict[str, A
     if token.strip():
         headers["Authorization"] = f"Bearer {token.strip()}"
     req = Request(url=url, method="GET", headers=headers)
+    ssl_ctx: ssl.SSLContext | None = None
+    if insecure_tls and url.lower().startswith("https://"):
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urlopen(req, timeout=30) as rsp:
+        with urlopen(req, timeout=30, context=ssl_ctx) as rsp:
             raw = rsp.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -352,6 +374,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("action", nargs="?", default="status", choices=["status", "rollout"], help="Action to run")
     p.add_argument("--server-base-url", default=os.getenv("COORDINATOR_BASE_URL", env_from_file.get("COORDINATOR_BASE_URL", "")), help="Coordinator server base URL")
     p.add_argument("--api-token", default=os.getenv("COORDINATOR_API_TOKEN", env_from_file.get("COORDINATOR_API_TOKEN", "")), help="Coordinator API token")
+    p.add_argument(
+        "--insecure-tls",
+        action="store_true",
+        help="Do not verify HTTPS certificates (use for bootstrap self-signed certs on the central host)",
+    )
     p.add_argument("--stale-after-seconds", type=int, default=180, help="Heartbeat freshness window for online/stale worker status")
     p.add_argument("--skip-coordinator", action="store_true", help="Do not call coordinator HTTP APIs (use when this host cannot reach COORDINATOR_BASE_URL)")
     p.add_argument("--skip-ssm", action="store_true", help="Skip AWS SSM per-VM docker status checks")
@@ -377,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print("[coordinator] skipped (--skip-coordinator)", flush=True)
     else:
-        base_url = str(args.server_base_url or "").strip().rstrip("/")
+        base_url = _normalize_server_base_url(str(args.server_base_url or ""))
         if not base_url:
             raise ValueError("server base URL is required (use --server-base-url or COORDINATOR_BASE_URL)")
 
@@ -387,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
             path="/api/coord/workers",
             token=token,
             query={"stale_after_seconds": max(15, int(args.stale_after_seconds or 180))},
+            insecure_tls=bool(args.insecure_tls),
         )
         _print_coordinator_worker_status(workers_payload)
 
