@@ -13,6 +13,7 @@ Usage:
     python extractor.py --wordlist path/to/extractor_list.txt
     python extractor.py --trim
     python extractor.py --trim --trim-remove "noisy_rule,other_rule" --trim-yes
+    python extractor.py --trim --trim-disk-scan
 """
 
 from __future__ import annotations
@@ -243,6 +244,120 @@ def _trim_progress(msg: str) -> None:
     print(f"[extractor:trim] {msg}", flush=True)
 
 
+def _trim_domain_pairs(
+    scan_root: Path,
+    *,
+    domain_filter: str | None = None,
+) -> list[tuple[str, Path]]:
+    domain_filter_text = str(domain_filter or "").strip().lower()
+    pairs: list[tuple[str, Path]] = []
+    for domain_label, domain_output in discover_pairs(scan_root):
+        if domain_filter_text:
+            if (
+                str(domain_label).strip().lower() != domain_filter_text
+                and str(domain_output.name).strip().lower() != domain_filter_text
+            ):
+                continue
+        pairs.append((domain_label, domain_output))
+    return pairs
+
+
+def _extractor_summary_rows_trustworthy(data: dict[str, Any]) -> bool:
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        return False
+    mc = data.get("match_count")
+    if isinstance(mc, int) and mc != len(rows):
+        return False
+    return True
+
+
+def _collect_extractor_match_json_paths_for_domain(domain_output: Path) -> list[Path]:
+    md = domain_output / "extractor" / "matches"
+    out: list[Path] = []
+    if not md.is_dir():
+        return out
+    try:
+        for p in md.iterdir():
+            if p.is_file() and p.suffix.lower() == ".json" and p.name.startswith("m_"):
+                out.append(p)
+    except OSError:
+        return out
+    return out
+
+
+def _merge_rule_counts(target: dict[str, int], part: dict[str, int]) -> None:
+    for k, v in part.items():
+        target[k] = target.get(k, 0) + int(v or 0)
+
+
+def aggregate_rule_match_counts_hybrid(
+    scan_root: Path,
+    *,
+    domain_filter: str | None = None,
+    workers: int = 8,
+    force_disk_scan: bool = False,
+) -> tuple[dict[str, int], list[tuple[str, Path]]]:
+    """Count matches per rule using ``extractor/summary.json`` when trustworthy; otherwise scan ``m_*.json``.
+
+    Returns ``(counts, slow_pairs)`` where ``slow_pairs`` lists trees that needed a disk scan for counting.
+    If ``force_disk_scan`` is true, behavior matches :func:`aggregate_rule_match_counts_from_disk` and
+    ``slow_pairs`` is empty.
+    """
+    if force_disk_scan:
+        return aggregate_rule_match_counts_from_disk(
+            scan_root, domain_filter=domain_filter, workers=workers
+        ), []
+
+    merged: dict[str, int] = {}
+    slow_pairs: list[tuple[str, Path]] = []
+    trusted = 0
+    for domain_label, domain_output in _trim_domain_pairs(scan_root, domain_filter=domain_filter):
+        ext = domain_output / "extractor"
+        sp = ext / "summary.json"
+        mdir = ext / "matches"
+        if not mdir.is_dir():
+            continue
+        if not sp.is_file():
+            slow_pairs.append((domain_label, domain_output))
+            continue
+        try:
+            data = read_json(sp)
+        except (OSError, json.JSONDecodeError, TypeError):
+            slow_pairs.append((domain_label, domain_output))
+            continue
+        if not isinstance(data, dict) or not _extractor_summary_rows_trustworthy(data):
+            slow_pairs.append((domain_label, domain_output))
+            continue
+        for row in data["rows"]:
+            if not isinstance(row, dict):
+                continue
+            fn = str(row.get("filter_name", "") or "").strip()
+            if fn:
+                merged[fn] = merged.get(fn, 0) + 1
+        trusted += 1
+
+    _trim_progress(
+        f"fast path: used extractor/summary.json for {trusted} domain tree(s); "
+        f"{len(slow_pairs)} tree(s) need disk scan for counts"
+    )
+
+    if slow_pairs:
+        for i, (domain_label, domain_output) in enumerate(slow_pairs, start=1):
+            _trim_progress(f"disk count {i}/{len(slow_pairs)}: {domain_label!r} …")
+            files = _collect_extractor_match_json_paths_for_domain(domain_output)
+            if not files:
+                continue
+            w = max(1, min(int(workers or 1), 32, len(files)))
+            chunk_size = max(1, (len(files) + w - 1) // w)
+            chunks = [files[j : j + chunk_size] for j in range(0, len(files), chunk_size)]
+            with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+                for part in executor.map(_count_rules_in_chunk, chunks):
+                    _merge_rule_counts(merged, part)
+
+    return merged, slow_pairs
+
+
 def _collect_extractor_match_json_paths(
     scan_root: Path,
     *,
@@ -375,6 +490,89 @@ def delete_extractor_matches_for_rules(
             done_chunks += 1
             _trim_progress(f"Deleting matches: chunk {done_chunks}/{n_chunks} done ({total:,} file(s) removed so far)")
     return total
+
+
+def delete_extractor_matches_for_rules_on_tree(
+    domain_output: Path,
+    rule_names: set[str],
+    workers: int,
+) -> int:
+    """Like :func:`delete_extractor_matches_for_rules` but for a single Fozzy domain output tree."""
+    if not rule_names:
+        return 0
+    files = _collect_extractor_match_json_paths_for_domain(domain_output)
+    if not files:
+        return 0
+    w = max(1, min(int(workers or 1), 32, len(files)))
+    chunk_size = max(1, (len(files) + w - 1) // w)
+    chunks = [files[i : i + chunk_size] for i in range(0, len(files), chunk_size)]
+    total = 0
+    n_chunks = len(chunks)
+    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
+        futs = [executor.submit(_delete_matches_chunk, ch, rule_names) for ch in chunks]
+        for fut in as_completed(futs):
+            total += int(fut.result() or 0)
+    return total
+
+
+def trim_domain_using_summary_file(
+    domain_label: str,
+    domain_output: Path,
+    remove_names: set[str],
+) -> tuple[int, bool, bool]:
+    """Remove rows for ``remove_names``, delete their ``match_file`` paths, rewrite summary. No full-disk scan.
+
+    Returns ``(files_removed, success, summary_rewritten)``.
+    """
+    if not remove_names:
+        return 0, True, False
+    sp = domain_output / "extractor" / "summary.json"
+    if not sp.is_file():
+        return 0, False, False
+    try:
+        data = read_json(sp)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return 0, False, False
+    if not isinstance(data, dict):
+        return 0, False, False
+    rows_in = data.get("rows")
+    if not isinstance(rows_in, list):
+        return 0, False, False
+
+    kept: list[dict[str, Any]] = []
+    to_unlink: list[Path] = []
+    for row in rows_in:
+        if not isinstance(row, dict):
+            continue
+        fn = str(row.get("filter_name", "") or "").strip()
+        mf = str(row.get("match_file", "") or "").strip()
+        if fn in remove_names:
+            if mf:
+                to_unlink.append(Path(mf))
+            continue
+        kept.append(row)
+
+    if len(kept) == len(rows_in) and not to_unlink:
+        return 0, True, False
+
+    removed_files = 0
+    for p in to_unlink:
+        try:
+            existed = p.is_file()
+            p.unlink(missing_ok=True)
+            if existed:
+                removed_files += 1
+        except OSError:
+            pass
+
+    data["rows"] = kept
+    data["match_count"] = len(kept)
+    data["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    sp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _trim_progress(
+        f"updated summary for {domain_label!r}: removed {removed_files:,} match file(s); {len(kept):,} row(s) left"
+    )
+    return removed_files, True, True
 
 
 def detail_record_to_summary_row(detail: dict[str, Any]) -> dict[str, Any]:
@@ -547,6 +745,53 @@ def parse_trim_remove_cli(spec: str) -> set[str]:
     return out
 
 
+def apply_trim_effects(
+    scan_root: Path,
+    remove_names: set[str],
+    *,
+    domain_filter: str | None,
+    workers: int,
+    trim_disk_scan: bool,
+    slow_pairs: list[tuple[str, Path]],
+) -> tuple[int, int]:
+    """Delete match JSON and refresh summaries. Returns ``(files_removed, domain_trees_updated)``."""
+    if not remove_names:
+        return 0, 0
+
+    if trim_disk_scan:
+        deleted = delete_extractor_matches_for_rules(
+            scan_root, remove_names, domain_filter=domain_filter, workers=workers
+        )
+        rebuilt = rebuild_all_extractor_summaries_after_trim(scan_root, domain_filter=domain_filter)
+        return deleted, rebuilt
+
+    slow_set = {lbl for lbl, _ in slow_pairs}
+    deleted = 0
+    touched = 0
+    for domain_label, domain_output in _trim_domain_pairs(scan_root, domain_filter=domain_filter):
+        ext = domain_output / "extractor"
+        if not ext.is_dir():
+            continue
+        if domain_label in slow_set:
+            _trim_progress(f"delete + rebuild (disk): {domain_label!r} …")
+            deleted += delete_extractor_matches_for_rules_on_tree(domain_output, remove_names, workers)
+            rebuild_extractor_summary_for_domain(domain_label, domain_output)
+            touched += 1
+            continue
+        n, ok, wrote = trim_domain_using_summary_file(domain_label, domain_output, remove_names)
+        if ok:
+            deleted += n
+            if wrote:
+                touched += 1
+            continue
+        _trim_progress(f"summary-based trim failed for {domain_label!r}; using disk delete …")
+        deleted += delete_extractor_matches_for_rules_on_tree(domain_output, remove_names, workers)
+        rebuild_extractor_summary_for_domain(domain_label, domain_output)
+        touched += 1
+
+    return deleted, touched
+
+
 def run_trim_mode(
     scan_root: Path,
     wordlist_path: Path,
@@ -556,14 +801,27 @@ def run_trim_mode(
     trim_remove: str | None = None,
     trim_yes: bool = False,
     no_backup: bool = False,
+    trim_disk_scan: bool = False,
 ) -> int:
     scan_root = scan_root.resolve()
     _trim_progress(f"starting — scan_root={scan_root} workers={workers}")
+    if trim_disk_scan:
+        _trim_progress("mode: full disk scan (per-match JSON read) — use only if summaries are untrustworthy")
+    else:
+        _trim_progress("mode: fast (per-domain extractor/summary.json + targeted deletes)")
     if domain_filter:
         _trim_progress(f"domain filter={domain_filter!r}")
     wl_names = load_wordlist_rule_names(wordlist_path)
 
-    counts = aggregate_rule_match_counts_from_disk(scan_root, domain_filter=domain_filter, workers=workers)
+    if trim_disk_scan:
+        counts = aggregate_rule_match_counts_from_disk(
+            scan_root, domain_filter=domain_filter, workers=workers
+        )
+        slow_pairs: list[tuple[str, Path]] = []
+    else:
+        counts, slow_pairs = aggregate_rule_match_counts_hybrid(
+            scan_root, domain_filter=domain_filter, workers=workers, force_disk_scan=False
+        )
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
 
     total_matches = sum(counts.values())
@@ -635,13 +893,18 @@ def run_trim_mode(
     if not no_backup:
         print(f"[extractor:trim] wordlist backup: {wordlist_path.with_suffix(wordlist_path.suffix + '.trim.bak')}", flush=True)
 
-    deleted = delete_extractor_matches_for_rules(
-        scan_root, remove_names, domain_filter=domain_filter, workers=workers
+    _trim_progress("applying deletions and updating extractor summaries …")
+    deleted, rebuilt = apply_trim_effects(
+        scan_root,
+        remove_names,
+        domain_filter=domain_filter,
+        workers=workers,
+        trim_disk_scan=trim_disk_scan,
+        slow_pairs=slow_pairs if not trim_disk_scan else [],
     )
     print(f"[extractor:trim] deleted {deleted} match file(s).", flush=True)
 
-    rebuilt = rebuild_all_extractor_summaries_after_trim(scan_root, domain_filter=domain_filter)
-    print(f"[extractor:trim] rebuilt extractor summary.json for {rebuilt} domain tree(s).", flush=True)
+    print(f"[extractor:trim] updated extractor summary.json for {rebuilt} domain tree(s).", flush=True)
     print(
         "[extractor:trim] done. Re-run `python extractor.py --force` if you want to re-scan Fozzy results with the new wordlist.",
         flush=True,
@@ -998,6 +1261,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="With --trim: do not write <wordlist>.trim.bak before saving the wordlist.",
     )
+    p.add_argument(
+        "--trim-disk-scan",
+        action="store_true",
+        help=(
+            "With --trim: read every extractor/matches/m_*.json (slow, legacy). "
+            "Default uses per-domain extractor/summary.json for counts and deletes."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -1031,6 +1302,7 @@ def main(argv: list[str] | None = None) -> int:
             trim_remove=str(args.trim_remove).strip() if args.trim_remove else None,
             trim_yes=bool(getattr(args, "trim_yes", False)),
             no_backup=bool(getattr(args, "trim_no_backup", False)),
+            trim_disk_scan=bool(getattr(args, "trim_disk_scan", False)),
         )
 
     if log_file_raw:
