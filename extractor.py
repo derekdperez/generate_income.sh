@@ -14,6 +14,7 @@ Usage:
     python extractor.py --trim
     python extractor.py --trim --trim-remove "noisy_rule,other_rule" --trim-yes
     python extractor.py --trim --trim-disk-scan
+    python extractor.py --rebuild-trim-stats
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ STATE_FILE_NAME = ".extractor_incremental_state.json"
 MAX_MATCHES_PER_RULE_PER_RESULT_FILE = 300
 TRIM_ENUM_PROGRESS_EVERY = 100_000
 TRIM_REBUILD_PROGRESS_EVERY = 50_000
+# Tiny sidecar so --trim never has to json.load() multi-GB summary.json (see trim_stats.json).
+TRIM_STATS_FILENAME = "trim_stats.json"
+TRIM_MAX_SUMMARY_JSON_BYTES = 48 * 1024 * 1024
 
 _EXTRACTOR_LOG_HANDLE: Any = None
 
@@ -244,6 +248,64 @@ def _trim_progress(msg: str) -> None:
     print(f"[extractor:trim] {msg}", flush=True)
 
 
+def write_trim_stats_from_rows(extractor_root: Path, domain_label: str, rows: list[Any]) -> Path:
+    """Write ``extractor/trim_stats.json`` (small) with per-rule counts; safe to read during ``--trim``."""
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        fn = str(row.get("filter_name", "") or "").strip()
+        if fn:
+            counts[fn] = counts.get(fn, 0) + 1
+    path = extractor_root / TRIM_STATS_FILENAME
+    payload = {
+        "version": 1,
+        "domain_label": domain_label,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "row_count": len(rows),
+        "counts_by_filter_name": dict(counts),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def write_trim_stats_from_counts(
+    extractor_root: Path,
+    domain_label: str,
+    *,
+    counts_by_filter_name: dict[str, int],
+    row_count: int,
+) -> Path:
+    path = extractor_root / TRIM_STATS_FILENAME
+    payload = {
+        "version": 1,
+        "domain_label": domain_label,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "row_count": int(row_count),
+        "counts_by_filter_name": dict(counts_by_filter_name),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _merge_trim_stats_counts(merged: dict[str, int], data: dict[str, Any]) -> bool:
+    raw = data.get("counts_by_filter_name")
+    if not isinstance(raw, dict):
+        return False
+    any_n = False
+    for k, v in raw.items():
+        key = str(k or "").strip()
+        if not key:
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        any_n = True
+        merged[key] = merged.get(key, 0) + n
+    return any_n
+
+
 def _trim_domain_pairs(
     scan_root: Path,
     *,
@@ -316,12 +378,8 @@ def aggregate_rule_match_counts_hybrid(
     workers: int = 8,
     force_disk_scan: bool = False,
 ) -> tuple[dict[str, int], list[tuple[str, Path]]]:
-    """Count matches per rule using ``extractor/summary.json`` when trustworthy; otherwise scan ``m_*.json``.
+    """Prefer ``trim_stats.json``, else bounded-size ``summary.json``, else scan ``m_*.json`` on disk."""
 
-    Returns ``(counts, slow_pairs)`` where ``slow_pairs`` lists trees that needed a disk scan for counting.
-    If ``force_disk_scan`` is true, behavior matches :func:`aggregate_rule_match_counts_from_disk` and
-    ``slow_pairs`` is empty.
-    """
     if force_disk_scan:
         return aggregate_rule_match_counts_from_disk(
             scan_root, domain_filter=domain_filter, workers=workers
@@ -329,16 +387,44 @@ def aggregate_rule_match_counts_hybrid(
 
     merged: dict[str, int] = {}
     slow_pairs: list[tuple[str, Path]] = []
-    trusted = 0
+    from_stats = 0
+    from_summary = 0
     for domain_label, domain_output in _trim_domain_pairs(scan_root, domain_filter=domain_filter):
         ext = domain_output / "extractor"
+        tsp = ext / TRIM_STATS_FILENAME
         sp = ext / "summary.json"
         mdir = ext / "matches"
         if not mdir.is_dir():
             continue
+
+        if tsp.is_file():
+            try:
+                tdata = read_json(tsp)
+            except (OSError, json.JSONDecodeError, TypeError):
+                tdata = {}
+            if isinstance(tdata, dict) and _merge_trim_stats_counts(merged, tdata):
+                from_stats += 1
+                continue
+
         if not sp.is_file():
             slow_pairs.append((domain_label, domain_output))
             continue
+
+        try:
+            sz = sp.stat().st_size
+        except OSError:
+            slow_pairs.append((domain_label, domain_output))
+            continue
+
+        if sz > TRIM_MAX_SUMMARY_JSON_BYTES:
+            _trim_progress(
+                f"{domain_label!r}: summary.json is {sz:,} B (cap {TRIM_MAX_SUMMARY_JSON_BYTES:,} B) — "
+                f"run `python extractor.py --rebuild-trim-stats` (or re-run extract) to add {TRIM_STATS_FILENAME}, "
+                f"else this tree will be disk-scanned for trim counts"
+            )
+            slow_pairs.append((domain_label, domain_output))
+            continue
+
         try:
             data = read_json(sp)
         except (OSError, json.JSONDecodeError, TypeError):
@@ -358,7 +444,7 @@ def aggregate_rule_match_counts_hybrid(
         if isinstance(mc, int) and mc != len(rows):
             _trim_progress(
                 f"note: {domain_label!r} summary match_count ({mc}) != len(rows) ({len(rows)}); "
-                f"using rows only for rule totals (no full-disk count)"
+                f"using rows only for rule totals"
             )
         for row in rows:
             if not isinstance(row, dict):
@@ -366,11 +452,11 @@ def aggregate_rule_match_counts_hybrid(
             fn = str(row.get("filter_name", "") or "").strip()
             if fn:
                 merged[fn] = merged.get(fn, 0) + 1
-        trusted += 1
+        from_summary += 1
 
     _trim_progress(
-        f"fast path: used extractor/summary.json for {trusted} domain tree(s); "
-        f"{len(slow_pairs)} tree(s) need disk scan for counts"
+        f"count sources: {TRIM_STATS_FILENAME}={from_stats} domain(s), summary.json={from_summary} domain(s); "
+        f"{len(slow_pairs)} tree(s) may need disk scan for counts"
     )
 
     if slow_pairs:
@@ -614,6 +700,7 @@ def trim_domain_using_summary_file(
     data["match_count"] = len(kept)
     data["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     sp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_trim_stats_from_rows(extractor_root, domain_label, kept)
     _trim_progress(
         f"updated summary for {domain_label!r}: removed {removed_files:,} match file(s); {len(kept):,} row(s) left"
     )
@@ -682,7 +769,85 @@ def rebuild_extractor_summary_for_domain(
     }
     ensure_directory(extractor_root)
     summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_trim_stats_from_rows(extractor_root, domain_label, rows_out)
     return summary_path
+
+
+def run_rebuild_trim_stats(
+    scan_root: Path,
+    *,
+    domain_filter: str | None = None,
+    workers: int = 8,
+) -> int:
+    """Create ``extractor/trim_stats.json`` per domain so ``--trim`` never loads huge ``summary.json``."""
+    scan_root = scan_root.resolve()
+    print(f"[extractor] rebuilding {TRIM_STATS_FILENAME} under {scan_root} …", flush=True)
+    n = 0
+    for domain_label, domain_output in _trim_domain_pairs(scan_root, domain_filter=domain_filter):
+        ext = domain_output / "extractor"
+        sp = ext / "summary.json"
+        tsp = ext / TRIM_STATS_FILENAME
+        mdir = ext / "matches"
+        if not mdir.is_dir():
+            continue
+        if tsp.is_file():
+            continue
+        if sp.is_file():
+            try:
+                sz = sp.stat().st_size
+            except OSError:
+                continue
+            if sz <= TRIM_MAX_SUMMARY_JSON_BYTES:
+                try:
+                    data = read_json(sp)
+                except (OSError, json.JSONDecodeError, TypeError):
+                    continue
+                rows = data.get("rows") if isinstance(data, dict) else None
+                if not isinstance(rows, list):
+                    continue
+                write_trim_stats_from_rows(ext, domain_label, rows)
+                print(
+                    f"[extractor] {domain_label!r}: wrote {TRIM_STATS_FILENAME} from summary ({len(rows):,} rows)",
+                    flush=True,
+                )
+                n += 1
+                continue
+            print(
+                f"[extractor] {domain_label!r}: large summary ({sz:,} B); counting match files …",
+                flush=True,
+            )
+        elif not _matches_dir_has_any_m_json(mdir):
+            continue
+        else:
+            print(f"[extractor] {domain_label!r}: no summary.json; counting match files …", flush=True)
+
+        files = _collect_extractor_match_json_paths_for_domain(
+            domain_output,
+            label=f"listing {domain_label!r}",
+        )
+        if not files:
+            continue
+        w = max(1, min(int(workers or 1), 32, len(files)))
+        chunk_size = max(1, (len(files) + w - 1) // w)
+        chunks = [files[i : i + chunk_size] for i in range(0, len(files), chunk_size)]
+        sub: dict[str, int] = {}
+        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            for part in executor.map(_count_rules_in_chunk, chunks):
+                _merge_rule_counts(sub, part)
+        total_hits = sum(sub.values())
+        write_trim_stats_from_counts(
+            ext,
+            domain_label,
+            counts_by_filter_name=sub,
+            row_count=total_hits,
+        )
+        print(
+            f"[extractor] {domain_label!r}: wrote {TRIM_STATS_FILENAME} from disk ({total_hits:,} match file(s))",
+            flush=True,
+        )
+        n += 1
+    print(f"[extractor] wrote {n} {TRIM_STATS_FILENAME} file(s).", flush=True)
+    return 0
 
 
 def rebuild_all_extractor_summaries_after_trim(scan_root: Path, *, domain_filter: str | None = None) -> int:
@@ -1071,6 +1236,7 @@ def run_extractors_for_domain(
     }
     ensure_directory(extractor_root)
     summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_trim_stats_from_rows(extractor_root, domain_label, rows_out)
     return match_count, summary_path
 
 
@@ -1314,6 +1480,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Default uses per-domain extractor/summary.json for counts and deletes."
         ),
     )
+    p.add_argument(
+        "--rebuild-trim-stats",
+        action="store_true",
+        help=(
+            "Write extractor/trim_stats.json for each domain (fast rule totals for --trim) without re-running "
+            "regex extraction. Skips trees that already have trim_stats.json."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -1336,6 +1510,14 @@ def main(argv: list[str] | None = None) -> int:
     wordlist = Path(wordlist_raw).expanduser()
     if not wordlist.is_absolute():
         wordlist = (EXTRACTOR_BASE / wordlist).resolve()
+
+    if bool(getattr(args, "rebuild_trim_stats", False)):
+        domain_filter_text = str(domain_filter).strip() if domain_filter is not None else ""
+        return run_rebuild_trim_stats(
+            scan_root,
+            domain_filter=domain_filter_text or None,
+            workers=workers,
+        )
 
     if bool(getattr(args, "trim", False)):
         domain_filter_text = str(domain_filter).strip() if domain_filter is not None else ""
