@@ -262,27 +262,45 @@ def _trim_domain_pairs(
     return pairs
 
 
-def _extractor_summary_rows_trustworthy(data: dict[str, Any]) -> bool:
-    rows = data.get("rows")
-    if not isinstance(rows, list):
-        return False
-    mc = data.get("match_count")
-    if isinstance(mc, int) and mc != len(rows):
-        return False
-    return True
+def _summary_rows_ok_for_trim_counts(data: dict[str, Any]) -> bool:
+    """True when we can aggregate per-rule counts from ``rows`` without scanning every ``m_*.json``."""
+    return isinstance(data.get("rows"), list)
 
 
-def _collect_extractor_match_json_paths_for_domain(domain_output: Path) -> list[Path]:
+def _matches_dir_has_any_m_json(matches_dir: Path) -> bool:
+    """Return True if at least one ``m_*.json`` exists (stops after the first hit)."""
+    if not matches_dir.is_dir():
+        return False
+    try:
+        for p in matches_dir.iterdir():
+            if p.is_file() and p.suffix.lower() == ".json" and p.name.startswith("m_"):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _collect_extractor_match_json_paths_for_domain(
+    domain_output: Path,
+    *,
+    label: str | None = None,
+) -> list[Path]:
     md = domain_output / "extractor" / "matches"
     out: list[Path] = []
     if not md.is_dir():
         return out
+    lbl = label or f"Listing match files ({domain_output.name})"
     try:
         for p in md.iterdir():
             if p.is_file() and p.suffix.lower() == ".json" and p.name.startswith("m_"):
                 out.append(p)
+                n = len(out)
+                if n > 0 and n % TRIM_ENUM_PROGRESS_EVERY == 0:
+                    _trim_progress(f"{lbl}: {n:,} path(s) …")
     except OSError:
         return out
+    if out:
+        _trim_progress(f"{lbl}: done — {len(out):,} match file(s) to scan.")
     return out
 
 
@@ -326,10 +344,23 @@ def aggregate_rule_match_counts_hybrid(
         except (OSError, json.JSONDecodeError, TypeError):
             slow_pairs.append((domain_label, domain_output))
             continue
-        if not isinstance(data, dict) or not _extractor_summary_rows_trustworthy(data):
+        if not isinstance(data, dict) or not _summary_rows_ok_for_trim_counts(data):
             slow_pairs.append((domain_label, domain_output))
             continue
-        for row in data["rows"]:
+        rows = data["rows"]
+        if len(rows) == 0 and _matches_dir_has_any_m_json(mdir):
+            slow_pairs.append((domain_label, domain_output))
+            _trim_progress(
+                f"{domain_label!r}: summary has 0 rows but matches/ is non-empty; disk scan needed for counts"
+            )
+            continue
+        mc = data.get("match_count")
+        if isinstance(mc, int) and mc != len(rows):
+            _trim_progress(
+                f"note: {domain_label!r} summary match_count ({mc}) != len(rows) ({len(rows)}); "
+                f"using rows only for rule totals (no full-disk count)"
+            )
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             fn = str(row.get("filter_name", "") or "").strip()
@@ -345,15 +376,29 @@ def aggregate_rule_match_counts_hybrid(
     if slow_pairs:
         for i, (domain_label, domain_output) in enumerate(slow_pairs, start=1):
             _trim_progress(f"disk count {i}/{len(slow_pairs)}: {domain_label!r} …")
-            files = _collect_extractor_match_json_paths_for_domain(domain_output)
+            files = _collect_extractor_match_json_paths_for_domain(
+                domain_output,
+                label=f"Listing {domain_label!r} matches",
+            )
             if not files:
                 continue
             w = max(1, min(int(workers or 1), 32, len(files)))
             chunk_size = max(1, (len(files) + w - 1) // w)
             chunks = [files[j : j + chunk_size] for j in range(0, len(files), chunk_size)]
-            with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-                for part in executor.map(_count_rules_in_chunk, chunks):
-                    _merge_rule_counts(merged, part)
+            n_chunks = len(chunks)
+            _trim_progress(
+                f"disk count {i}/{len(slow_pairs)} ({domain_label!r}): "
+                f"reading {len(files):,} file(s) in {n_chunks} chunk(s) …"
+            )
+            done_chunks = 0
+            with ThreadPoolExecutor(max_workers=n_chunks) as executor:
+                futures = [executor.submit(_count_rules_in_chunk, ch) for ch in chunks]
+                for fut in as_completed(futures):
+                    _merge_rule_counts(merged, fut.result())
+                    done_chunks += 1
+                    _trim_progress(
+                        f"disk count {domain_label!r}: chunk {done_chunks}/{n_chunks} done"
+                    )
 
     return merged, slow_pairs
 
