@@ -100,3 +100,11 @@
   - Per-domain top-list rows include: unique URLs, parameterized GET count, extractor matches, anomalies, and reflections.
   - Metrics are loaded from on-disk artifacts (`*_url_inventory.json`, `*.parameters.json`, `fozzy.summary.json`, `extractor/summary.json`) with safe fallbacks.
 - Why: provide a fast operational snapshot of campaign progress directly from existing output files.
+
+- Added soft-404 filtering for HTTP 200 pages in `nightmare.py` so non-existent pages are not treated as successful:
+  - New response heuristics detect likely soft-404 pages using title markers and common not-found phrases on small 200 responses.
+  - `probe_url_existence()` now validates HEAD 200 with a follow-up GET and marks soft-404 pages as `exists_confirmed=false`.
+  - Crawl parser now marks soft-404 responses and skips link extraction for those pages.
+  - URL inventory/source-of-truth output now excludes soft-404 records from effective `entries`/`total_urls` while preserving raw data in `entries_raw` and `total_urls_raw`.
+  - Wordlist guessed-path hit logic now treats soft-404 responses as misses.
+- Why: 200 status alone is not a reliable existence signal; generic “page not found” templates were inflating discovered/existing counts.

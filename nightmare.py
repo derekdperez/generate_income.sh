@@ -49,6 +49,21 @@ except Exception:  # pragma: no cover - optional dependency fallback
 
 
 NOT_FOUND_STATUSES = {404, 410}
+SOFT_404_SMALL_BODY_MAX_BYTES = 16 * 1024
+SOFT_404_TITLE_PATTERN = re.compile(
+    r"<title[^>]*>[^<]*(?:404|not found|page not found|does not exist|cannot be found|no such)[^<]*</title>",
+    flags=re.IGNORECASE,
+)
+SOFT_404_PHRASES = (
+    "page not found",
+    "does not exist",
+    "cannot be found",
+    "no such page",
+    "not found",
+    "the page you requested could not be found",
+    "the requested url was not found",
+    "this page is unavailable",
+)
 BASE_DIR = Path(__file__).resolve().parent
 FILE_PATH_WORDLIST_PATH = BASE_DIR / "resources" / "wordlists" / "file_path_list.txt"
 FILE_PATH_WORDLIST_DISCOVERED_FROM = "resources/wordlists/file_path_list.txt"
@@ -284,6 +299,44 @@ def filter_urls_for_source_of_truth(urls: list[str]) -> list[str]:
         for url in urls
         if isinstance(url, str) and url.strip() and should_include_url_in_source_of_truth(url)
     ]
+
+
+def detect_soft_not_found_response(
+    status_code: int | None,
+    response_body: bytes | bytearray | None,
+) -> tuple[bool, str | None]:
+    """Heuristic detection for soft-404 pages that return HTTP 200."""
+    if status_code != 200:
+        return False, None
+    if not response_body:
+        return False, None
+
+    body_bytes = bytes(response_body)
+    head_text = body_bytes[:4096].decode("utf-8", errors="replace")
+    body_text = body_bytes[:16384].decode("utf-8", errors="replace")
+    body_lower = body_text.lower()
+    compact = re.sub(r"\s+", " ", body_lower)
+
+    if SOFT_404_TITLE_PATTERN.search(head_text):
+        return True, "soft-404 marker in HTML title"
+
+    for phrase in SOFT_404_PHRASES:
+        if phrase in compact and len(body_bytes) <= SOFT_404_SMALL_BODY_MAX_BYTES:
+            return True, f"soft-404 phrase '{phrase}' in small 200 response ({len(body_bytes)} bytes)"
+
+    return False, None
+
+
+def is_effective_existing_record(record: UrlInventoryRecord | None) -> bool:
+    if record is None:
+        return False
+    if bool(getattr(record, "soft_404_detected", False)):
+        return False
+    crawl_note = str(getattr(record, "crawl_note", "") or "").lower()
+    existence_note = str(getattr(record, "existence_check_note", "") or "").lower()
+    if "soft-404" in crawl_note or "soft-404" in existence_note:
+        return False
+    return True
 
 
 def _looks_like_hashed_bundle_filename(filename: str) -> bool:
@@ -920,6 +973,8 @@ class UrlInventoryRecord:
     existence_status_code: int | None = None
     existence_check_method: str | None = None
     existence_check_note: str | None = None
+    soft_404_detected: bool = False
+    soft_404_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -934,6 +989,8 @@ class UrlInventoryRecord:
             "existence_status_code": self.existence_status_code,
             "existence_check_method": self.existence_check_method,
             "existence_check_note": self.existence_check_note,
+            "soft_404_detected": self.soft_404_detected,
+            "soft_404_reason": self.soft_404_reason,
         }
 
 
@@ -1053,6 +1110,8 @@ def crawl_state_from_dict(payload: dict[str, Any]) -> CrawlState:
                 existence_status_code=record.get("existence_status_code"),
                 existence_check_method=record.get("existence_check_method"),
                 existence_check_note=record.get("existence_check_note"),
+                soft_404_detected=bool(record.get("soft_404_detected", False)),
+                soft_404_reason=str(record.get("soft_404_reason", "")).strip() or None,
             )
 
     for url in state.discovered_urls:
@@ -1519,6 +1578,15 @@ class DomainSpider(scrapy.Spider):
         record = ensure_inventory_record(self.state, current_url)
         record.was_crawled = True
         record.crawl_status_code = response.status
+        soft_404_detected, soft_404_reason = detect_soft_not_found_response(response.status, response.body)
+        record.soft_404_detected = bool(soft_404_detected)
+        record.soft_404_reason = soft_404_reason
+        if soft_404_detected:
+            record.exists_confirmed = False
+            record.existence_status_code = response.status
+            record.existence_check_method = "GET"
+            record.existence_check_note = f"Soft-404 during crawl: {soft_404_reason}"
+            record.crawl_note = f"Soft-404 response (HTTP {response.status}): {soft_404_reason}"
         if response.status >= 400:
             record.crawl_note = f"Crawl request returned HTTP {response.status}"
 
@@ -1582,6 +1650,10 @@ class DomainSpider(scrapy.Spider):
 
         if response.status >= 400:
             self.logger.warning("Blocked or error crawl response at %s (HTTP %s)", current_url, response.status)
+            self._save_session_state()
+            return
+        if soft_404_detected:
+            self.logger.info("Soft-404 crawl response at %s (HTTP %s): %s", current_url, response.status, soft_404_reason)
             self._save_session_state()
             return
 
@@ -1741,11 +1813,25 @@ def build_sitemap(start_url: str, state: CrawlState) -> dict[str, Any]:
 
 
 def build_url_inventory(root_domain: str, state: CrawlState) -> dict[str, Any]:
-    entries = [state.url_inventory[url].to_dict() for url in sorted(state.url_inventory.keys())]
+    all_entries = [state.url_inventory[url].to_dict() for url in sorted(state.url_inventory.keys())]
+    entries = [
+        state.url_inventory[url].to_dict()
+        for url in sorted(state.url_inventory.keys())
+        if is_effective_existing_record(state.url_inventory.get(url))
+    ]
+    soft_404_count = sum(
+        1
+        for url in state.url_inventory.keys()
+        if bool(getattr(state.url_inventory.get(url), "soft_404_detected", False))
+    )
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "root_domain": root_domain,
+        "total_urls_raw": len(all_entries),
         "total_urls": len(entries),
+        "total_urls_effective": len(entries),
+        "soft_404_excluded": soft_404_count,
+        "entries_raw": all_entries,
         "entries": entries,
     }
 
@@ -2249,7 +2335,12 @@ def deduplicate_parameter_inventory_entries(entries: Any) -> list[dict[str, Any]
 
 def build_source_of_truth_payload(root_domain: str, state: CrawlState) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
-    source_urls = sorted(set(filter_urls_for_source_of_truth(list(state.url_inventory.keys()))))
+    effective_urls = [
+        url
+        for url, record in state.url_inventory.items()
+        if is_effective_existing_record(record)
+    ]
+    source_urls = sorted(set(filter_urls_for_source_of_truth(effective_urls)))
     return {
         "generated_at_utc": now,
         "updated_at_utc": now,
@@ -3308,12 +3399,24 @@ def probe_url_existence(
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 status_code = int(response.getcode())
                 response_body = read_http_body_capped(response)
+                if method == "HEAD" and status_code == 200:
+                    # HEAD 200 is not sufficient for existence; validate body content with GET.
+                    continue
+                soft_404_detected, soft_404_reason = detect_soft_not_found_response(status_code, response_body)
                 exists_confirmed = status_code not in NOT_FOUND_STATUSES
+                if soft_404_detected:
+                    exists_confirmed = False
                 return {
                     "exists_confirmed": exists_confirmed,
                     "status_code": status_code,
                     "method": method,
-                    "note": "Confirmed by direct HTTP probe",
+                    "note": (
+                        f"Soft-404 detected in 200 response: {soft_404_reason}"
+                        if soft_404_detected
+                        else "Confirmed by direct HTTP probe"
+                    ),
+                    "soft_404_detected": soft_404_detected,
+                    "soft_404_reason": soft_404_reason,
                     "request": request_payload,
                     "response": {
                         "status": status_code,
@@ -3338,6 +3441,8 @@ def probe_url_existence(
                 "status_code": status_code,
                 "method": method,
                 "note": note,
+                "soft_404_detected": False,
+                "soft_404_reason": None,
                 "request": request_payload,
                 "response": {
                     "status": status_code,
@@ -3356,6 +3461,8 @@ def probe_url_existence(
         "status_code": None,
         "method": None,
         "note": f"Probe failed: {last_error or 'unknown network error'}",
+        "soft_404_detected": False,
+        "soft_404_reason": None,
         "request": None,
         "response": None,
     }
@@ -3416,7 +3523,12 @@ def write_wordlist_guessed_paths_index(site_output_dir: Path, state: CrawlState)
             code_i = int(code) if code is not None else None
         except (TypeError, ValueError):
             code_i = None
-        is_hit = visited and code_i is not None and code_i not in NOT_FOUND_STATUSES
+        is_hit = (
+            visited
+            and code_i is not None
+            and code_i not in NOT_FOUND_STATUSES
+            and not bool(rec and rec.soft_404_detected)
+        )
         if is_hit:
             hits += 1
         entries.append({"url": url, "visited": visited, "http_status": code_i, "hit": is_hit})
@@ -4143,7 +4255,9 @@ def collect_status_metrics(output_root: Path) -> dict[str, dict[str, Any]]:
         if inventory_path.is_file():
             inv = _read_json_dict_safe(inventory_path)
             try:
-                unique_urls = int(inv.get("total_urls", 0) or 0)
+                unique_urls = int(
+                    inv.get("total_urls_effective", inv.get("total_urls", 0)) or 0
+                )
             except Exception:
                 unique_urls = 0
             if unique_urls <= 0:
@@ -4991,6 +5105,10 @@ def main() -> None:
             record.existence_status_code = probe_result["status_code"]
             record.existence_check_method = probe_result["method"]
             record.existence_check_note = probe_result["note"]
+            record.soft_404_detected = bool(probe_result.get("soft_404_detected", False))
+            record.soft_404_reason = (
+                str(probe_result.get("soft_404_reason", "")).strip() or None
+            )
             progress.info(
                 "Verification result for "
                 f"{url}: exists_confirmed={record.exists_confirmed}, "
@@ -5007,6 +5125,8 @@ def main() -> None:
                     "status_code": probe_result["status_code"],
                     "method": probe_result["method"],
                     "note": probe_result["note"],
+                    "soft_404_detected": bool(probe_result.get("soft_404_detected", False)),
+                    "soft_404_reason": probe_result.get("soft_404_reason"),
                 },
                 "request": probe_result["request"],
                 "response": probe_result["response"],
