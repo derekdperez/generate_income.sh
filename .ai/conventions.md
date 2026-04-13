@@ -31,3 +31,6 @@
   - `GET /files/<repo-relative-path>` serves generated reports/artifacts safely within repo root.
 - `server.py` runtime settings are config-first via `config/server.json` (`host`, `port`, `output_root`) with CLI overrides; route `/` should serve `output/all_domains.results_summary.html` by default when present, while `/dashboard` serves the live monitoring UI.
 - `server.py` should send permissive CORS headers for browser-loaded report fetches and must serve report-adjacent files (for example `all_domains.results_summary.json`) from `output_root` so relative fetch/XHR in generated HTML reports succeeds when `/` serves a report file.
+- Master report payload convention: when generating `all_domains.results_summary.json`, serialize discrepancies in compact form (trimmed body previews/diff text) to keep browser-side load/parse/render practical.
+- Report UI resilience convention: if master summary JSON cannot be loaded at page bootstrap, replace `Loading...` placeholders in master inventory/extractor tables with explicit error rows/notes.
+- Summary artifact write convention: write report JSON/HTML via atomic temp-file replacement to avoid leaving truncated or zero-byte files after partial write failures.

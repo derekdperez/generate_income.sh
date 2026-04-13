@@ -164,3 +164,14 @@
   - URL inventory/source-of-truth output now excludes soft-404 records from effective `entries`/`total_urls` while preserving raw data in `entries_raw` and `total_urls_raw`.
   - Wordlist guessed-path hit logic now treats soft-404 responses as misses.
 - Why: 200 status alone is not a reliable existence signal; generic “page not found” templates were inflating discovered/existing counts.
+
+## 2026-04-13
+
+- Fixed all-domains report load reliability in `fozzy.py`:
+  - Added compact master-discrepancy serialization (`compact_discrepancies=True`) that trims `baseline/anomaly body_preview` and long unified diff text before writing `all_domains.results_summary.json`.
+  - Added explicit master-table fallback rendering when summary payload cannot be loaded, so inventory/extractor tables show a concrete error message instead of staying on `Loading...` indefinitely.
+- Why: master summary JSON can grow too large for reliable browser fetch/parse/render, and payload-load failures previously left multiple master tables in a perpetual loading state.
+
+- Hardened report writes against corruption:
+  - Added `_atomic_write_text(...)` and switched master/single-domain summary JSON+HTML writes to atomic temp-file replacement.
+- Why: interrupted or failed writes (for example, low disk conditions) should not leave zero-byte summary artifacts that break report loading.

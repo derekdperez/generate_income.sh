@@ -50,6 +50,8 @@ from typing import Any, Callable
 # Semaphore / RLock misuse or runtime issues should warn, not abort a long fuzz run.
 _FOZZY_LOCK_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, ValueError, AttributeError)
 RESPONSE_TIME_DISCREPANCY_MULTIPLIER = 3.0
+MASTER_REPORT_BODY_PREVIEW_MAX_CHARS = 240
+MASTER_REPORT_DIFF_TEXT_MAX_LINES = 60
 
 
 def _fozzy_safe_release(label: str, release_fn: Callable[[], None]) -> None:
@@ -68,6 +70,16 @@ def _fozzy_with_rlock(lock: threading.RLock | None, context: str, fn: Callable[[
     except _FOZZY_LOCK_ERRORS as exc:
         print(f"Warning: Fozzy {context}: {exc}", flush=True)
         return fn()
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write text atomically to avoid leaving truncated/empty reports on partial failures."""
+    target = path.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = f"{target.name}.tmp-{os.getpid()}-{threading.get_ident()}"
+    temp_path = target.with_name(temp_name)
+    temp_path.write_text(text, encoding=encoding)
+    temp_path.replace(target)
 
 
 try:
@@ -1872,6 +1884,49 @@ def build_master_domain_inventory_tables(
     return domain_rows, per_route_rows, truncated
 
 
+def _compact_result_entries_for_master_report(
+    entries: list[dict[str, Any]],
+    *,
+    body_preview_max_chars: int = MASTER_REPORT_BODY_PREVIEW_MAX_CHARS,
+    diff_text_max_lines: int = MASTER_REPORT_DIFF_TEXT_MAX_LINES,
+) -> list[dict[str, Any]]:
+    compact_entries: list[dict[str, Any]] = []
+    body_limit = max(0, int(body_preview_max_chars))
+    diff_limit = max(0, int(diff_text_max_lines))
+
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        baseline = dict(row.get("baseline_response") or {})
+        anomaly = dict(row.get("anomaly_response") or {})
+
+        if body_limit > 0:
+            baseline_preview = str(baseline.get("body_preview", "") or "")
+            anomaly_preview = str(anomaly.get("body_preview", "") or "")
+            if len(baseline_preview) > body_limit:
+                baseline["body_preview"] = baseline_preview[:body_limit] + " … (truncated in master report)"
+            if len(anomaly_preview) > body_limit:
+                anomaly["body_preview"] = anomaly_preview[:body_limit] + " … (truncated in master report)"
+        else:
+            baseline.pop("body_preview", None)
+            anomaly.pop("body_preview", None)
+
+        row["baseline_response"] = baseline
+        row["anomaly_response"] = anomaly
+
+        diff_text = str(row.get("response_diff_text", "") or "")
+        if diff_limit <= 0:
+            row["response_diff_text"] = ""
+        elif diff_text:
+            diff_lines = diff_text.splitlines()
+            if len(diff_lines) > diff_limit:
+                row["response_diff_text"] = "\n".join(diff_lines[:diff_limit]) + "\n... (truncated in master report)"
+        compact_entries.append(row)
+
+    return compact_entries
+
+
 def build_results_summary_payload(
     *,
     root_domain: str,
@@ -1884,6 +1939,7 @@ def build_results_summary_payload(
     summary_scope: str = "single_domain",
     master_scan_root: str | None = None,
     domains_scanned: int | None = None,
+    compact_discrepancies: bool = False,
     payload_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     anomaly_entries = [item for item in result_entries if str(item.get("result_type", "")) == "anomaly"]
@@ -1941,6 +1997,9 @@ def build_results_summary_payload(
     if summary_scope == "master":
         root_hint = master_scan_root or str(parameters_path)
         input_pf = f"(multi-domain aggregate; scanned folder: {root_hint})"
+    serialized_entries = (
+        _compact_result_entries_for_master_report(result_entries) if compact_discrepancies else result_entries
+    )
     anomaly_summary_payload: dict[str, Any] = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "root_domain": root_domain,
@@ -1951,11 +2010,13 @@ def build_results_summary_payload(
         "totals": totals,
         "unique_discrepancy_urls": unique_urls,
         "by_url": by_url,
-        "discrepancies": result_entries,
+        "discrepancies": serialized_entries,
         "results_folder_files": list(results_folder_files),
     }
     if report_heading:
         anomaly_summary_payload["report_heading"] = report_heading
+    if compact_discrepancies:
+        anomaly_summary_payload["discrepancies_compacted"] = True
     if master_scan_root:
         anomaly_summary_payload["master_scan_root"] = master_scan_root
     extras = payload_extras if isinstance(payload_extras, dict) else {}
@@ -2115,6 +2176,7 @@ def write_master_results_summary(
         summary_scope="master",
         master_scan_root=str(master_root),
         domains_scanned=len(pairs),
+        compact_discrepancies=True,
         payload_extras={
             "master_domain_inventory": domain_inv_rows,
             "master_per_route_inventory": per_route_rows,
@@ -2126,8 +2188,8 @@ def write_master_results_summary(
     json_path = master_root / "all_domains.results_summary.json"
     html_path = master_root / "all_domains.results_summary.html"
     payload["summary_json_filename"] = json_path.name
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    html_path.write_text(render_anomaly_summary_html(payload), encoding="utf-8")
+    _atomic_write_text(json_path, json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_text(html_path, render_anomaly_summary_html(payload), encoding="utf-8")
     return json_path, html_path, len(pairs)
 
 
@@ -2156,13 +2218,13 @@ def write_results_summary(
     )
     anomaly_summary_path = results_dir / f"{root_domain}.results_summary.json"
     anomaly_summary_payload["summary_json_filename"] = anomaly_summary_path.name
-    anomaly_summary_path.write_text(json.dumps(anomaly_summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_text(anomaly_summary_path, json.dumps(anomaly_summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
     anomaly_summary_html_path = results_dir / f"{root_domain}.results_summary.html"
-    anomaly_summary_html_path.write_text(render_anomaly_summary_html(anomaly_summary_payload), encoding="utf-8")
+    _atomic_write_text(anomaly_summary_html_path, render_anomaly_summary_html(anomaly_summary_payload), encoding="utf-8")
 
     anomaly_summary_payload["results_folder_files"] = list_results_folder_files(results_dir)
-    anomaly_summary_path.write_text(json.dumps(anomaly_summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    anomaly_summary_html_path.write_text(render_anomaly_summary_html(anomaly_summary_payload), encoding="utf-8")
+    _atomic_write_text(anomaly_summary_path, json.dumps(anomaly_summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_text(anomaly_summary_html_path, render_anomaly_summary_html(anomaly_summary_payload), encoding="utf-8")
     return anomaly_summary_path, anomaly_summary_html_path
 
 
@@ -3211,6 +3273,31 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         }}
       }}
 
+      function renderMasterSectionsLoadError(message) {{
+        const msg = String(message || "Unable to load summary JSON payload.");
+        const domainTable = document.getElementById("masterDomainInventoryTable");
+        if (domainTable) {{
+          const tbody = domainTable.querySelector("tbody");
+          if (tbody) tbody.innerHTML = `<tr><td colspan="8">${{escapeHtml(msg)}}</td></tr>`;
+        }}
+        const routeTable = document.getElementById("masterRouteInventoryTable");
+        if (routeTable) {{
+          const tbody = routeTable.querySelector("tbody");
+          if (tbody) tbody.innerHTML = `<tr><td colspan="5">${{escapeHtml(msg)}}</td></tr>`;
+        }}
+        const extractorTable = document.getElementById("extractorMatchesTable");
+        if (extractorTable) {{
+          const tbody = extractorTable.querySelector("tbody");
+          if (tbody) tbody.innerHTML = `<tr><td colspan="4">${{escapeHtml(msg)}}</td></tr>`;
+        }}
+        const dNote = document.getElementById("masterDomainInventoryNote");
+        if (dNote) dNote.textContent = msg;
+        const rNote = document.getElementById("masterRouteInventoryNote");
+        if (rNote) rNote.textContent = msg;
+        const eNote = document.getElementById("extractorInventoryNote");
+        if (eNote) eNote.textContent = msg;
+      }}
+
       async function loadReportPayloadFromDisk() {{
         const isFileProtocol = String(window.location.protocol || "").toLowerCase() === "file:";
         if (isFileProtocol) return null;
@@ -3474,6 +3561,9 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
           const renderedRows = renderDetailRows(discrepancies);
           detailBody.innerHTML = renderedRows || "<tr><td colspan='{table_col_count}'>No discrepancies</td></tr>";
         }} else if (detailBody) {{
+          renderMasterSectionsLoadError(
+            "Unable to load summary JSON payload. Regenerate all_domains.results_summary.json or open via the dashboard server."
+          );
           detailBody.innerHTML =
             "<tr><td colspan='{table_col_count}'>Unable to load summary JSON from disk at page load. " +
             "Open this report via a local web server or allow local-file XHR/fetch in your browser.</td></tr>";

@@ -4,3 +4,4 @@
 - `fozzy.py` currently hard-fails if quick fuzz list is missing. Confirm whether fallback defaults should allow dry/incremental preflight without that file.
 - For thin-shell Fozzy HTML reports that load summary JSON at runtime, confirm whether the expected usage is via local HTTP hosting (instead of `file://`) due browser local-file fetch restrictions.
 - For master HTML log viewer, confirm whether reading logs via browser fetch/XHR from local files should be considered supported only under local HTTP hosting.
+- Environment risk observed on 2026-04-13: `OSError: [Errno 28] No space left on device` while regenerating `output/all_domains.results_summary.json`; until disk space is freed, master summary regeneration may fail and existing master JSON may be stale/corrupt.
