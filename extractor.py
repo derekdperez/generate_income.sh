@@ -203,20 +203,51 @@ def iter_collected_script_files(scripts_root: Path) -> list[Path]:
         return []
     out: list[Path] = []
     for p in scripts_root.rglob("*"):
-        if p.is_file():
-            out.append(p)
+        if not p.is_file():
+            continue
+        if p.name.endswith(".fetch.json"):
+            continue
+        out.append(p)
     out.sort(key=lambda x: str(x).lower())
     return out
 
 
 def script_file_to_result_entry(script_path: Path, scripts_root: Path) -> dict[str, Any]:
     rel = script_path.relative_to(scripts_root).as_posix()
+    source_request_url = ""
+    source_http_status = 0
+    fetch_path = script_path.parent / (script_path.name + ".fetch.json")
+    if fetch_path.is_file():
+        try:
+            meta = read_json(fetch_path)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            meta = {}
+        if isinstance(meta, dict):
+            source_request_url = str(meta.get("fetched_url", "") or "").strip()
+            try:
+                source_http_status = int(meta.get("http_status", 0) or 0)
+            except (TypeError, ValueError):
+                source_http_status = 0
     try:
         text = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         text = ""
+    if not source_request_url:
+        for line in text.splitlines()[:16]:
+            s = line.strip()
+            if s.startswith("// source_page:"):
+                source_request_url = s.split(":", 1)[1].strip()
+            elif s.startswith("// source_http_status:"):
+                try:
+                    source_http_status = int(s.split(":", 1)[1].strip())
+                except (ValueError, IndexError):
+                    pass
     pseudo_url = f"file://collected_data/scripts/{rel}"
     rf = str(script_path.resolve())
+    try:
+        shs = int(source_http_status)
+    except (TypeError, ValueError):
+        shs = 0
     return {
         "url": pseudo_url,
         "host": "",
@@ -227,6 +258,8 @@ def script_file_to_result_entry(script_path: Path, scripts_root: Path) -> dict[s
         "result_file": rf,
         "baseline_response": {"body_preview": text},
         "anomaly_response": {"body_preview": text},
+        "source_request_url": source_request_url,
+        "source_http_status": shs,
     }
 
 
@@ -289,6 +322,10 @@ def apply_extractor_rules_to_entry(
                 match_count += 1
                 mid = match_fingerprint(domain_label, result_file_abs, rule["name"], idx, matched)
                 detail_path = matches_dir / f"m_{mid}.json"
+                try:
+                    src_status = int(entry.get("source_http_status", 0) or 0)
+                except (TypeError, ValueError):
+                    src_status = 0
                 detail = {
                     "domain_label": domain_label,
                     "filter_name": rule["name"],
@@ -300,6 +337,8 @@ def apply_extractor_rules_to_entry(
                     "result_file": result_file_abs,
                     "result_type": str(entry.get("result_type", "") or ""),
                     "url": str(entry.get("url", "") or ""),
+                    "source_request_url": str(entry.get("source_request_url", "") or ""),
+                    "source_http_status": src_status,
                     "matched_text": matched,
                     "match_index": idx,
                     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -369,7 +408,38 @@ def rebuild_javascript_extractor_summary_for_domain(
     return summary_path
 
 
-def collect_javascript_extractor_report_rows(domain_output: Path) -> list[dict[str, Any]]:
+def _script_file_href_for_report(result_file: str, report_output_path: Path) -> tuple[str, str, str]:
+    """Build a link from ``matches_report.html`` to the script file (relative URL when possible).
+
+    Returns ``(href, short_label, full_path_for_title)``. Empty ``result_file`` → ``("", "—", "")``.
+    """
+    raw = str(result_file or "").strip()
+    if not raw:
+        return ("", "—", "")
+    p = Path(raw)
+    try:
+        target = p.resolve()
+    except OSError:
+        target = p
+    full = str(target)
+    label = target.name or full
+    base = report_output_path.parent.resolve()
+    try:
+        rel = os.path.relpath(str(target), str(base))
+    except ValueError:
+        try:
+            return (target.as_uri(), label, full)
+        except ValueError:
+            return ("", label, full)
+    href = rel.replace("\\", "/")
+    if not href.startswith("..") and not href.startswith("/") and "/" not in href and "\\" not in rel:
+        href = "./" + href
+    return (href, label, full)
+
+
+def collect_javascript_extractor_report_rows(
+    domain_output: Path, report_output_path: Path
+) -> list[dict[str, Any]]:
     """One dict per ``m_*.json`` under ``collected_data/javascript_extractor/matches`` for the HTML report."""
     js_root = javascript_extractor_root(domain_output)
     matches_dir = js_root / "matches"
@@ -380,12 +450,25 @@ def collect_javascript_extractor_report_rows(domain_output: Path) -> list[dict[s
         detail = _read_match_detail(path)
         if not detail:
             continue
+        href, src_label, src_full = _script_file_href_for_report(
+            str(detail.get("result_file", "") or ""),
+            report_output_path,
+        )
+        try:
+            http_st = int(detail.get("source_http_status", 0) or 0)
+        except (TypeError, ValueError):
+            http_st = 0
         out.append(
             {
                 "rule": str(detail.get("filter_name", "") or ""),
                 "regex": str(detail.get("regex", "") or ""),
                 "matched": str(detail.get("matched_text", "") or ""),
                 "score": int(detail.get("importance_score", 0) or 0),
+                "source_label": src_label,
+                "source_href": href,
+                "source_full": src_full,
+                "request_url": str(detail.get("source_request_url", "") or ""),
+                "http_status": http_st,
             }
         )
     return out
@@ -422,6 +505,17 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
   .col-regex { min-width: 12rem; max-width: 28rem; word-break: break-all; font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; }
   .col-matched { min-width: 14rem; max-width: 36rem; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; }
   .col-score { width: 5rem; }
+  .col-source { min-width: 10rem; max-width: 22rem; word-break: break-all; }
+  .col-source a { color: #06c; text-decoration: underline; }
+  @media (prefers-color-scheme: dark) {
+    .col-source a { color: #8cb4ff; }
+  }
+  .col-req { min-width: 10rem; max-width: 24rem; word-break: break-all; }
+  .col-req a { color: #06c; text-decoration: underline; }
+  @media (prefers-color-scheme: dark) {
+    .col-req a { color: #8cb4ff; }
+  }
+  .col-status { width: 5.5rem; text-align: right; font-variant-numeric: tabular-nums; }
   th .sortind { font-size: 0.75rem; opacity: 0.7; margin-left: 0.25rem; }
   tbody tr:nth-child(even) { background: #8881; }
   .empty { padding: 1rem; color: #666; }
@@ -433,7 +527,7 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
   <div class="meta">Generated UTC: __GEN__ · Rows: __N__</div>
   <div class="count" id="visibleCount"></div>
   <label for="globalSearch">Search all columns (each word must appear somewhere in the row)</label><br/>
-  <input type="search" id="globalSearch" placeholder="Words — searched across rule, regex, matched text, score…" autocomplete="off"/>
+  <input type="search" id="globalSearch" placeholder="Words — all columns (rule, regex, match, score, file, URL, status)…" autocomplete="off"/>
   <div class="table-wrap">
     <table id="grid">
       <thead>
@@ -442,12 +536,18 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
           <th data-col="1" scope="col">Regex<span class="sortind" id="s1"></span></th>
           <th data-col="2" scope="col">Matched text<span class="sortind" id="s2"></span></th>
           <th data-col="3" scope="col">Importance<span class="sortind" id="s3"></span></th>
+          <th data-col="4" scope="col">Source script<span class="sortind" id="s4"></span></th>
+          <th data-col="5" scope="col">Request URL<span class="sortind" id="s5"></span></th>
+          <th data-col="6" scope="col">HTTP status<span class="sortind" id="s6"></span></th>
         </tr>
         <tr class="filters">
           <th><input type="text" data-col-filter="0" placeholder="Filter rule name…" autocomplete="off"/></th>
           <th><input type="text" data-col-filter="1" placeholder="Filter regex…" autocomplete="off"/></th>
           <th><input type="text" data-col-filter="2" placeholder="Filter matched text…" autocomplete="off"/></th>
           <th><input type="text" data-col-filter="3" placeholder="Filter score…" autocomplete="off"/></th>
+          <th><input type="text" data-col-filter="4" placeholder="Filter source file…" autocomplete="off"/></th>
+          <th><input type="text" data-col-filter="5" placeholder="Filter request URL…" autocomplete="off"/></th>
+          <th><input type="text" data-col-filter="6" placeholder="Filter status…" autocomplete="off"/></th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -456,12 +556,12 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
   <script type="application/json" id="report-data">__DATA__</script>
   <script>
 (function () {
-  const KEYS = ["rule", "regex", "matched", "score"];
+  const KEYS = ["rule", "regex", "matched", "score", "source_label", "request_url", "http_status"];
   const ROWS = JSON.parse(document.getElementById("report-data").textContent);
   const tbody = document.getElementById("tbody");
   const globalSearch = document.getElementById("globalSearch");
   const visibleCount = document.getElementById("visibleCount");
-  const colFilters = [0,1,2,3].map(function (i) {
+  const colFilters = [0,1,2,3,4,5,6].map(function (i) {
     return document.querySelector('input[data-col-filter="' + i + '"]');
   });
   let sortCol = null;
@@ -469,10 +569,11 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
 
   function cellStr(row, i) {
     if (i === 3) return String(row.score);
+    if (i === 6) return String(row.http_status != null && row.http_status !== "" ? row.http_status : "");
     return String(row[KEYS[i]] || "");
   }
   function rowHaystack(row) {
-    return (cellStr(row,0) + " " + cellStr(row,1) + " " + cellStr(row,2) + " " + cellStr(row,3)).toLowerCase();
+    return (cellStr(row,0) + " " + cellStr(row,1) + " " + cellStr(row,2) + " " + cellStr(row,3) + " " + cellStr(row,4) + " " + cellStr(row,5) + " " + cellStr(row,6) + " " + String(row.source_full || "")).toLowerCase();
   }
   function passesGlobal(row) {
     const raw = (globalSearch.value || "").trim().toLowerCase();
@@ -485,7 +586,7 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
     return true;
   }
   function passesColFilters(row) {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 7; i++) {
       const f = (colFilters[i].value || "").trim().toLowerCase();
       if (!f) continue;
       if (cellStr(row, i).toLowerCase().indexOf(f) === -1) return false;
@@ -504,6 +605,10 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
         const na = Number(a.score) || 0, nb = Number(b.score) || 0;
         return asc ? na - nb : nb - na;
       }
+      if (c === 6) {
+        const na = Number(a.http_status) || 0, nb = Number(b.http_status) || 0;
+        return asc ? na - nb : nb - na;
+      }
       const va = cellStr(a, c).toLowerCase();
       const vb = cellStr(b, c).toLowerCase();
       const cmp = va.localeCompare(vb, undefined, { numeric: true, sensitivity: "base" });
@@ -515,20 +620,48 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
     d.textContent = s;
     return d.innerHTML;
   }
+  function escAttr(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;");
+  }
+  function reqUrlCell(u) {
+    const t = String(u || "").trim();
+    if (!t) return '<td class="col-req">—</td>';
+    const low = t.toLowerCase();
+    if (low.indexOf("http://") === 0 || low.indexOf("https://") === 0) {
+      return '<td class="col-req"><a href="' + escAttr(t) + '" rel="noopener noreferrer" target="_blank">' + esc(t) + "</a></td>";
+    }
+    return '<td class="col-req">' + esc(t) + "</td>";
+  }
   function render() {
     let data = filterRows();
     data = sortRows(data);
     let html = "";
     if (data.length === 0) {
-      html = '<tr><td colspan="4" class="empty">No rows match the current filters.</td></tr>';
+      html = '<tr><td colspan="7" class="empty">No rows match the current filters.</td></tr>';
     } else {
       for (let i = 0; i < data.length; i++) {
         const r = data[i];
+        let srcTd = '<td class="col-source">' + esc(r.source_label || "—") + "</td>";
+        if (r.source_href) {
+          const tip = escAttr(r.source_full || r.source_label || "");
+          srcTd = '<td class="col-source"><a href="' + escAttr(r.source_href) + '" title="' + tip + '">' + esc(r.source_label || "open") + "</a></td>";
+        }
+        var ns = Number(r.http_status);
+        var hasReq = String(r.request_url || "").trim();
+        var st = "—";
+        if (hasReq) {
+          st = !isNaN(ns) && ns !== 0 ? esc(String(ns)) : "—";
+        } else if (!isNaN(ns) && ns !== 0) {
+          st = esc(String(ns));
+        }
         html += "<tr>"
           + '<td class="col-rule">' + esc(r.rule) + "</td>"
           + '<td class="col-regex">' + esc(r.regex) + "</td>"
           + '<td class="col-matched">' + esc(r.matched) + "</td>"
           + '<td class="col-score num">' + esc(String(r.score)) + "</td>"
+          + srcTd
+          + reqUrlCell(r.request_url)
+          + '<td class="col-status num">' + st + "</td>"
           + "</tr>";
       }
     }
@@ -536,7 +669,7 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
     visibleCount.textContent = "Showing " + data.length + " of " + ROWS.length + " match(es)";
   }
   function updateSortIndicators() {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 7; i++) {
       const el = document.getElementById("s" + i);
       if (sortCol === i) el.textContent = sortAsc ? " ▲" : " ▼";
       else el.textContent = "";
@@ -546,7 +679,7 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
     th.addEventListener("click", function () {
       const c = parseInt(th.getAttribute("data-col"), 10);
       if (sortCol === c) sortAsc = !sortAsc;
-      else { sortCol = c; sortAsc = c === 3 ? false : true; }
+      else { sortCol = c; sortAsc = (c === 3) ? false : true; }
       updateSortIndicators();
       render();
     });
@@ -566,10 +699,10 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
 
 def write_javascript_extractor_matches_report_html(domain_label: str, domain_output: Path) -> Path | None:
     """Write ``collected_data/javascript_extractor/matches_report.html`` for interactive review."""
-    rows = collect_javascript_extractor_report_rows(domain_output)
     js_root = javascript_extractor_root(domain_output)
     ensure_directory(js_root)
     out = js_root / JAVASCRIPT_EXTRACTOR_REPORT_HTML
+    rows = collect_javascript_extractor_report_rows(domain_output, out)
     html = build_javascript_extractor_matches_report_html(domain_label, rows)
     out.write_text(html, encoding="utf-8")
     print(f"[extractor:js] HTML report ({len(rows)} row(s)): {out}", flush=True)

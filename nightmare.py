@@ -1925,6 +1925,8 @@ def build_collected_data_rollup(collected_data_root: Path) -> dict[str, Any]:
         for p in sorted(scripts_dir.rglob("*")):
             if not p.is_file():
                 continue
+            if p.name.endswith(".fetch.json"):
+                continue
             scripts_out.append(_script_file_rollup(p, root))
 
     artifacts_out: list[dict[str, Any]] = []
@@ -2487,7 +2489,10 @@ class DomainSpider(scrapy.Spider):
             stem = _slug_file_component(stem_raw, f"inline_{idx}")[:80]
             fname = f"{stem}_{digest}{ext}"
             out_path = scripts_dir / fname
-            header = f"// source_page: {page_url}\n"
+            header = (
+                f"// source_page: {page_url}\n"
+                f"// source_http_status: {int(response.status)}\n"
+            )
             out_path.write_text(header + body, encoding="utf-8", errors="replace")
             discovered = extract_urls_from_javascript_for_discovery(body, page_url)
             self._record_js_endpoint_file(page_url, fname, discovered)
@@ -2647,6 +2652,15 @@ class DomainSpider(scrapy.Spider):
         filename = f"{stem_slug}_{key}{ext}"
         out_path = scripts_dir / filename
         out_path.write_bytes(body)
+        fetch_sidecar = scripts_dir / f"{out_path.name}.fetch.json"
+        save_json_file(
+            fetch_sidecar.resolve(),
+            {
+                "fetched_url": logical,
+                "http_status": int(response.status),
+                "parent_page_url": normalize_url(parent),
+            },
+        )
         text = body.decode("utf-8", errors="replace")
         discovered = extract_urls_from_javascript_for_discovery(text, logical)
         self._record_js_endpoint_file(parent, out_path.name, discovered)
