@@ -2328,6 +2328,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         master_log_files if isinstance(master_log_files, list) else [],
         ensure_ascii=False,
     ).replace("</", "<\\/")
+    embedded_payload = payload if str(payload.get("summary_scope", "")) == "single_domain" else None
+    embedded_payload_js = json.dumps(embedded_payload, ensure_ascii=False).replace("</", "<\\/")
 
     inventory_sections_html = ""
     inventory_script_html = ""
@@ -2555,6 +2557,7 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
       let responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
       const summaryJsonFilename = {summary_json_filename_js};
       const masterLogFiles = {master_log_files_js};
+      const embeddedPayload = {embedded_payload_js};
       const stateStorageKey = "fozzy-report-state:" + String(window.location.href.split("#")[0]);
       const stateNamePrefix = "fozzy-report-state:";
 
@@ -3100,6 +3103,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
       }}
 
       async function loadReportPayloadFromDisk() {{
+        const isFileProtocol = String(window.location.protocol || "").toLowerCase() === "file:";
+        if (isFileProtocol) return null;
         const fallback = String(window.location.pathname || "").replace(/\\.html?$/i, ".json");
         const target = String(summaryJsonFilename || "").trim() || fallback;
         if (!target) return null;
@@ -3127,6 +3132,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
       }}
 
       async function loadTextFromPath(targetPath) {{
+        const isFileProtocol = String(window.location.protocol || "").toLowerCase() === "file:";
+        if (isFileProtocol) return null;
         const path = String(targetPath || "").trim();
         if (!path) return null;
         try {{
@@ -3349,9 +3356,10 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         const detailTable = document.getElementById("detailTable");
         const detailBody = detailTable ? detailTable.querySelector("tbody") : null;
         const loadedPayload = await loadReportPayloadFromDisk();
-        if (loadedPayload && detailBody) {{
-          populateMasterSectionsFromPayload(loadedPayload);
-          const discrepancies = Array.isArray(loadedPayload.discrepancies) ? loadedPayload.discrepancies : [];
+        const activePayload = loadedPayload || embeddedPayload || null;
+        if (activePayload && detailBody) {{
+          populateMasterSectionsFromPayload(activePayload);
+          const discrepancies = Array.isArray(activePayload.discrepancies) ? activePayload.discrepancies : [];
           responseData = buildResponseDataFromDiscrepancies(discrepancies);
           responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
           const renderedRows = renderDetailRows(discrepancies);

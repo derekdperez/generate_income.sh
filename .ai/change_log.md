@@ -2,6 +2,18 @@
 
 ## 2026-04-12
 
+- Fixed Fozzy single-domain report loading when opened as local files:
+  - `render_anomaly_summary_html()` now embeds a single-domain fallback payload directly in the generated HTML.
+  - Browser JS now skips fetch/XHR disk reads when the page protocol is `file:` and uses embedded payload data for table bootstrap.
+- Why: modern browsers block `file://` fetch/XMLHttpRequest with CORS-origin `null`, which previously caused empty report tables and console errors.
+
+- Added crawl request inventory output to `nightmare.py`:
+  - New per-domain artifact: `output/<root-domain>/requests.json` (config key `requests_output`, CLI override `--requests-output`).
+  - Includes every crawl-requested URL with booleans for `found_directly`, `guessed`, `inferred`, and `exists`, plus supporting status/source fields.
+  - Added `crawl_requested` to URL inventory records so crawl-attempted URLs (including failures) are tracked explicitly and serialized in session state.
+  - Added help text key `requests_output_help` in `config/nightmare.help.json`.
+- Why: spidering runs now emit a dedicated machine-readable request ledger with discovery classification and existence signal as requested.
+
 - Added `requirements.txt` at repo root for pip installs with core runtime dependencies:
   - `openai`
   - `scrapy`

@@ -966,6 +966,7 @@ class UrlInventoryRecord:
     discovered_via: set[str] = field(default_factory=set)
     discovered_from: set[str] = field(default_factory=set)
     discovery_evidence_files: list[str] = field(default_factory=list)
+    crawl_requested: bool = False
     was_crawled: bool = False
     crawl_status_code: int | None = None
     crawl_note: str | None = None
@@ -982,6 +983,7 @@ class UrlInventoryRecord:
             "discovered_via": sorted(self.discovered_via),
             "discovered_from": sorted(self.discovered_from),
             "discovery_evidence_files": self.discovery_evidence_files,
+            "crawl_requested": self.crawl_requested,
             "was_crawled": self.was_crawled,
             "crawl_status_code": self.crawl_status_code,
             "crawl_note": self.crawl_note,
@@ -1022,6 +1024,7 @@ INFERENCE_DISCOVERY_SOURCES = {
     "seed_input",
     "file_path_wordlist",
 }
+GUESSED_DISCOVERY_SOURCES = {"guessed_url", "file_path_wordlist"}
 
 
 def count_urls_by_discovery_sources(
@@ -1103,6 +1106,7 @@ def crawl_state_from_dict(payload: dict[str, Any]) -> CrawlState:
                 discovery_evidence_files=list(record.get("discovery_evidence_files", []))
                 if isinstance(record.get("discovery_evidence_files"), list)
                 else [],
+                crawl_requested=bool(record.get("crawl_requested", False)),
                 was_crawled=bool(record.get("was_crawled", False)),
                 crawl_status_code=record.get("crawl_status_code"),
                 crawl_note=str(record.get("crawl_note", "")).strip() or None,
@@ -1576,6 +1580,7 @@ class DomainSpider(scrapy.Spider):
 
         self.state.visited_urls.add(current_url)
         record = ensure_inventory_record(self.state, current_url)
+        record.crawl_requested = True
         record.was_crawled = True
         record.crawl_status_code = response.status
         soft_404_detected, soft_404_reason = detect_soft_not_found_response(response.status, response.body)
@@ -1731,6 +1736,7 @@ class DomainSpider(scrapy.Spider):
 
         current_url = normalize_url(request.url)
         record = ensure_inventory_record(self.state, current_url)
+        record.crawl_requested = True
         response = getattr(getattr(failure, "value", None), "response", None)
         status_code = getattr(response, "status", None)
         if status_code is not None:
@@ -1832,6 +1838,66 @@ def build_url_inventory(root_domain: str, state: CrawlState) -> dict[str, Any]:
         "total_urls_effective": len(entries),
         "soft_404_excluded": soft_404_count,
         "entries_raw": all_entries,
+        "entries": entries,
+    }
+
+
+def was_crawl_requested(record: UrlInventoryRecord) -> bool:
+    if record.crawl_requested or record.was_crawled or record.crawl_status_code is not None:
+        return True
+    crawl_note = str(record.crawl_note or "").lower()
+    return "crawl request " in crawl_note
+
+
+def derive_exists_for_requested_url(record: UrlInventoryRecord) -> bool:
+    if bool(record.soft_404_detected):
+        return False
+    if bool(record.exists_confirmed):
+        return True
+
+    for raw_status in (record.existence_status_code, record.crawl_status_code):
+        try:
+            status = int(raw_status) if raw_status is not None else None
+        except (TypeError, ValueError):
+            status = None
+        if status is None:
+            continue
+        return status not in NOT_FOUND_STATUSES
+
+    return False
+
+
+def build_requests_inventory(root_domain: str, state: CrawlState) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    direct_plus_inferred = DIRECT_DISCOVERY_SOURCES | INFERENCE_DISCOVERY_SOURCES | {"crawl_failure"}
+    inferred_sources = direct_plus_inferred - DIRECT_DISCOVERY_SOURCES - GUESSED_DISCOVERY_SOURCES - {"seed_input"}
+
+    for url in sorted(state.url_inventory.keys()):
+        record = state.url_inventory[url]
+        if not was_crawl_requested(record):
+            continue
+        discovered_via = set(record.discovered_via)
+        guessed = bool(discovered_via & GUESSED_DISCOVERY_SOURCES)
+        found_directly = bool(discovered_via & DIRECT_DISCOVERY_SOURCES)
+        inferred = bool(discovered_via & inferred_sources)
+        entries.append(
+            {
+                "url": record.url,
+                "found_directly": found_directly,
+                "guessed": guessed,
+                "inferred": inferred,
+                "exists": derive_exists_for_requested_url(record),
+                "crawl_status_code": record.crawl_status_code,
+                "existence_status_code": record.existence_status_code,
+                "soft_404_detected": bool(record.soft_404_detected),
+                "discovered_via": sorted(discovered_via),
+            }
+        )
+
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "root_domain": root_domain,
+        "total_requested_urls": len(entries),
         "entries": entries,
     }
 
@@ -4452,6 +4518,11 @@ def parse_args() -> argparse.Namespace:
         help=get_string_config_value(HELP_TEXTS, "url_inventory_output_help"),
     )
     parser.add_argument(
+        "--requests-output",
+        default=None,
+        help=get_string_config_value(HELP_TEXTS, "requests_output_help"),
+    )
+    parser.add_argument(
         "--evidence-dir",
         default=None,
         help=get_string_config_value(HELP_TEXTS, "evidence_dir_help"),
@@ -4713,6 +4784,7 @@ def main() -> None:
     default_sitemap_output_path = default_domain_output_dir / f"{root_domain}_sitemap.json"
     default_condensed_sitemap_output_path = default_domain_output_dir / f"{root_domain}_sitemap_condensed.json"
     default_inventory_output_path = default_domain_output_dir / f"{root_domain}_url_inventory.json"
+    default_requests_output_path = default_domain_output_dir / "requests.json"
     default_evidence_dir_path = default_domain_output_dir / f"{root_domain}_evidence"
     default_session_state_path = default_domain_output_dir / f"{root_domain}_crawl_session.json"
     default_app_log_file_path = default_domain_output_dir / f"{root_domain}_nightmare.log"
@@ -4740,6 +4812,12 @@ def main() -> None:
         config=config,
         key="url_inventory_output",
         default_path=default_inventory_output_path,
+    )
+    requests_output_path = resolve_output_path_with_domain_default(
+        cli_value=args.requests_output,
+        config=config,
+        key="requests_output",
+        default_path=default_requests_output_path,
     )
     evidence_dir_path = resolve_output_path_with_domain_default(
         cli_value=args.evidence_dir,
@@ -4822,6 +4900,7 @@ def main() -> None:
     ensure_directory(sitemap_output_path.parent)
     ensure_directory(condensed_sitemap_output_path.parent)
     ensure_directory(inventory_output_path.parent)
+    ensure_directory(requests_output_path.parent)
     ensure_directory(session_state_path.parent)
     ensure_directory(scrapy_log_file_path.parent)
     ensure_directory(html_report_output_path.parent)
@@ -4835,6 +4914,7 @@ def main() -> None:
     progress.info(f"Scrapy log file: {scrapy_log_file_path.resolve()} (level={scrapy_log_level_name})")
     progress.info(f"HTML report: {html_report_output_path.resolve()} (enabled={html_report_enabled})")
     progress.info(f"AI data text file: {ai_data_output_path.resolve()}")
+    progress.info(f"Requests inventory file: {requests_output_path.resolve()}")
     progress.info(f"Source-of-truth file: {source_of_truth_output_path.resolve()}")
     progress.info(f"Parameters JSON file: {parameters_output_path.resolve()}")
     progress.info(f"Parameters text file: {parameters_text_output_path.resolve()}")
@@ -5145,6 +5225,9 @@ def main() -> None:
     inventory = build_url_inventory(root_domain=root_domain, state=state)
     write_json(inventory_output_path, inventory)
     progress.info(f"Wrote URL inventory to {inventory_output_path.resolve()}")
+    requests_inventory = build_requests_inventory(root_domain=root_domain, state=state)
+    write_json(requests_output_path, requests_inventory)
+    progress.info(f"Wrote requests inventory to {requests_output_path.resolve()}")
     source_of_truth_payload = build_source_of_truth_payload(root_domain=root_domain, state=state)
     legacy_source_of_truth_output_path = source_of_truth_output_path.with_suffix(".jsonn")
     if source_of_truth_output_path.exists():
@@ -5304,6 +5387,7 @@ def main() -> None:
     print(f"Sitemap saved to: {sitemap_output_path.resolve()}")
     print(f"Condensed sitemap saved to: {condensed_sitemap_output_path.resolve()}")
     print(f"URL inventory saved to: {inventory_output_path.resolve()}")
+    print(f"Requests inventory saved to: {requests_output_path.resolve()}")
     print(f"Evidence directory: {evidence_dir_path.resolve()}")
     print(f"Session state saved to: {session_state_path.resolve()}")
     print(f"Application logs: {app_log_file_path.resolve()}")
