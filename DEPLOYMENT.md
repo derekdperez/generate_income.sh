@@ -23,6 +23,28 @@ cd deploy
 docker compose -f docker-compose.central.yml --env-file .env up -d --build
 ```
 
+### Fast path (auto-generate secrets + certs + env)
+On central VM:
+
+```bash
+chmod +x deploy/bootstrap-central-auto.sh
+./deploy/bootstrap-central-auto.sh
+```
+
+Optional:
+
+```bash
+./deploy/bootstrap-central-auto.sh --base-url https://your-public-hostname --force
+```
+
+This script:
+- generates a strong Postgres password and coordinator API token,
+- detects a base URL from EC2 metadata/public IP (unless `--base-url` is set),
+- creates self-signed TLS cert/key in `deploy/tls/`,
+- writes `deploy/.env`,
+- writes `deploy/worker.env.generated` for worker VMs,
+- rebuilds and starts the central stack.
+
 ## 3) Register Targets
 Use coordinator API token:
 
@@ -35,10 +57,11 @@ python register_targets.py \
 
 ## 4) Worker VM(s)
 1. Copy repo to each worker VM.
-2. Set `config/coordinator.json` (or env vars) with:
-   - `server_base_url`
-   - `api_token`
-3. Start worker container:
+2. Use the generated central file `deploy/worker.env.generated` as the worker `deploy/.env`.
+3. Set `config/coordinator.json` (or env vars) with:
+   - `server_base_url` (or `COORDINATOR_BASE_URL` env)
+   - `api_token` (or `COORDINATOR_API_TOKEN` env)
+4. Start worker container:
 
 ```bash
 cd deploy

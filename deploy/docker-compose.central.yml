@@ -21,6 +21,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL}
+        COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN}
+        DATABASE_URL: postgresql://${POSTGRES_USER:-nightmare}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nightmare}
     image: nightmare:latest
     container_name: nightmare-coordinator-server
     restart: unless-stopped
@@ -54,4 +58,3 @@ services:
 
 volumes:
   postgres_data:
-

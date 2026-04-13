@@ -221,3 +221,18 @@
   - `probe_url_existence()` HTTPError path now also runs `detect_soft_not_found_response()` and marks `exists_confirmed=false` when blocked markers are present.
 - Updated page existence criteria schema/config with `cloudflare_block_title_phrase` and `cloudflare_block_body_phrase` keys.
 - Why: Cloudflare challenge/block pages were being miscounted as existing due to missing checks in HTTPError flow and overwritten title/body marker handling.
+
+## 2026-04-13
+
+- Added automated central bootstrap script: deploy/bootstrap-central-auto.sh.
+  - Generates strong random POSTGRES_PASSWORD + COORDINATOR_API_TOKEN.
+  - Auto-detects base URL from EC2 metadata (public hostname/IP) with fallback to external IP/hostname.
+  - Generates self-signed TLS cert/key under deploy/tls/.
+  - Writes deploy/.env and deploy/worker.env.generated.
+  - Rebuilds and starts the central Docker stack in one command.
+- Why: enable immediate multi-VM bring-up with secure defaults and minimal manual setup steps.
+
+- Updated image/compose secret injection:
+  - Dockerfile now accepts build args for COORDINATOR_BASE_URL, COORDINATOR_API_TOKEN, and DATABASE_URL and exports them as image env vars.
+  - deploy/docker-compose.central.yml and deploy/docker-compose.worker.yml now pass those build args during image build.
+- Why: allow rebuilt images to carry the generated coordinator connection/security values when requested.

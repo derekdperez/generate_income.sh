@@ -61,3 +61,5 @@
   - Secrets/tokens are environment-driven (`.env`), never hardcoded in source.
 - Page-existence convention: treat Cloudflare block pages as non-existent/invalid when both configured markers are present (`cloudflare_block_title_phrase` + `cloudflare_block_body_phrase`), regardless of HTTP status code class.
 - `probe_url_existence()` must apply soft-404/block detection in both successful response path and `HTTPError` path to avoid counting block pages as existing.
+- Central bootstrap convention: deploy/bootstrap-central-auto.sh is the quickest setup path on EC2; it should generate secrets/TLS, write deploy/.env, and emit deploy/worker.env.generated for workers.
+- Deployment compose convention: pass coordinator/database values as Docker build args so rebuilt images can carry runtime defaults, while still setting them via environment at container start.

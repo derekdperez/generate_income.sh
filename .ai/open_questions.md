@@ -5,3 +5,4 @@
 - For thin-shell Fozzy HTML reports that load summary JSON at runtime, confirm whether the expected usage is via local HTTP hosting (instead of `file://`) due browser local-file fetch restrictions.
 - For master HTML log viewer, confirm whether reading logs via browser fetch/XHR from local files should be considered supported only under local HTTP hosting.
 - Environment risk observed on 2026-04-13: `OSError: [Errno 28] No space left on device` while regenerating `output/all_domains.results_summary.json`; until disk space is freed, master summary regeneration may fail and existing master JSON may be stale/corrupt.
+- 2026-04-13: Should secret baking into Docker image remain enabled long-term? Current setup supports it per operator request, but this increases blast radius if an image is leaked. Consider moving to runtime-only secrets via AWS SSM/Secrets Manager.
