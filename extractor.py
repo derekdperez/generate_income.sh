@@ -38,6 +38,8 @@ DEFAULT_SCAN_ROOT = EXTRACTOR_BASE / "output"
 DEFAULT_CONFIG_PATH = EXTRACTOR_BASE / "config" / "extractor.json"
 STATE_FILE_NAME = ".extractor_incremental_state.json"
 MAX_MATCHES_PER_RULE_PER_RESULT_FILE = 300
+TRIM_ENUM_PROGRESS_EVERY = 100_000
+TRIM_REBUILD_PROGRESS_EVERY = 50_000
 
 _EXTRACTOR_LOG_HANDLE: Any = None
 
@@ -237,13 +239,19 @@ def match_fingerprint(domain_label: str, result_file: str, rule_name: str, idx: 
     return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+def _trim_progress(msg: str) -> None:
+    print(f"[extractor:trim] {msg}", flush=True)
+
+
 def _collect_extractor_match_json_paths(
     scan_root: Path,
     *,
     domain_filter: str | None = None,
+    label: str = "Listing match files",
 ) -> list[Path]:
     out: list[Path] = []
     domain_filter_text = str(domain_filter or "").strip().lower()
+    _trim_progress(f"{label}: scanning domain trees under {scan_root} …")
     for domain_label, domain_output in discover_pairs(scan_root):
         if domain_filter_text:
             if (
@@ -258,8 +266,12 @@ def _collect_extractor_match_json_paths(
             for p in md.iterdir():
                 if p.is_file() and p.suffix.lower() == ".json" and p.name.startswith("m_"):
                     out.append(p)
+                    n = len(out)
+                    if n > 0 and n % TRIM_ENUM_PROGRESS_EVERY == 0:
+                        _trim_progress(f"{label}: {n:,} file(s) found so far …")
         except OSError:
             continue
+    _trim_progress(f"{label}: done — {len(out):,} match file(s).")
     return out
 
 
@@ -291,17 +303,26 @@ def aggregate_rule_match_counts_from_disk(
     workers: int = 8,
 ) -> dict[str, int]:
     """Count extractor match files per ``filter_name`` (rule name) under ``scan_root``."""
-    files = _collect_extractor_match_json_paths(scan_root, domain_filter=domain_filter)
+    files = _collect_extractor_match_json_paths(
+        scan_root, domain_filter=domain_filter, label="Listing match files (for counts)"
+    )
     if not files:
         return {}
     workers = max(1, min(int(workers or 1), 32, len(files)))
     chunk_size = max(1, (len(files) + workers - 1) // workers)
     chunks = [files[i : i + chunk_size] for i in range(0, len(files), chunk_size)]
     merged: dict[str, int] = defaultdict(int)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-        for part in executor.map(_count_rules_in_chunk, chunks):
+    n_chunks = len(chunks)
+    _trim_progress(f"Counting rules: processing {len(files):,} file(s) in {n_chunks} parallel chunk(s) …")
+    done_chunks = 0
+    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
+        futures = [executor.submit(_count_rules_in_chunk, ch) for ch in chunks]
+        for fut in as_completed(futures):
+            part = fut.result()
+            done_chunks += 1
             for k, v in part.items():
                 merged[k] += v
+            _trim_progress(f"Counting rules: chunk {done_chunks}/{n_chunks} done")
     return dict(merged)
 
 
@@ -332,17 +353,27 @@ def delete_extractor_matches_for_rules(
     """Remove on-disk ``m_*.json`` match records whose ``filter_name`` is in ``rule_names``."""
     if not rule_names:
         return 0
-    files = _collect_extractor_match_json_paths(scan_root, domain_filter=domain_filter)
+    files = _collect_extractor_match_json_paths(
+        scan_root, domain_filter=domain_filter, label="Listing match files (for delete)"
+    )
     if not files:
         return 0
     workers = max(1, min(int(workers or 1), 32, len(files)))
     chunk_size = max(1, (len(files) + workers - 1) // workers)
     chunks = [files[i : i + chunk_size] for i in range(0, len(files), chunk_size)]
     total = 0
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    n_chunks = len(chunks)
+    _trim_progress(
+        f"Deleting matches for {len(rule_names)} rule name(s): scanning {len(files):,} file(s) "
+        f"in {n_chunks} parallel chunk(s) …"
+    )
+    done_chunks = 0
+    with ThreadPoolExecutor(max_workers=n_chunks) as executor:
         futs = [executor.submit(_delete_matches_chunk, ch, rule_names) for ch in chunks]
         for fut in as_completed(futs):
             total += int(fut.result() or 0)
+            done_chunks += 1
+            _trim_progress(f"Deleting matches: chunk {done_chunks}/{n_chunks} done ({total:,} file(s) removed so far)")
     return total
 
 
@@ -368,19 +399,35 @@ def detail_record_to_summary_row(detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def rebuild_extractor_summary_for_domain(domain_label: str, domain_output: Path) -> Path | None:
+def rebuild_extractor_summary_for_domain(
+    domain_label: str,
+    domain_output: Path,
+    *,
+    progress_every: int | None = TRIM_REBUILD_PROGRESS_EVERY,
+) -> Path | None:
     """Rebuild ``extractor/summary.json`` from remaining ``extractor/matches/m_*.json`` files."""
     extractor_root = domain_output / "extractor"
     matches_dir = extractor_root / "matches"
     rows_out: list[dict[str, Any]] = []
     if matches_dir.is_dir():
-        for path in sorted(matches_dir.glob("m_*.json")):
+        paths = sorted(matches_dir.glob("m_*.json"))
+        total_paths = len(paths)
+        for idx, path in enumerate(paths, start=1):
             detail = _read_match_detail(path)
             if not detail:
                 continue
             row = detail_record_to_summary_row(detail)
             row["match_file"] = str(path.resolve())
             rows_out.append(row)
+            if (
+                progress_every
+                and total_paths > 0
+                and idx > 0
+                and idx % progress_every == 0
+            ):
+                _trim_progress(
+                    f"rebuild {domain_label!r}: scanned {idx:,}/{total_paths:,} match file(s) …"
+                )
     match_count = len(rows_out)
     summary_path = extractor_root / "summary.json"
     summary_payload = {
@@ -396,8 +443,8 @@ def rebuild_extractor_summary_for_domain(domain_label: str, domain_output: Path)
 
 
 def rebuild_all_extractor_summaries_after_trim(scan_root: Path, *, domain_filter: str | None = None) -> int:
-    n = 0
     domain_filter_text = str(domain_filter or "").strip().lower()
+    to_rebuild: list[tuple[str, Path]] = []
     for domain_label, domain_output in discover_pairs(scan_root):
         if domain_filter_text:
             if (
@@ -408,9 +455,15 @@ def rebuild_all_extractor_summaries_after_trim(scan_root: Path, *, domain_filter
         ext = domain_output / "extractor"
         if not ext.is_dir():
             continue
+        to_rebuild.append((domain_label, domain_output))
+    n_total = len(to_rebuild)
+    if n_total == 0:
+        return 0
+    _trim_progress(f"Rebuilding extractor/summary.json for {n_total} domain tree(s) …")
+    for i, (domain_label, domain_output) in enumerate(to_rebuild, start=1):
+        _trim_progress(f"Rebuilding summaries: {i}/{n_total} — {domain_label!r}")
         rebuild_extractor_summary_for_domain(domain_label, domain_output)
-        n += 1
-    return n
+    return n_total
 
 
 def load_wordlist_rule_names(wordlist_path: Path) -> set[str]:
@@ -505,14 +558,18 @@ def run_trim_mode(
     no_backup: bool = False,
 ) -> int:
     scan_root = scan_root.resolve()
-    counts = aggregate_rule_match_counts_from_disk(scan_root, domain_filter=domain_filter, workers=workers)
-    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    _trim_progress(f"starting — scan_root={scan_root} workers={workers}")
+    if domain_filter:
+        _trim_progress(f"domain filter={domain_filter!r}")
     wl_names = load_wordlist_rule_names(wordlist_path)
 
-    print(f"[extractor:trim] scan_root={scan_root}", flush=True)
-    if domain_filter:
-        print(f"[extractor:trim] domain filter={domain_filter!r}", flush=True)
-    print(f"[extractor:trim] match files counted: {sum(counts.values())} across {len(counts)} rule name(s)", flush=True)
+    counts = aggregate_rule_match_counts_from_disk(scan_root, domain_filter=domain_filter, workers=workers)
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+
+    total_matches = sum(counts.values())
+    _trim_progress(
+        f"aggregate counts done: {total_matches:,} match file(s) across {len(counts)} rule name(s)"
+    )
     if not ordered and not trim_remove:
         print("[extractor:trim] No extractor match files found; nothing to trim.", flush=True)
         return 0
