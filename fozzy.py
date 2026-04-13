@@ -2322,6 +2322,11 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
         else f"<tr><td colspan='{table_col_count}'>No discrepancies</td></tr>"
     )
     response_data_json = json.dumps(response_records, ensure_ascii=False).replace("</", "<\\/")
+    summary_json_filename_js = json.dumps(summary_json_filename, ensure_ascii=False).replace("</", "<\\/")
+    master_log_files_js = json.dumps(
+        master_log_files if isinstance(master_log_files, list) else [],
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
 
     inventory_sections_html = ""
     inventory_script_html = ""
@@ -2548,8 +2553,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
     (function() {{
       let responseData = {response_data_json};
       let responseDataById = new Map(responseData.map((item) => [String(item.id), item]));
-      const summaryJsonFilename = {json.dumps(summary_json_filename, ensure_ascii=False).replace("</", "<\\/")};
-      const masterLogFiles = {json.dumps(master_log_files if isinstance(master_log_files, list) else [], ensure_ascii=False).replace("</", "<\\/")};
+      const summaryJsonFilename = {summary_json_filename_js};
+      const masterLogFiles = {master_log_files_js};
       const stateStorageKey = "fozzy-report-state:" + String(window.location.href.split("#")[0]);
       const stateNamePrefix = "fozzy-report-state:";
 

@@ -83,3 +83,8 @@
   - `extractor.py` now carries `importance_score` from `resources/wordlists/extractor_list.txt` into both match detail files and `extractor/summary.json` rows.
   - Master HTML report table in `fozzy.py` now includes an `Importance` numeric column with sortable header and per-column filter input.
 - Why: extractor list now includes score metadata and report needs analyst triage by severity/priority.
+
+- Fixed `fozzy.py` master-report HTML template f-string syntax for Python runtime compatibility:
+  - Moved backslash-bearing JSON escaping (`.replace("</", "<\\/")`) out of inline f-string expressions and into precomputed variables.
+  - Template now interpolates `summary_json_filename_js` and `master_log_files_js` constants.
+- Why: Python raised `SyntaxError: f-string expression part cannot include a backslash` at startup on `python3 fozzy.py`.
