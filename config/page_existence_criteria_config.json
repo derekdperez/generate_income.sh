@@ -5,19 +5,19 @@
   "soft_404_head_scan_max_bytes": 8192,
   "soft_404_body_scan_max_bytes": 24576,
   "soft_404_title_patterns": [
-    "<title[^>]*>[^<]*(?:404|not found|page not found|does not exist|cannot be found|no such)[^<]*</title>"
+    "<title[^>]*>[^<]*(?:404|not found|page not found|does not exist|cannot be found|no such|Cloudflare)[^<]*</title>"
   ],
   "soft_404_body_phrases": [
     "page not found",
     "does not exist",
     "cannot be found",
     "no such page",
-    "not found",
     "the page you requested could not be found",
     "the requested url was not found",
     "this page is unavailable",
     "the page you are looking for doesn't exist or has been moved",
-    "the page you are looking for does not exist or has been moved"
+    "the page you are looking for does not exist or has been moved",
+	"Sorry, you have been blocked"
   ],
   "soft_404_body_regexes": [
     "page\\s+not\\s+found",
