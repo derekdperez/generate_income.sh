@@ -130,6 +130,44 @@ resolve_compose_cmd() {
   return 1
 }
 
+install_standalone_compose_if_needed() {
+  if resolve_compose_cmd; then
+    return 0
+  fi
+
+  local sudo_cmd=()
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    else
+      echo "Run as root or install sudo to install docker-compose standalone." >&2
+      return 1
+    fi
+  fi
+
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      echo "Unsupported architecture for standalone docker-compose: $arch" >&2
+      return 1
+      ;;
+  esac
+
+  local version="v2.29.7"
+  local url="https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${arch}"
+  echo "Installing standalone docker-compose ${version} for ${arch}..."
+  "${sudo_cmd[@]}" curl -fL "$url" -o /usr/local/bin/docker-compose
+  "${sudo_cmd[@]}" chmod +x /usr/local/bin/docker-compose
+
+  if ! resolve_compose_cmd; then
+    echo "docker compose is still unavailable after standalone install." >&2
+    return 1
+  fi
+}
+
 install_deps_if_missing() {
   local missing=()
   local needs_compose=0
@@ -161,11 +199,9 @@ install_deps_if_missing() {
   if command -v yum >/dev/null 2>&1; then
     "${sudo_cmd[@]}" yum makecache -y || true
     "${sudo_cmd[@]}" yum install -y ca-certificates curl-minimal openssl git docker
-    "${sudo_cmd[@]}" yum install -y docker-compose-plugin || "${sudo_cmd[@]}" yum install -y docker-compose || true
   elif command -v dnf >/dev/null 2>&1; then
     "${sudo_cmd[@]}" dnf makecache -y || true
     "${sudo_cmd[@]}" dnf install -y ca-certificates curl-minimal openssl git docker
-    "${sudo_cmd[@]}" dnf install -y docker-compose-plugin || "${sudo_cmd[@]}" dnf install -y docker-compose || true
   elif command -v apt-get >/dev/null 2>&1; then
     "${sudo_cmd[@]}" apt-get update
     "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io docker-compose-plugin
@@ -178,8 +214,8 @@ install_deps_if_missing() {
     "${sudo_cmd[@]}" systemctl enable --now docker || true
   fi
 
-  if ! resolve_compose_cmd; then
-    echo "docker compose is still unavailable after package install. Install docker compose plugin (or docker-compose) manually." >&2
+  if ! install_standalone_compose_if_needed; then
+    echo "docker compose is still unavailable after package install." >&2
     return 1
   fi
 }

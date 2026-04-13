@@ -52,6 +52,7 @@ Bootstrap scripts support both Compose CLIs:
 
 Amazon Linux note:
 - Package installs use `curl-minimal` on `yum`/`dnf` to avoid `curl` vs `curl-minimal` conflicts on AL2023.
+- If `docker-compose-plugin` is not available in distro repos, bootstrap falls back to installing standalone `docker-compose` binary automatically.
 
 ### Fully automatic: central + 20 workers from central machine
 If AWS CLI is configured on central, run:

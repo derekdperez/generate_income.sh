@@ -262,3 +262,7 @@
   - deploy/bootstrap-central-auto.sh now installs curl-minimal for yum/dnf hosts.
   - deploy/provision-workers-aws.sh cloud-init also uses curl-minimal on yum/dnf.
 - Why: AL2023 ships curl-minimal by default and installing curl caused dependency solver failures.
+- Fixed AL2023 compose package availability issue: bootstrap no longer depends on docker-compose-plugin in yum/dnf repos.
+  - Central bootstrap now installs standalone docker-compose binary automatically if compose plugin/command is missing.
+  - Worker cloud-init uses same fallback.
+- Why: many Amazon Linux images do not provide docker-compose-plugin package, which previously caused setup failure.
