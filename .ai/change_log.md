@@ -273,3 +273,7 @@
 - Why: central setup could succeed, then worker provisioning failed late with opaque "Unable to locate credentials".
 - deploy/provision-workers-aws.sh now auto-loads coordinator URL/token from deploy/.env when flags are omitted.
 - Why: operators should not need to manually look up or pass coordinator credentials after central bootstrap.
+- Fixed master HTML extractor section reliability by bounding extractor rows included in ll_domains.results_summary.json.
+  - ozzy.py now caps master payload extractor rows at MASTER_REPORT_EXTRACTOR_ROWS_MAX (10,000), while tracking extractor_matches_total and extractor_matches_truncated.
+  - Master report UI now shows explicit truncation note when full extractor dataset is larger than rendered payload.
+- Why: very large per-domain extractor summaries could make master summary payload too large to load/render, causing extractor table to appear stuck/empty.

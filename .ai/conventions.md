@@ -68,3 +68,4 @@
 - Cross-platform convention: enforce LF for .sh and deployment YAML via .gitattributes to avoid Linux runtime failures after Windows edits/checkouts.
 - Linux bootstrap scripts should detect package manager in this order for AWS compatibility: yum, then dnf, then pt-get fallback.
 - Compose compatibility convention: bootstrap and worker launch paths must support both docker compose and docker-compose to handle mixed AMI toolchains.
+- Master report payload size convention: cap extractor-match rows included in ll_domains.results_summary.json and emit explicit extractor_matches_total/extractor_matches_truncated metadata so the HTML can render quickly and still communicate truncation.
