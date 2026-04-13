@@ -42,3 +42,20 @@
   - Enable by setting `environment` to `dev/development/local/test` or `dev_timing_logging=true`.
   - Timed sections are wrapped with `dev_timed_call(...)`; summary emitted via `emit_dev_timing_summary(...)` and logged as `[dev-perf]` lines.
   - `dev_timing_log_each_call=true` optionally logs each timed call; otherwise only aggregate/slowest summaries are logged.
+- `server.py` now supports dual listener operation for web-server deployment: `http_port` and `https_port` can run concurrently; HTTPS requires configured `cert_file` and `key_file`.
+- Legacy `--port` remains supported as HTTP-only fallback for compatibility.
+- Coordinator API convention: when `database_url` is configured, `/api/coord/*` endpoints are active and may be protected by `coordinator_api_token` (Bearer or `X-Coordinator-Token`).
+- Postgres is the source of truth for centralized coordinator state (targets/leases/session checkpoints) when coordinator mode is enabled.
+- Distributed coordinator architecture convention:
+  - Central `server.py` owns Postgres-backed truth for target queue, stage queue, session checkpoints, and replicated artifacts.
+  - Worker VMs must claim work via lease-based APIs and maintain heartbeats; lock ownership is `(entry_id, worker_id)` for targets and `(root_domain, stage, worker_id)` for stages.
+- Stage pipeline convention:
+  - Stage progression is explicit and lock-protected: `nightmare` completion enqueues `fozzy`; `fozzy` completion enqueues `extractor`.
+  - Stage workers must not run without successful claim and must mark completion/failure via stage complete endpoint.
+- Cross-VM resume convention:
+  - Nightmare session snapshots are periodically posted to coordinator while crawl is active.
+  - Workers upload/download key artifacts through coordinator artifact APIs so any VM can continue downstream stages.
+- Deployment convention:
+  - Single image supports roles via `APP_ROLE` (`server` or `coordinator`).
+  - Central deployment uses HTTP+HTTPS listeners and Postgres (`deploy/docker-compose.central.yml`); workers use `deploy/docker-compose.worker.yml`.
+  - Secrets/tokens are environment-driven (`.env`), never hardcoded in source.

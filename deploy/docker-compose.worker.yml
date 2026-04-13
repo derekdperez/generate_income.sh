@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: nightmare:latest
+    restart: unless-stopped
+    environment:
+      APP_ROLE: coordinator
+      COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
+      COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+    volumes:
+      - ../output:/app/output
+      - ../config:/app/config
+    command:
+      - coordinator
+      - --config
+      - config/coordinator.json
+

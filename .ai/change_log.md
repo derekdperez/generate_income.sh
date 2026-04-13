@@ -183,3 +183,34 @@
   - Added dev-only timing instrumentation with per-method aggregates and slowest-call output (`[dev-perf]`) for key pipeline methods (crawl, AI calls, probe calls, artifact writes, batch orchestration stages).
   - Added config keys: `environment`, `dev_timing_logging`, `dev_timing_log_each_call`, `batch_worker_nice`, `batch_worker_affinity_cores`.
 - Why: lower worker scheduling priority prevents worker saturation from starving interactive/system workloads, and dev-only timing data makes performance hotspots visible for targeted optimization.
+
+- Added self-hosted coordinator foundation in `server.py` with optional Postgres backend (`database_url`):
+  - New `/api/coord/*` endpoints for target registration, claim/heartbeat/complete, session save/load, and coordinator state summaries.
+  - Added token-based protection (`coordinator_api_token`) for coordinator endpoints.
+- Added web-server style dual listeners in `server.py`:
+  - Supports HTTP and HTTPS listeners simultaneously via `http_port` and `https_port` (defaults now `80` and `443`).
+  - HTTPS listener requires `cert_file` + `key_file`; if absent, HTTPS is disabled with explicit startup warning.
+  - Retains backward compatibility with legacy `--port` single-listener mode.
+- Added dependency `psycopg[binary]` in `requirements.txt` for Postgres coordinator mode.
+- Why: support a central self-hosted coordination server that behaves like a standard web server while persisting shared queue/session state in Postgres for multi-VM execution.
+
+- Implemented centralized distributed orchestration stack for multi-VM scaling:
+  - `server.py` now includes Postgres-backed coordinator APIs for target leaseing, stage leaseing, session checkpointing, and artifact storage/replication.
+  - Added tables: `coordinator_targets`, `coordinator_sessions`, `coordinator_stage_tasks`, `coordinator_artifacts`.
+  - Added endpoints:
+    - target queue: `/api/coord/register-targets`, `/api/coord/claim`, `/api/coord/heartbeat`, `/api/coord/complete`
+    - stage queue: `/api/coord/stage/enqueue`, `/api/coord/stage/claim`, `/api/coord/stage/heartbeat`, `/api/coord/stage/complete`
+    - session/artifacts: `/api/coord/session` (GET/POST), `/api/coord/artifact` (GET/POST), `/api/coord/artifacts`.
+- Added `coordinator.py` distributed worker orchestrator:
+  - Runs Nightmare/Fozzy/Extractor concurrently with dedicated worker pools (default 2 each).
+  - Uses lease heartbeat for target and stage locks.
+  - Uploads session checkpoints during active crawl and syncs artifacts to Postgres for cross-VM continuation.
+  - Enqueues stage transitions (`nightmare -> fozzy -> extractor`) only after successful completion.
+- Added full container/deploy scaffolding for EC2:
+  - `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore`
+  - `deploy/docker-compose.central.yml` (server + postgres)
+  - `deploy/docker-compose.worker.yml` (distributed workers)
+  - `deploy/.env.example`, `deploy/bootstrap-central.sh`, `deploy/bootstrap-worker.sh`
+  - `DEPLOYMENT.md` with operational runbook.
+- Updated dependencies with `psycopg[binary]` for Postgres support.
+- Why: enable horizontal VM scale-out with centralized locking/state, resumable failover, and shared artifact/session access across workers.

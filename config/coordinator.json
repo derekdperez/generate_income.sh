@@ -1,0 +1,22 @@
+{
+  "server_base_url": "https://coordinator.example.com",
+  "api_token": "",
+  "output_root": "output",
+  "lease_seconds": 180,
+  "heartbeat_interval_seconds": 20.0,
+  "poll_interval_seconds": 5.0,
+  "upload_session_every_seconds": 15.0,
+  "nightmare_workers": 2,
+  "fozzy_workers": 2,
+  "extractor_workers": 2,
+  "enable_nightmare": true,
+  "enable_fozzy": true,
+  "enable_extractor": true,
+  "fozzy_process_workers": 1,
+  "extractor_process_workers": 1,
+  "python_executable": "python",
+  "nightmare_config": "config/nightmare.json",
+  "fozzy_config": "config/fozzy.json",
+  "extractor_config": "config/extractor.json"
+}
+

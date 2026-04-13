@@ -51,9 +51,9 @@ except Exception:  # pragma: no cover - optional dependency fallback
 
 
 DEFAULT_NOT_FOUND_STATUSES = {404, 410}
-DEFAULT_SOFT_404_SMALL_BODY_MAX_BYTES = 16 * 1024
-DEFAULT_SOFT_404_HEAD_SCAN_MAX_BYTES = 4096
-DEFAULT_SOFT_404_BODY_SCAN_MAX_BYTES = 16 * 1024
+DEFAULT_SOFT_404_SMALL_BODY_MAX_BYTES = 64 * 1024
+DEFAULT_SOFT_404_HEAD_SCAN_MAX_BYTES = 8192
+DEFAULT_SOFT_404_BODY_SCAN_MAX_BYTES = 64 * 1024
 DEFAULT_SOFT_404_TITLE_PATTERNS = [
     r"<title[^>]*>[^<]*(?:404|not found|page not found|does not exist|cannot be found|no such)[^<]*</title>",
 ]
@@ -68,6 +68,8 @@ DEFAULT_SOFT_404_PHRASES = [
     "this page is unavailable",
     "the page you are looking for doesn't exist or has been moved",
 ]
+DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE = "attention required! | cloudflare"
+DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE = "sorry, you have been blocked"
 BASE_DIR = Path(__file__).resolve().parent
 FILE_PATH_WORDLIST_PATH = BASE_DIR / "resources" / "wordlists" / "file_path_list.txt"
 FILE_PATH_WORDLIST_DISCOVERED_FROM = "resources/wordlists/file_path_list.txt"
@@ -114,10 +116,6 @@ _DEV_TIMING_LOG_EACH_CALL = False
 _DEV_TIMING_LOCK = threading.Lock()
 _DEV_TIMING_STATS: dict[str, dict[str, float | int]] = {}
 _DEV_TIMING_CALLS: list[dict[str, Any]] = []
-SESSION_STATE_BACKEND_URL: str = ""
-SESSION_STATE_BACKEND_TIMEOUT_SECONDS: float = 5.0
-SESSION_STATE_BACKEND_TOKEN: str = ""
-_SESSION_STATE_REMOTE_ERROR_LOGGED = False
 
 
 def get_root_domain(hostname: str) -> str:
@@ -342,11 +340,28 @@ def detect_soft_not_found_response(
     title_patterns = criteria.get("soft_404_title_patterns", DEFAULT_SOFT_404_TITLE_PATTERNS)
     body_phrases = criteria.get("soft_404_body_phrases", DEFAULT_SOFT_404_PHRASES)
     body_regexes = criteria.get("soft_404_body_regexes", [])
+    cloudflare_title_phrase = str(
+        criteria.get("cloudflare_block_title_phrase", DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE)
+    ).strip().lower()
+    cloudflare_body_phrase = str(
+        criteria.get("cloudflare_block_body_phrase", DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE)
+    ).strip().lower()
 
     head_text = body_bytes[:head_scan_max_bytes].decode("utf-8", errors="replace")
     body_text = body_bytes[:body_scan_max_bytes].decode("utf-8", errors="replace")
+    head_lower = head_text.lower()
     body_lower = body_text.lower()
     compact = re.sub(r"\s+", " ", body_lower)
+
+    # Cloudflare block pages are never valid pages, even when returned with non-404 status codes.
+    if cloudflare_title_phrase and cloudflare_body_phrase:
+        title_found = cloudflare_title_phrase in re.sub(r"\s+", " ", head_lower)
+        blocked_found = cloudflare_body_phrase in compact
+        if title_found and blocked_found:
+            return True, (
+                "cloudflare block page detected "
+                f"(title contains '{cloudflare_title_phrase}' and body contains '{cloudflare_body_phrase}')"
+            )
 
     for pattern in title_patterns:
         try:
@@ -1020,6 +1035,8 @@ def default_page_existence_criteria() -> dict[str, Any]:
         "soft_404_title_patterns": list(DEFAULT_SOFT_404_TITLE_PATTERNS),
         "soft_404_body_phrases": list(DEFAULT_SOFT_404_PHRASES),
         "soft_404_body_regexes": [],
+        "cloudflare_block_title_phrase": DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE,
+        "cloudflare_block_body_phrase": DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE,
     }
 
 
@@ -1080,6 +1097,12 @@ def _sanitize_page_existence_criteria(raw: dict[str, Any]) -> dict[str, Any]:
         merged.get("soft_404_body_regexes"),
         [],
     )
+    merged["cloudflare_block_title_phrase"] = str(
+        merged.get("cloudflare_block_title_phrase", DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE)
+    ).strip() or DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE
+    merged["cloudflare_block_body_phrase"] = str(
+        merged.get("cloudflare_block_body_phrase", DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE)
+    ).strip() or DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE
     return merged
 
 
@@ -3836,18 +3859,26 @@ def probe_url_existence(
             if method == "HEAD" and status_code in {405, 501}:
                 continue
 
+            soft_404_detected, soft_404_reason = detect_soft_not_found_response(status_code, response_body)
             exists_confirmed = status_code not in configured_not_found_statuses()
             note = "Received HTTP error status during probe"
             if status_code in configured_not_found_statuses():
                 note = "URL returned explicit not-found status"
+            if soft_404_detected:
+                exists_confirmed = False
+                note = (
+                    f"Soft-404 or block page detected in HTTP error response: {soft_404_reason}"
+                    if soft_404_reason
+                    else "Soft-404 or block page detected in HTTP error response"
+                )
 
             return {
                 "exists_confirmed": exists_confirmed,
                 "status_code": status_code,
                 "method": method,
                 "note": note,
-                "soft_404_detected": False,
-                "soft_404_reason": None,
+                "soft_404_detected": soft_404_detected,
+                "soft_404_reason": soft_404_reason,
                 "request": request_payload,
                 "response": {
                     "status": status_code,

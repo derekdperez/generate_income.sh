@@ -16,6 +16,7 @@ The dashboard provides:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import json
@@ -25,6 +26,7 @@ import re
 import ssl
 import sys
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -370,6 +372,38 @@ CREATE TABLE IF NOT EXISTS coordinator_sessions (
   saved_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   payload JSONB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
+  root_domain TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  worker_id TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  started_at_utc TIMESTAMPTZ,
+  completed_at_utc TIMESTAMPTZ,
+  heartbeat_at_utc TIMESTAMPTZ,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  exit_code INTEGER,
+  error TEXT,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(root_domain, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(stage, status);
+CREATE INDEX IF NOT EXISTS idx_stage_tasks_lease ON coordinator_stage_tasks(lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS coordinator_artifacts (
+  root_domain TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  source_worker TEXT,
+  content BYTEA NOT NULL,
+  content_encoding TEXT NOT NULL DEFAULT 'identity',
+  content_sha256 TEXT NOT NULL,
+  content_size_bytes BIGINT NOT NULL,
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(root_domain, artifact_type)
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -582,6 +616,246 @@ SET start_url = EXCLUDED.start_url,
             "generated_at_utc": _iso_now(),
         }
 
+    def enqueue_stage(self, root_domain: str, stage: str) -> bool:
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        if not rd or not stg:
+            return False
+        sql = """
+INSERT INTO coordinator_stage_tasks(root_domain, stage, status, updated_at_utc)
+VALUES (%s, %s, 'pending', NOW())
+ON CONFLICT (root_domain, stage) DO UPDATE
+SET status = CASE
+      WHEN coordinator_stage_tasks.status = 'completed' THEN coordinator_stage_tasks.status
+      ELSE 'pending'
+    END,
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    completed_at_utc = CASE
+      WHEN coordinator_stage_tasks.status = 'completed' THEN coordinator_stage_tasks.completed_at_utc
+      ELSE NULL
+    END,
+    updated_at_utc = NOW();
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (rd, stg))
+            conn.commit()
+        return True
+
+    def claim_stage(self, stage: str, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+        stg = str(stage or "").strip().lower()
+        wid = str(worker_id or "").strip()
+        if not stg or not wid:
+            raise ValueError("stage and worker_id are required")
+        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        sql = """
+WITH candidate AS (
+    SELECT root_domain
+    FROM coordinator_stage_tasks
+    WHERE stage = %s
+      AND (
+        status = 'pending'
+        OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+      )
+    ORDER BY created_at_utc ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE coordinator_stage_tasks t
+SET status = 'running',
+    worker_id = %s,
+    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
+    started_at_utc = COALESCE(t.started_at_utc, NOW()),
+    completed_at_utc = NULL,
+    heartbeat_at_utc = NOW(),
+    attempt_count = t.attempt_count + 1,
+    updated_at_utc = NOW(),
+    error = NULL
+FROM candidate
+WHERE t.root_domain = candidate.root_domain
+  AND t.stage = %s
+RETURNING t.root_domain, t.stage, t.status, t.worker_id, t.attempt_count, t.lease_expires_at;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (stg, wid, lease, stg))
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        return {
+            "root_domain": row[0],
+            "stage": row[1],
+            "status": row[2],
+            "worker_id": row[3],
+            "attempt_count": int(row[4] or 0),
+            "lease_expires_at": row[5].isoformat() if row[5] else None,
+        }
+
+    def heartbeat_stage(self, root_domain: str, stage: str, worker_id: str, lease_seconds: int) -> bool:
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        wid = str(worker_id or "").strip()
+        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        if not rd or not stg or not wid:
+            return False
+        sql = """
+UPDATE coordinator_stage_tasks
+SET heartbeat_at_utc = NOW(),
+    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
+    updated_at_utc = NOW()
+WHERE root_domain = %s
+  AND stage = %s
+  AND worker_id = %s
+  AND status = 'running';
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (lease, rd, stg, wid))
+                updated = int(cur.rowcount or 0)
+            conn.commit()
+        return updated > 0
+
+    def complete_stage(
+        self,
+        root_domain: str,
+        stage: str,
+        worker_id: str,
+        *,
+        exit_code: int,
+        error: str = "",
+    ) -> bool:
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        wid = str(worker_id or "").strip()
+        if not rd or not stg or not wid:
+            return False
+        ok = int(exit_code) == 0
+        next_status = "completed" if ok else "failed"
+        sql = """
+UPDATE coordinator_stage_tasks
+SET status = %s,
+    exit_code = %s,
+    error = %s,
+    completed_at_utc = NOW(),
+    heartbeat_at_utc = NOW(),
+    lease_expires_at = NULL,
+    updated_at_utc = NOW()
+WHERE root_domain = %s
+  AND stage = %s
+  AND worker_id = %s;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (next_status, int(exit_code), str(error or "")[:2000], rd, stg, wid))
+                updated = int(cur.rowcount or 0)
+            conn.commit()
+        return updated > 0
+
+    def upload_artifact(
+        self,
+        *,
+        root_domain: str,
+        artifact_type: str,
+        content: bytes,
+        source_worker: str = "",
+        content_encoding: str = "identity",
+    ) -> bool:
+        rd = str(root_domain or "").strip().lower()
+        at = str(artifact_type or "").strip().lower()
+        if not rd or not at:
+            return False
+        data = bytes(content or b"")
+        digest = hashlib.sha256(data).hexdigest()
+        sql = """
+INSERT INTO coordinator_artifacts(
+    root_domain, artifact_type, source_worker, content, content_encoding, content_sha256, content_size_bytes, updated_at_utc
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+ON CONFLICT (root_domain, artifact_type) DO UPDATE
+SET source_worker = EXCLUDED.source_worker,
+    content = EXCLUDED.content,
+    content_encoding = EXCLUDED.content_encoding,
+    content_sha256 = EXCLUDED.content_sha256,
+    content_size_bytes = EXCLUDED.content_size_bytes,
+    updated_at_utc = NOW();
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql,
+                    (
+                        rd,
+                        at,
+                        str(source_worker or "")[:200],
+                        data,
+                        str(content_encoding or "identity")[:120],
+                        digest,
+                        len(data),
+                    ),
+                )
+            conn.commit()
+        return True
+
+    def get_artifact(self, root_domain: str, artifact_type: str) -> dict[str, Any] | None:
+        rd = str(root_domain or "").strip().lower()
+        at = str(artifact_type or "").strip().lower()
+        if not rd or not at:
+            return None
+        sql = """
+SELECT root_domain, artifact_type, source_worker, content, content_encoding, content_sha256, content_size_bytes, updated_at_utc
+FROM coordinator_artifacts
+WHERE root_domain = %s AND artifact_type = %s;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (rd, at))
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        return {
+            "root_domain": row[0],
+            "artifact_type": row[1],
+            "source_worker": row[2],
+            "content": bytes(row[3] or b""),
+            "content_encoding": row[4],
+            "content_sha256": row[5],
+            "content_size_bytes": int(row[6] or 0),
+            "updated_at_utc": row[7].isoformat() if row[7] else None,
+        }
+
+    def list_artifacts(self, root_domain: str) -> list[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        if not rd:
+            return []
+        sql = """
+SELECT artifact_type, source_worker, content_encoding, content_sha256, content_size_bytes, updated_at_utc
+FROM coordinator_artifacts
+WHERE root_domain = %s
+ORDER BY artifact_type ASC;
+"""
+        out: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (rd,))
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            out.append(
+                {
+                    "artifact_type": row[0],
+                    "source_worker": row[1],
+                    "content_encoding": row[2],
+                    "content_sha256": row[3],
+                    "content_size_bytes": int(row[4] or 0),
+                    "updated_at_utc": row[5].isoformat() if row[5] else None,
+                }
+            )
+        return out
+
 
 def _normalize_and_validate_relative_path(root: Path, raw_relative: str) -> Path | None:
     cleaned = str(raw_relative or "").strip().replace("\\", "/")
@@ -750,6 +1024,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json({"found": True, "session": payload})
             return
+        if path == "/api/coord/artifact":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            artifact_type = str((query.get("artifact_type") or [""])[0] or "").strip().lower()
+            if not root_domain or not artifact_type:
+                self._write_json({"error": "root_domain and artifact_type are required"}, status=400)
+                return
+            artifact = self.coordinator_store.get_artifact(root_domain, artifact_type)
+            if artifact is None:
+                self._write_json({"found": False, "root_domain": root_domain, "artifact_type": artifact_type})
+                return
+            self._write_json(
+                {
+                    "found": True,
+                    "artifact": {
+                        "root_domain": artifact["root_domain"],
+                        "artifact_type": artifact["artifact_type"],
+                        "source_worker": artifact["source_worker"],
+                        "content_encoding": artifact["content_encoding"],
+                        "content_sha256": artifact["content_sha256"],
+                        "content_size_bytes": artifact["content_size_bytes"],
+                        "updated_at_utc": artifact["updated_at_utc"],
+                        "content_base64": base64.b64encode(bytes(artifact["content"])).decode("ascii"),
+                    },
+                }
+            )
+            return
+        if path == "/api/coord/artifacts":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            if not root_domain:
+                self._write_json({"error": "root_domain is required"}, status=400)
+                return
+            self._write_json({"root_domain": root_domain, "artifacts": self.coordinator_store.list_artifacts(root_domain)})
+            return
         if path.startswith("/files/"):
             rel = unquote(path[len("/files/"):])
             resolved = _normalize_and_validate_relative_path(self.app_root, rel)
@@ -835,6 +1154,70 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 saved_at_utc=saved_at_utc,
             )
             self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/stage/enqueue":
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            stage = str(body.get("stage", "") or "").strip().lower()
+            ok = self.coordinator_store.enqueue_stage(root_domain, stage)
+            self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/stage/claim":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            stage = str(body.get("stage", "") or "").strip().lower()
+            lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
+            item = self.coordinator_store.claim_stage(stage, worker_id, lease_seconds)
+            self._write_json({"ok": True, "entry": item})
+            return
+
+        if path == "/api/coord/stage/heartbeat":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            stage = str(body.get("stage", "") or "").strip().lower()
+            lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
+            ok = self.coordinator_store.heartbeat_stage(root_domain, stage, worker_id, lease_seconds)
+            self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/stage/complete":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            stage = str(body.get("stage", "") or "").strip().lower()
+            exit_code = _safe_int(body.get("exit_code", 0), 0)
+            error = str(body.get("error", "") or "")
+            ok = self.coordinator_store.complete_stage(
+                root_domain,
+                stage,
+                worker_id,
+                exit_code=exit_code,
+                error=error,
+            )
+            self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/artifact":
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            artifact_type = str(body.get("artifact_type", "") or "").strip().lower()
+            source_worker = str(body.get("source_worker", "") or "").strip()
+            content_encoding = str(body.get("content_encoding", "identity") or "identity").strip()
+            content_base64 = str(body.get("content_base64", "") or "")
+            if not root_domain or not artifact_type or not content_base64:
+                self._write_json({"error": "root_domain, artifact_type, content_base64 are required"}, status=400)
+                return
+            try:
+                content = base64.b64decode(content_base64.encode("ascii"), validate=True)
+            except Exception:
+                self._write_json({"error": "content_base64 is invalid"}, status=400)
+                return
+            ok = self.coordinator_store.upload_artifact(
+                root_domain=root_domain,
+                artifact_type=artifact_type,
+                content=content,
+                source_worker=source_worker,
+                content_encoding=content_encoding,
+            )
+            self._write_json({"ok": bool(ok), "size": len(content)})
             return
 
         self._write_json({"error": "not found"}, status=404)
