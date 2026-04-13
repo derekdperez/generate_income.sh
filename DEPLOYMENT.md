@@ -45,6 +45,27 @@ This script:
 - writes `deploy/worker.env.generated` for worker VMs,
 - rebuilds and starts the central stack.
 
+### Windows fast path (PowerShell)
+On central Windows VM:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\bootstrap-windows.ps1 -Role Central
+```
+
+Optional:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\bootstrap-windows.ps1 -Role Central -BaseUrl https://your-public-hostname -Force
+```
+
+On worker Windows VM:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\bootstrap-windows.ps1 -Role Worker -BaseUrl https://<central-host> -ApiToken <COORDINATOR_API_TOKEN>
+```
+
+If `deploy/worker.env.generated` from central is copied to the worker, you can omit `-BaseUrl` and `-ApiToken`.
+
 ## 3) Register Targets
 Use coordinator API token:
 

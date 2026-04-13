@@ -63,3 +63,4 @@
 - `probe_url_existence()` must apply soft-404/block detection in both successful response path and `HTTPError` path to avoid counting block pages as existing.
 - Central bootstrap convention: deploy/bootstrap-central-auto.sh is the quickest setup path on EC2; it should generate secrets/TLS, write deploy/.env, and emit deploy/worker.env.generated for workers.
 - Deployment compose convention: pass coordinator/database values as Docker build args so rebuilt images can carry runtime defaults, while still setting them via environment at container start.
+- Windows deployment convention: use deploy/bootstrap-windows.ps1 for both coordinator and worker VM bootstrap; central emits deploy/worker.env.generated for worker reuse.

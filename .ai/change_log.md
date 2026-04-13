@@ -236,3 +236,9 @@
   - Dockerfile now accepts build args for COORDINATOR_BASE_URL, COORDINATOR_API_TOKEN, and DATABASE_URL and exports them as image env vars.
   - deploy/docker-compose.central.yml and deploy/docker-compose.worker.yml now pass those build args during image build.
 - Why: allow rebuilt images to carry the generated coordinator connection/security values when requested.
+
+- Added Windows-native deployment bootstrap script: deploy/bootstrap-windows.ps1.
+  - Supports -Role Central and -Role Worker setup flows.
+  - Central flow generates strong credentials, detects coordinator base URL, creates TLS PEM cert/key, writes deploy/.env and deploy/worker.env.generated, and starts central compose stack.
+  - Worker flow writes worker .env from passed args (or copied worker.env.generated) and starts worker compose stack.
+- Why: enable end-to-end setup on Windows VMs without Bash/WSL.
