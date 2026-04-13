@@ -80,6 +80,16 @@ The central bootstrap will:
 - launch worker EC2 instances,
 - pass cloud-init that installs dependencies, clones repo, and starts worker containers automatically.
 
+AWS credentials requirement for auto-provisioning:
+- The central VM running `bootstrap-central-auto.sh --auto-provision-workers ...` must have valid AWS credentials.
+- Best practice: attach an IAM instance profile role to the central EC2 instance with:
+  - `ec2:RunInstances`
+  - `ec2:DescribeInstances`
+  - `ec2:CreateTags`
+  - `ec2:DescribeSubnets`
+  - `ec2:DescribeSecurityGroups`
+  - `iam:PassRole` (only if using `--aws-iam-instance-profile`)
+
 ### Windows fast path (PowerShell)
 On central Windows VM:
 

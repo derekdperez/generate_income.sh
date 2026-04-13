@@ -269,3 +269,5 @@
 - Fixed bootstrap failure when Docker is installed but current user lacks socket permissions.
   - deploy/bootstrap-central-auto.sh now detects Docker access mode and falls back to sudo for compose commands automatically.
 - Why: Amazon Linux ec2-user often needs re-login after docker group changes; bootstrap should continue in current session.
+- Added AWS credential preflight in deploy/provision-workers-aws.sh using ws sts get-caller-identity with actionable remediation guidance.
+- Why: central setup could succeed, then worker provisioning failed late with opaque "Unable to locate credentials".

@@ -48,6 +48,24 @@ require_cmd() {
   fi
 }
 
+ensure_aws_credentials() {
+  if aws sts get-caller-identity "${region_args[@]}" >/dev/null 2>&1; then
+    return 0
+  fi
+  cat >&2 <<'EOF'
+AWS credentials are not configured for this shell/instance.
+
+Recommended on EC2:
+  - Attach an IAM instance profile role to this central VM.
+  - Include permissions: ec2:RunInstances, ec2:DescribeInstances, ec2:CreateTags, ec2:DescribeSubnets, ec2:DescribeSecurityGroups, iam:PassRole (if --iam-instance-profile is used).
+
+Alternatives:
+  - Configure AWS CLI credentials (`aws configure`), or
+  - Configure IAM Identity Center profile (`aws configure sso`) and login (`aws sso login --profile <name>`), then set `AWS_PROFILE=<name>`.
+EOF
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --count)
@@ -131,6 +149,7 @@ for required in AMI_ID SUBNET_ID SECURITY_GROUP_IDS REPO_URL COORDINATOR_BASE_UR
 done
 
 require_cmd aws
+ensure_aws_credentials
 
 region_args=()
 if [[ -n "$REGION" ]]; then
