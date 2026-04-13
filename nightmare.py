@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
 
 import scrapy
 from openai import APIError, APITimeoutError, BadRequestError, OpenAI, RateLimitError
@@ -1375,6 +1375,10 @@ class CrawlState:
     visited_urls: set[str] = field(default_factory=set)
     link_graph: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     url_inventory: dict[str, UrlInventoryRecord] = field(default_factory=dict)
+    #: Normalized script/asset URLs already saved under ``collected_data/scripts`` (resume-safe dedup).
+    scripts_fetched_urls: set[str] = field(default_factory=set)
+    #: Normalized artifact URLs copied under ``collected_data/artifacts`` (resume-safe dedup).
+    artifacts_saved_urls: set[str] = field(default_factory=set)
     #: Normalized crawl seed URLs built from ``file_path_list.txt`` (for reporting under ``guessed_paths/``).
     wordlist_path_seeds: list[str] = field(default_factory=list)
     #: Source path used for wordlist path seed generation (repo-relative when possible).
@@ -1396,6 +1400,7 @@ INFERENCE_DISCOVERY_SOURCES = {
     "crawl_response",
     "seed_input",
     "file_path_wordlist",
+    "observed_in_script_file",
 }
 GUESSED_DISCOVERY_SOURCES = {"guessed_url", "file_path_wordlist"}
 
@@ -1430,6 +1435,8 @@ def crawl_state_to_dict(state: CrawlState) -> dict[str, Any]:
         "visited_urls": sorted(state.visited_urls),
         "link_graph": {source: sorted(targets) for source, targets in state.link_graph.items()},
         "url_inventory": {url: record.to_dict() for url, record in state.url_inventory.items()},
+        "scripts_fetched_urls": sorted(state.scripts_fetched_urls),
+        "artifacts_saved_urls": sorted(state.artifacts_saved_urls),
         "wordlist_path_seeds": list(state.wordlist_path_seeds),
         "wordlist_source": str(state.wordlist_source or FILE_PATH_WORDLIST_DISCOVERED_FROM),
     }
@@ -1503,6 +1510,17 @@ def crawl_state_from_dict(payload: dict[str, Any]) -> CrawlState:
     wordlist_source = payload.get("wordlist_source")
     if isinstance(wordlist_source, str) and wordlist_source.strip():
         state.wordlist_source = wordlist_source.strip()
+
+    scripts_fetched = payload.get("scripts_fetched_urls", [])
+    if isinstance(scripts_fetched, list):
+        state.scripts_fetched_urls = {
+            normalize_url(u) for u in scripts_fetched if isinstance(u, str) and u.strip()
+        }
+    artifacts_saved = payload.get("artifacts_saved_urls", [])
+    if isinstance(artifacts_saved, list):
+        state.artifacts_saved_urls = {
+            normalize_url(u) for u in artifacts_saved if isinstance(u, str) and u.strip()
+        }
 
     return state
 
@@ -1692,6 +1710,207 @@ def extract_discovery_candidates(response: scrapy.http.Response) -> tuple[dict[s
     return candidates, False
 
 
+COLLECTED_DATA_DIRNAME = "collected_data"
+SCRIPT_SRC_EXTENSIONS = frozenset(
+    {".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".coffee", ".dart"}
+)
+ARTIFACT_PATH_KEYWORDS = (
+    "robots.txt",
+    "sitemap.xml",
+    "sitemap_index.xml",
+    "openapi.json",
+    "openapi.yaml",
+    "swagger.json",
+    "swagger.yaml",
+    "postman_collection.json",
+    "wsdl",
+    ".well-known",
+    "graphql",
+    "favicon.ico",
+)
+DEFAULT_MAX_SCRIPT_ASSET_FETCHES = 400
+
+
+def collected_data_root_from_evidence_dir(evidence_dir: Path) -> Path:
+    return evidence_dir.resolve().parent / COLLECTED_DATA_DIRNAME
+
+
+def ensure_collected_data_layout(root: Path) -> dict[str, Path]:
+    sub = {
+        "forms": root / "forms",
+        "scripts": root / "scripts",
+        "endpoints": root / "endpoints",
+        "artifacts": root / "artifacts",
+        "cookies": root / "cookies",
+        "js_endpoints": root / "js_endpoints",
+    }
+    for path in sub.values():
+        ensure_directory(path)
+    return sub
+
+
+def _slug_file_component(raw: str, fallback: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        text = fallback
+    text = re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("._-") or fallback
+    return text[:120]
+
+
+def split_script_stem_and_extension(path_tail: str) -> tuple[str, str]:
+    """Last path segment -> (stem, ext) where ext is a known script extension or '.js'."""
+    path_tail = (path_tail or "").strip() or "script"
+    if "/" in path_tail:
+        path_tail = path_tail.rsplit("/", 1)[-1]
+    unq = unquote(path_tail)
+    lower = unq.lower()
+    for ext in sorted(SCRIPT_SRC_EXTENSIONS, key=len, reverse=True):
+        if lower.endswith(ext):
+            stem = unq[: -len(ext)].strip()
+            return (stem or "script", ext)
+    base, dot_ext = os.path.splitext(unq)
+    if dot_ext.lower() in SCRIPT_SRC_EXTENSIONS:
+        return (base.strip() or "script", dot_ext.lower())
+    return (unq, ".js")
+
+
+def infer_inline_script_extension(script_sel) -> str:
+    """Prefer a real script extension; inline blocks default to .js unless type hints otherwise."""
+    st = (script_sel.css("::attr(type)").get() or "").strip().lower()
+    if "typescript" in st:
+        return ".ts"
+    lang = (script_sel.css("::attr(lang)").get() or "").strip().lower()
+    if lang in {"ts", "typescript"}:
+        return ".ts"
+    if lang in {"tsx"}:
+        return ".tsx"
+    return ".js"
+
+
+def _url_fingerprint_component(url: str) -> str:
+    return hashlib.sha256(normalize_url(url).encode("utf-8")).hexdigest()[:16]
+
+
+def split_path_tail_stem_ext(tail: str) -> tuple[str, str]:
+    """Last URL path segment -> (stem, extension_with_dot); extension may be empty."""
+    tail = unquote((tail or "").strip() or "file")
+    if "/" in tail:
+        tail = tail.rsplit("/", 1)[-1]
+    if "." not in tail:
+        return tail, ""
+    idx = tail.rfind(".")
+    return tail[:idx], tail[idx:]
+
+
+def url_filesystem_label(url: str, *, max_len: int = 120) -> str:
+    """Stable, human-readable filesystem token from an http(s) URL (host + path + short query id)."""
+    u = normalize_url(url)
+    p = urlparse(u)
+    host = _slug_file_component((p.hostname or "host").replace(":", "_"), "host")
+    segments = [seg for seg in (p.path or "/").split("/") if seg]
+    if not segments:
+        path_s = "root"
+    else:
+        slugged = [_slug_file_component(seg, "p")[:48] for seg in segments[:12]]
+        path_s = "_".join(slugged)
+    q = ""
+    if p.query:
+        q = "_q" + _url_fingerprint_component(p.query)[:10]
+    merged = f"{host}_{path_s}{q}"
+    return _slug_file_component(merged, "url")[:max_len]
+
+
+def build_collected_endpoint_basename(response_url: str, role: str) -> str:
+    label = url_filesystem_label(response_url)
+    rslug = _slug_file_component(role, "role")[:32]
+    key = _url_fingerprint_component(normalize_url(response_url) + "|" + role)[:12]
+    return f"{label}_{rslug}_{key}"
+
+
+def save_json_file(path: Path, payload: dict[str, Any]) -> None:
+    ensure_directory(path.parent)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def append_jsonl_file(path: Path, record: dict[str, Any]) -> None:
+    ensure_directory(path.parent)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+
+
+def extract_form_payloads_from_response(response: scrapy.http.Response, page_url: str) -> list[dict[str, Any]]:
+    forms_out: list[dict[str, Any]] = []
+    for idx, form in enumerate(response.css("form"), start=1):
+        action = (form.css("::attr(action)").get() or "").strip()
+        method = (form.css("::attr(method)").get() or "get").strip().upper() or "GET"
+        name = (form.css("::attr(name)").get() or "").strip()
+        fid = (form.css("::attr(id)").get() or "").strip()
+        enctype = (form.css("::attr(enctype)").get() or "").strip().lower()
+        autocomplete = (form.css("::attr(autocomplete)").get() or "").strip().lower()
+        action_abs = normalize_url(urljoin(page_url, action)) if action else normalize_url(page_url)
+        inputs: list[dict[str, Any]] = []
+        for field in form.css("input, select, textarea, button"):
+            tag = getattr(field.root, "tag", None) or "node"
+            if isinstance(tag, str):
+                tag_name = tag.lower()
+            else:
+                tag_name = "node"
+            inputs.append(
+                {
+                    "tag": tag_name,
+                    "type": (field.css("::attr(type)").get() or "").strip().lower(),
+                    "name": (field.css("::attr(name)").get() or "").strip(),
+                    "id": (field.css("::attr(id)").get() or "").strip(),
+                    "value": (field.css("::attr(value)").get() or "").strip(),
+                    "placeholder": (field.css("::attr(placeholder)").get() or "").strip(),
+                    "disabled": bool(field.css("::attr(disabled)").get()),
+                    "required": field.css("::attr(required)").get() is not None,
+                }
+            )
+        form_slug = _slug_file_component(name or fid, f"form_{idx}")
+        forms_out.append(
+            {
+                "form_file_key": form_slug,
+                "source_page_url": normalize_url(page_url),
+                "action_url": action_abs,
+                "http_method": method,
+                "enctype": enctype or "application/x-www-form-urlencoded",
+                "name_attr": name or None,
+                "id_attr": fid or None,
+                "autocomplete": autocomplete or None,
+                "inputs": inputs,
+                "note": "Captured from HTML at crawl time; submit traffic was not synthesized.",
+            }
+        )
+    return forms_out
+
+
+def looks_like_downloadable_script_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    if not path or path.endswith("/"):
+        return False
+    ext = f".{path.rsplit('.', 1)[-1]}" if "." in path.rsplit('/', 1)[-1] else ""
+    return ext in SCRIPT_SRC_EXTENSIONS
+
+
+def looks_like_standard_artifact_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(k in u for k in ARTIFACT_PATH_KEYWORDS)
+
+
+def extract_urls_from_javascript_for_discovery(text: str, base_url: str) -> set[str]:
+    """Extract http(s) URLs from JS/TS text using the same literal/link heuristics as HTML."""
+    from scrapy.http import TextResponse
+
+    fake = TextResponse(url=base_url, body=(text or "").encode("utf-8", errors="ignore"), encoding="utf-8")
+    out: set[str] = set()
+    out |= extract_embedded_urls(fake)
+    out |= extract_attribute_urls(fake)
+    return {u for u in out if u.startswith("http://") or u.startswith("https://")}
+
+
 def is_markup_response(response: scrapy.http.Response) -> bool:
     content_type = (response.headers.get("Content-Type") or b"").decode("latin-1", errors="ignore").lower()
     if any(marker in content_type for marker in ("text/html", "application/xhtml", "application/xml", "text/xml")):
@@ -1865,6 +2084,10 @@ class DomainSpider(scrapy.Spider):
         self._has_emitted_nonverbose_progress = False
         self._nonverbose_progress_interval_seconds = 10.0
         self._nonverbose_progress_new_url_step = 10
+        self.collected_data_root = collected_data_root_from_evidence_dir(self.evidence_dir)
+        self._collected = ensure_collected_data_layout(self.collected_data_root)
+        self._max_script_asset_fetches = DEFAULT_MAX_SCRIPT_ASSET_FETCHES
+        self._script_asset_fetch_count = 0
 
     def _build_crawl_request(self, url: str, *, wordlist_path_guess: bool = False) -> scrapy.Request:
         meta: dict[str, Any] = {"handle_httpstatus_all": True}
@@ -1915,6 +2138,254 @@ class DomainSpider(scrapy.Spider):
         self._last_nonverbose_total_url_count = total_unique
         self._has_emitted_nonverbose_progress = True
 
+    def _persist_endpoint_record(self, response: scrapy.http.Response, *, role: str, extra: dict[str, Any] | None = None) -> None:
+        ep_dir = self._collected["endpoints"]
+        req = response.request
+        url_key = normalize_url(response.url)
+        base = build_collected_endpoint_basename(response.url, role)
+        payload: dict[str, Any] = {
+            "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "url": url_key,
+            "request": {
+                "method": req.method,
+                "url": req.url,
+                "headers": req.headers.to_unicode_dict(),
+                **encode_body_for_evidence(req.body or b""),
+            },
+            "response": {
+                "status": response.status,
+                "url": response.url,
+                "headers": response.headers.to_unicode_dict(),
+                **encode_body_for_evidence(response.body or b""),
+            },
+        }
+        if extra:
+            payload["extra"] = extra
+        out_path = ep_dir / f"{base}.json"
+        save_json_file(out_path, payload)
+
+    def _append_cookie_record(self, response: scrapy.http.Response, page_url: str) -> None:
+        host = (urlparse(page_url).hostname or "unknown").strip().lower()
+        host_slug = _slug_file_component(host, "host")
+        cookies_path = self._collected["cookies"] / f"set_cookie_{host_slug}.jsonl"
+        raw_headers = response.headers.getlist("Set-Cookie") or response.headers.getlist(b"Set-Cookie")
+        lines: list[str] = []
+        for h in raw_headers:
+            if isinstance(h, bytes):
+                lines.append(h.decode("latin-1", errors="replace"))
+            else:
+                lines.append(str(h))
+        if not lines:
+            return
+        append_jsonl_file(
+            cookies_path.resolve(),
+            {
+                "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+                "page_url": normalize_url(page_url),
+                "response_url": normalize_url(response.url),
+                "set_cookie": lines,
+            },
+        )
+
+    def _save_forms_for_page(self, response: scrapy.http.Response, page_url: str) -> None:
+        forms_dir = self._collected["forms"]
+        forms = extract_form_payloads_from_response(response, page_url)
+        page_label = url_filesystem_label(page_url)[:80]
+        used_names: dict[str, int] = {}
+        for spec in forms:
+            key = spec.get("form_file_key") or "form"
+            used_names[key] = used_names.get(key, 0) + 1
+            suffix = "" if used_names[key] == 1 else f"_{used_names[key]}"
+            action = str(spec.get("action_url") or "")
+            action_key = _url_fingerprint_component(action)[:10] if action else "noaction"
+            fname = f"{page_label}_form_{key}_{action_key}{suffix}.json"
+            path = forms_dir / fname
+            save_json_file(path, spec)
+
+    def _save_inline_scripts(self, response: scrapy.http.Response, page_url: str) -> list[tuple[str, set[str]]]:
+        scripts_dir = self._collected["scripts"]
+        out: list[tuple[str, set[str]]] = []
+        idx = 0
+        for sel in response.css("script:not([src])"):
+            body = "".join(sel.xpath("string()").getall()).strip()
+            if len(body) < 2:
+                continue
+            idx += 1
+            digest = hashlib.sha256(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            sid = (sel.css("::attr(id)").get() or "").strip()
+            sname = (sel.css("::attr(name)").get() or "").strip()
+            ext = infer_inline_script_extension(sel)
+            stem_raw = sid or sname or f"inline_{idx}"
+            stem = _slug_file_component(stem_raw, f"inline_{idx}")[:80]
+            fname = f"{stem}_{digest}{ext}"
+            out_path = scripts_dir / fname
+            header = f"// source_page: {page_url}\n"
+            out_path.write_text(header + body, encoding="utf-8", errors="replace")
+            discovered = extract_urls_from_javascript_for_discovery(body, page_url)
+            self._record_js_endpoint_file(page_url, fname, discovered)
+            out.append((fname, discovered))
+        return out
+
+    def _record_js_endpoint_file(self, parent_url: str, script_name: str, urls: set[str]) -> None:
+        js_dir = self._collected["js_endpoints"]
+        page_label = url_filesystem_label(parent_url)[:48]
+        stem = Path(script_name).stem
+        stem_slug = _slug_file_component(stem, "script")[:80]
+        key = _url_fingerprint_component(normalize_url(parent_url) + "|" + script_name)[:12]
+        path = js_dir / f"{page_label}_jsurls_{stem_slug}_{key}.json"
+        save_json_file(
+            path,
+            {
+                "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+                "parent_page_url": normalize_url(parent_url),
+                "script_storage_name": script_name,
+                "urls_extracted": sorted(urls),
+            },
+        )
+
+    def _yield_discoveries_from_script(
+        self,
+        script_page_url: str,
+        urls: set[str],
+        script_label: str,
+        *,
+        evidence_response: scrapy.http.Response | None = None,
+    ):
+        for discovered_url in sorted(urls):
+            if not is_allowed_domain(discovered_url, self.root_domain):
+                continue
+            is_new = discovered_url not in self.state.discovered_urls
+            self.state.link_graph.setdefault(script_page_url, set()).add(discovered_url)
+            existing_record = ensure_inventory_record(self.state, discovered_url)
+            if "observed_in_script_file" not in existing_record.discovered_via:
+                er = evidence_response or self._make_script_discovery_fake_response(script_page_url, discovered_url)
+                evidence_payload = build_scrapy_discovery_evidence(
+                    response=er,
+                    discovered_url=discovered_url,
+                    source_type="observed_in_script_file",
+                )
+                evidence_file = save_evidence(self.evidence_dir, discovered_url, "observed_in_script_file", evidence_payload)
+            else:
+                evidence_file = ""
+            register_url_discovery(
+                state=self.state,
+                url=discovered_url,
+                source_type="observed_in_script_file",
+                discovered_from=normalize_url(script_page_url),
+                evidence_file=evidence_file,
+            )
+            if is_new:
+                self._emit_verbose(f"Discovered URL via observed_in_script_file ({script_label}): {discovered_url}")
+            self._emit_nonverbose_progress_if_needed()
+            if (
+                discovered_url not in self.state.visited_urls
+                and len(self.state.visited_urls) < self.max_pages
+                and should_crawl_url(discovered_url)
+            ):
+                yield self._build_crawl_request(discovered_url)
+
+    def _make_script_discovery_fake_response(self, script_page_url: str, discovered_url: str) -> scrapy.http.Response:
+        from scrapy.http import TextResponse
+
+        return TextResponse(
+            url=script_page_url,
+            status=200,
+            body=json.dumps({"discovered_from_script": True, "target": discovered_url}).encode("utf-8"),
+            encoding="utf-8",
+        )
+
+    def _maybe_save_artifact_copy(self, response: scrapy.http.Response, logical_url: str) -> None:
+        if response.status >= 400:
+            return
+        norm = normalize_url(logical_url)
+        if norm in self.state.artifacts_saved_urls:
+            return
+        if not looks_like_standard_artifact_url(norm):
+            return
+        art_dir = self._collected["artifacts"]
+        parsed = urlparse(norm)
+        tail = unquote((parsed.path or "/").rstrip("/").rsplit("/", 1)[-1] or "artifact")
+        stem, ext = split_path_tail_stem_ext(tail)
+        stem_slug = _slug_file_component(stem, "artifact")[:100]
+        key = _url_fingerprint_component(norm)[:12]
+        if not ext:
+            ct = (response.headers.get("Content-Type") or b"").decode("latin-1", errors="ignore").lower()
+            if "json" in ct:
+                ext = ".json"
+            elif "xml" in ct:
+                ext = ".xml"
+            else:
+                ext = ".bin"
+        out_path = art_dir / f"{stem_slug}_{key}{ext}"
+        body = response.body or b""
+        out_path.write_bytes(body)
+        meta_path = art_dir / f"{stem_slug}_{key}.meta.json"
+        save_json_file(
+            meta_path.resolve(),
+            {
+                "url": norm,
+                "saved_path": out_path.name,
+                "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+                "content_type": (response.headers.get("Content-Type") or b"").decode("latin-1", errors="ignore"),
+                "status": response.status,
+            },
+        )
+        self.state.artifacts_saved_urls.add(norm)
+
+    def _schedule_script_fetch(self, script_url: str, page_url: str) -> scrapy.Request | None:
+        norm = normalize_url(script_url)
+        if norm in self.state.scripts_fetched_urls:
+            return None
+        if self._script_asset_fetch_count >= self._max_script_asset_fetches:
+            self.logger.warning("script asset fetch cap reached (%s); skipping %s", self._max_script_asset_fetches, norm)
+            return None
+        if not is_allowed_domain(norm, self.root_domain):
+            return None
+        if not looks_like_downloadable_script_url(norm):
+            return None
+        self._script_asset_fetch_count += 1
+        return scrapy.Request(
+            norm,
+            callback=self.parse,
+            errback=self._handle_script_asset_error,
+            meta={
+                "handle_httpstatus_all": True,
+                "nightmare_role": "script_asset",
+                "script_src_page": normalize_url(page_url),
+            },
+        )
+
+    def _handle_script_asset_error(self, failure) -> None:
+        self.logger.debug("Script asset request failed: %s", failure.getErrorMessage())
+
+    def _handle_script_asset_response(self, response: scrapy.http.Response):
+        logical = normalize_url(response.url)
+        parent = str(response.meta.get("script_src_page") or response.request.url)
+        self._persist_endpoint_record(
+            response,
+            role="script_asset",
+            extra={"parent_page_url": normalize_url(parent)},
+        )
+        if response.status >= 400:
+            return
+        self.state.scripts_fetched_urls.add(logical)
+        body = response.body or b""
+        scripts_dir = self._collected["scripts"]
+        path_tail = (urlparse(logical).path or "/").rstrip("/").rsplit("/", 1)[-1] or "script"
+        stem, ext = split_script_stem_and_extension(path_tail)
+        stem_slug = _slug_file_component(stem, "script")[:100]
+        key = _url_fingerprint_component(logical)[:12]
+        filename = f"{stem_slug}_{key}{ext}"
+        out_path = scripts_dir / filename
+        out_path.write_bytes(body)
+        text = body.decode("utf-8", errors="replace")
+        discovered = extract_urls_from_javascript_for_discovery(text, logical)
+        self._record_js_endpoint_file(parent, out_path.name, discovered)
+        yield from self._yield_discoveries_from_script(
+            parent, discovered, out_path.name, evidence_response=response
+        )
+
     async def start(self):
         remaining_budget = max(0, self.max_pages - len(self.state.visited_urls))
         self._emit_verbose(
@@ -1943,6 +2414,10 @@ class DomainSpider(scrapy.Spider):
         self._emit_nonverbose_progress_if_needed(force=True)
 
     def parse(self, response: scrapy.http.Response):
+        if response.meta.get("nightmare_role") == "script_asset":
+            yield from self._handle_script_asset_response(response)
+            return
+
         current_url = normalize_url(response.url)
 
         if current_url in self.state.visited_urls:
@@ -1988,6 +2463,13 @@ class DomainSpider(scrapy.Spider):
                 discovered_from=normalize_url(response.request.url),
                 evidence_file=evidence_file,
             )
+
+        try:
+            self._persist_endpoint_record(response, role="page_visit")
+            self._append_cookie_record(response, current_url)
+            self._maybe_save_artifact_copy(response, current_url)
+        except Exception as coll_exc:
+            self.logger.warning("collected_data snapshot failed: %s", coll_exc)
 
         if 300 <= response.status < 400:
             location_header = (response.headers.get("Location") or b"").decode("latin-1", errors="ignore").strip()
@@ -2050,6 +2532,23 @@ class DomainSpider(scrapy.Spider):
             f"{source_type}={len(urls)}" for source_type, urls in sorted(candidates.items())
         ) or "none"
         self._emit_verbose(f"Raw discovery candidates on {current_url}: {source_counts}")
+
+        try:
+            self._save_forms_for_page(response, current_url)
+            for fname, disc in self._save_inline_scripts(response, current_url):
+                yield from self._yield_discoveries_from_script(
+                    current_url, disc, fname, evidence_response=response
+                )
+            for href in response.css("script::attr(src)").getall():
+                raw = (href or "").strip()
+                if not raw:
+                    continue
+                script_u = normalize_url(urljoin(response.url, raw))
+                req = self._schedule_script_fetch(script_u, current_url)
+                if req is not None:
+                    yield req
+        except Exception as coll_exc:
+            self.logger.warning("collected_data HTML enrichment failed: %s", coll_exc)
 
         allowed_counts: dict[str, int] = defaultdict(int)
         for source_type, discovered_urls in candidates.items():
@@ -5366,6 +5865,9 @@ def main() -> None:
     ensure_directory(parameters_output_path.parent)
     ensure_directory(parameters_text_output_path.parent)
     progress.info(f"Prepared evidence directory at {evidence_dir_path.resolve()}")
+    _cd_root = collected_data_root_from_evidence_dir(evidence_dir_path)
+    ensure_collected_data_layout(_cd_root)
+    progress.info(f"Collected data directory: {_cd_root.resolve()}")
     progress.info(f"Session state file: {session_state_path.resolve()} (resume={resume})")
     progress.info(f"Application log file: {app_log_file_path.resolve()} (level={app_log_level_name})")
     progress.info(f"Scrapy log file: {scrapy_log_file_path.resolve()} (level={scrapy_log_level_name})")
@@ -5876,6 +6378,7 @@ def main() -> None:
     print(f"URL inventory saved to: {inventory_output_path.resolve()}")
     print(f"Requests inventory saved to: {requests_output_path.resolve()}")
     print(f"Evidence directory: {evidence_dir_path.resolve()}")
+    print(f"Collected data directory: {collected_data_root_from_evidence_dir(evidence_dir_path).resolve()}")
     print(f"Session state saved to: {session_state_path.resolve()}")
     print(f"Application logs: {app_log_file_path.resolve()}")
     print(f"Scrapy logs: {scrapy_log_file_path.resolve()}")

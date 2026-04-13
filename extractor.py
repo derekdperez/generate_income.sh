@@ -6,6 +6,10 @@ the master report does. When a domain's ``results/`` tree has newer files than r
 ``.extractor_incremental_state.json``, that domain is re-processed: each match is written under
 ``<domain_output>/extractor/matches/`` and a ``summary.json`` is refreshed for the master HTML report.
 
+After the Fozzy pass, optional rules from ``javascript_extractor_list.txt`` are applied to each domain's
+``collected_data/scripts`` tree; matches go under ``collected_data/javascript_extractor/``, and progress is
+stored in ``<scan-root>/javascript_extractor_state.json`` for incremental runs.
+
 Usage:
     python extractor.py
     python extractor.py --scan-root ./output --force
@@ -36,9 +40,11 @@ from typing import Any
 # Repo root (directory containing this file)
 EXTRACTOR_BASE = Path(__file__).resolve().parent
 DEFAULT_WORDLIST = EXTRACTOR_BASE / "resources" / "wordlists" / "extractor_list.txt"
+DEFAULT_JAVASCRIPT_WORDLIST = EXTRACTOR_BASE / "resources" / "wordlists" / "javascript_extractor_list.txt"
 DEFAULT_SCAN_ROOT = EXTRACTOR_BASE / "output"
 DEFAULT_CONFIG_PATH = EXTRACTOR_BASE / "config" / "extractor.json"
 STATE_FILE_NAME = ".extractor_incremental_state.json"
+JAVASCRIPT_STATE_FILE_NAME = "javascript_extractor_state.json"
 MAX_MATCHES_PER_RULE_PER_RESULT_FILE = 300
 TRIM_ENUM_PROGRESS_EVERY = 100_000
 TRIM_REBUILD_PROGRESS_EVERY = 50_000
@@ -147,6 +153,357 @@ def save_extractor_incremental_state(path: Path, state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def load_javascript_extractor_state(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"version": 1, "wordlist": {}, "domains": {}}
+    try:
+        data = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "wordlist": {}, "domains": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "wordlist": {}, "domains": {}}
+    domains = data.get("domains")
+    if not isinstance(domains, dict):
+        domains = {}
+    wl = data.get("wordlist")
+    if not isinstance(wl, dict):
+        wl = {}
+    return {"version": 1, "wordlist": wl, "domains": domains}
+
+
+def save_javascript_extractor_state(path: Path, state: dict[str, Any]) -> None:
+    ensure_directory(path.parent)
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def wordlist_fingerprint(wordlist_path: Path) -> str:
+    """Stable id for wordlist contents: path, size, and mtime (fast; re-run when list file changes)."""
+    try:
+        st = wordlist_path.stat()
+    except OSError:
+        return ""
+    base = f"{wordlist_path.resolve()}\0{st.st_size}\0{st.st_mtime_ns}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
+
+
+def collected_scripts_root(domain_output: Path) -> Path:
+    return domain_output / "collected_data" / "scripts"
+
+
+def javascript_extractor_root(domain_output: Path) -> Path:
+    return domain_output / "collected_data" / "javascript_extractor"
+
+
+def iter_collected_script_files(scripts_root: Path) -> list[Path]:
+    if not scripts_root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in scripts_root.rglob("*"):
+        if p.is_file():
+            out.append(p)
+    out.sort(key=lambda x: str(x).lower())
+    return out
+
+
+def script_file_to_result_entry(script_path: Path, scripts_root: Path) -> dict[str, Any]:
+    rel = script_path.relative_to(scripts_root).as_posix()
+    try:
+        text = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    pseudo_url = f"file://collected_data/scripts/{rel}"
+    rf = str(script_path.resolve())
+    return {
+        "url": pseudo_url,
+        "host": "",
+        "path": f"/{rel}",
+        "mutated_parameter": "",
+        "mutated_value": "",
+        "result_type": "javascript_script",
+        "result_file": rf,
+        "baseline_response": {"body_preview": text},
+        "anomaly_response": {"body_preview": text},
+    }
+
+
+def _unlink_match_paths(paths: list[str]) -> None:
+    for s in paths:
+        p = Path(s)
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def apply_extractor_rules_to_entry(
+    entry: dict[str, Any],
+    domain_label: str,
+    rules: list[dict[str, Any]],
+    matches_dir: Path,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Run every rule against one Fozzy- or synthetic result entry; write ``m_<hash>.json`` files."""
+    rows_out: list[dict[str, Any]] = []
+    match_count = 0
+    result_file = str(entry.get("result_file", "") or "")
+    if not result_file:
+        return 0, rows_out
+    rf_path = Path(result_file)
+    result_file_abs = str(rf_path.resolve()) if rf_path.is_file() else result_file
+
+    for rule in rules:
+        scope = rule["scope"]
+        blobs = build_search_text_for_scope(entry, scope)
+        text_key = scope if scope in blobs else "request_response"
+        combined = blobs.get(text_key, blobs.get("request_response", ""))
+        if scope == "response_body":
+            parts: list[tuple[str, str]] = [
+                ("baseline", blobs.get("baseline_body", "")),
+                ("anomaly", blobs.get("anomaly_body", "")),
+            ]
+        elif scope in ("request_headers", "response_headers"):
+            parts = [("combined", combined)]
+        elif scope == "request_headers_response_body":
+            parts = [("combined", combined)]
+        else:
+            parts = [("combined", combined)]
+
+        rule_hits = 0
+        for side_label, text in parts:
+            if not text.strip():
+                continue
+            try:
+                it = rule["compiled"].finditer(text)
+            except re.error:
+                break
+            for idx, m in enumerate(it):
+                if rule_hits >= MAX_MATCHES_PER_RULE_PER_RESULT_FILE:
+                    break
+                matched = m.group(0)
+                if not matched:
+                    continue
+                rule_hits += 1
+                match_count += 1
+                mid = match_fingerprint(domain_label, result_file_abs, rule["name"], idx, matched)
+                detail_path = matches_dir / f"m_{mid}.json"
+                detail = {
+                    "domain_label": domain_label,
+                    "filter_name": rule["name"],
+                    "importance_score": int(rule.get("importance_score", 0) or 0),
+                    "filter_description": rule["description"],
+                    "scope": scope,
+                    "response_side": side_label,
+                    "regex": rule["regex"],
+                    "result_file": result_file_abs,
+                    "result_type": str(entry.get("result_type", "") or ""),
+                    "url": str(entry.get("url", "") or ""),
+                    "matched_text": matched,
+                    "match_index": idx,
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                }
+                detail_path.write_text(
+                    json.dumps(detail, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                preview = matched.replace("\n", " ").strip()
+                if len(preview) > 160:
+                    preview = preview[:157] + "..."
+                rows_out.append(
+                    {
+                        "domain_label": domain_label,
+                        "url": str(entry.get("url", "") or ""),
+                        "filter_name": rule["name"],
+                        "importance_score": int(rule.get("importance_score", 0) or 0),
+                        "scope": scope,
+                        "response_side": side_label,
+                        "match_preview": preview,
+                        "result_file": result_file_abs,
+                        "match_file": str(detail_path.resolve()),
+                        "result_type": str(entry.get("result_type", "") or ""),
+                    }
+                )
+    return match_count, rows_out
+
+
+def rebuild_javascript_extractor_summary_for_domain(
+    domain_label: str,
+    domain_output: Path,
+    *,
+    progress_every: int | None = TRIM_REBUILD_PROGRESS_EVERY,
+) -> Path | None:
+    """Rebuild ``collected_data/javascript_extractor/summary.json`` from ``matches/m_*.json``."""
+    js_root = javascript_extractor_root(domain_output)
+    matches_dir = js_root / "matches"
+    rows_out: list[dict[str, Any]] = []
+    if matches_dir.is_dir():
+        paths = sorted(matches_dir.glob("m_*.json"))
+        total_paths = len(paths)
+        for idx, path in enumerate(paths, start=1):
+            detail = _read_match_detail(path)
+            if not detail:
+                continue
+            row = detail_record_to_summary_row(detail)
+            row["match_file"] = str(path.resolve())
+            rows_out.append(row)
+            if progress_every and total_paths > 0 and idx > 0 and idx % progress_every == 0:
+                print(
+                    f"[extractor:js] rebuild {domain_label!r}: scanned {idx:,}/{total_paths:,} match file(s) …",
+                    flush=True,
+                )
+    summary_path = js_root / "summary.json"
+    summary_payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "domain_label": domain_label,
+        "domain_output": str(domain_output.resolve()),
+        "source": "javascript_extractor",
+        "match_count": len(rows_out),
+        "rows": rows_out,
+    }
+    ensure_directory(js_root)
+    summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_trim_stats_from_rows(js_root, domain_label, rows_out)
+    return summary_path
+
+
+def javascript_extractor_domain_needs_work(
+    domain_label: str,
+    domain_output: Path,
+    js_state: dict[str, Any],
+    wordlist_fp: str,
+    force: bool,
+) -> bool:
+    scripts_root = collected_scripts_root(domain_output)
+    if not scripts_root.is_dir():
+        return False
+    if force:
+        return True
+    block = js_state.get("domains", {}).get(domain_label, {})
+    if not isinstance(block, dict):
+        block = {}
+    stored_fp = ""
+    wl = js_state.get("wordlist")
+    if isinstance(wl, dict):
+        stored_fp = str(wl.get("fingerprint", "") or "")
+    if wordlist_fp and stored_fp != wordlist_fp:
+        return True
+    files_state_raw = block.get("files")
+    files_state: dict[str, Any] = files_state_raw if isinstance(files_state_raw, dict) else {}
+
+    seen: set[str] = set()
+    for path in iter_collected_script_files(scripts_root):
+        rel = path.relative_to(scripts_root).as_posix()
+        seen.add(rel)
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        fi = files_state.get(rel)
+        if not isinstance(fi, dict):
+            return True
+        if int(fi.get("mtime_ns", -1)) != int(st.st_mtime_ns) or int(fi.get("size", -1)) != int(st.st_size):
+            return True
+
+    for rel in list(files_state.keys()):
+        if rel not in seen:
+            return True
+    return False
+
+
+def run_javascript_extractor_for_domain(
+    domain_label: str,
+    domain_output: Path,
+    rules: list[dict[str, Any]],
+    js_state: dict[str, Any],
+    *,
+    wordlist_path: Path,
+    wordlist_fp: str,
+    force: bool,
+) -> tuple[int, Path | None]:
+    """Incremental regex pass over ``collected_data/scripts``; outputs under ``collected_data/javascript_extractor``."""
+    scripts_root = collected_scripts_root(domain_output)
+    if not scripts_root.is_dir():
+        return 0, None
+
+    js_root = javascript_extractor_root(domain_output)
+    matches_dir = js_root / "matches"
+    ensure_directory(matches_dir)
+
+    if "domains" not in js_state or not isinstance(js_state["domains"], dict):
+        js_state["domains"] = {}
+    domain_block: dict[str, Any] = js_state["domains"].setdefault(domain_label, {})
+    if "files" not in domain_block or not isinstance(domain_block["files"], dict):
+        domain_block["files"] = {}
+
+    files_state: dict[str, Any] = domain_block["files"]
+
+    # Drop orphan state entries and match files for deleted scripts
+    on_disk = {p.relative_to(scripts_root).as_posix() for p in iter_collected_script_files(scripts_root)}
+    for rel in list(files_state.keys()):
+        if rel not in on_disk:
+            fi = files_state.pop(rel, {})
+            if isinstance(fi, dict):
+                prev = fi.get("match_files")
+                if isinstance(prev, list):
+                    _unlink_match_paths([str(x) for x in prev if x])
+
+    stored_fp = ""
+    wl = js_state.get("wordlist")
+    if isinstance(wl, dict):
+        stored_fp = str(wl.get("fingerprint", "") or "")
+
+    to_scan: list[Path] = []
+    for path in iter_collected_script_files(scripts_root):
+        rel = path.relative_to(scripts_root).as_posix()
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        fi = files_state.get(rel)
+        dirty = (
+            force
+            or (wordlist_fp and stored_fp != wordlist_fp)
+            or not isinstance(fi, dict)
+            or int(fi.get("mtime_ns", -1)) != int(st.st_mtime_ns)
+            or int(fi.get("size", -1)) != int(st.st_size)
+        )
+        if dirty:
+            to_scan.append(path)
+
+    total_new_matches = 0
+    for path in to_scan:
+        rel = path.relative_to(scripts_root).as_posix()
+        fi_prev = files_state.get(rel) if isinstance(files_state.get(rel), dict) else {}
+        prev_mf = fi_prev.get("match_files") if isinstance(fi_prev, dict) else []
+        if isinstance(prev_mf, list):
+            _unlink_match_paths([str(x) for x in prev_mf if x])
+
+        entry = script_file_to_result_entry(path, scripts_root)
+        n, _rows = apply_extractor_rules_to_entry(entry, domain_label, rules, matches_dir)
+        total_new_matches += n
+        try:
+            st = path.stat()
+        except OSError:
+            st = None
+        mf_list: list[str] = []
+        if _rows:
+            for row in _rows:
+                mf = str(row.get("match_file", "") or "").strip()
+                if mf:
+                    mf_list.append(mf)
+        files_state[rel] = {
+            "mtime_ns": int(st.st_mtime_ns) if st else 0,
+            "size": int(st.st_size) if st else 0,
+            "match_files": mf_list,
+        }
+
+    js_state["wordlist"] = {
+        "path": str(wordlist_path.resolve()),
+        "fingerprint": wordlist_fp,
+    }
+
+    summary_path = rebuild_javascript_extractor_summary_for_domain(domain_label, domain_output)
+    return total_new_matches, summary_path
+
+
 def domain_results_dirty(domain_output: Path, state: dict[str, Any], domain_key: str) -> bool:
     results = domain_output / "results"
     if not results.is_dir():
@@ -176,7 +533,7 @@ def load_extractor_rules(wordlist_path: Path) -> list[dict[str, Any]]:
         if not name or not regex:
             continue
         try:
-            compiled = re.compile(regex)
+            compiled = re.compile(regex, re.IGNORECASE)
         except re.error as exc:
             print(f"[extractor] skip rule {name!r}: invalid regex ({exc})", flush=True)
             continue
@@ -1147,84 +1504,9 @@ def run_extractors_for_domain(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        result_file = str(entry.get("result_file", "") or "")
-        if not result_file:
-            continue
-        rf_path = Path(result_file)
-        result_file_abs = str(rf_path.resolve()) if rf_path.is_file() else result_file
-
-        for rule in rules:
-            scope = rule["scope"]
-            blobs = build_search_text_for_scope(entry, scope)
-            text_key = scope if scope in blobs else "request_response"
-            combined = blobs.get(text_key, blobs.get("request_response", ""))
-            if scope == "response_body":
-                parts: list[tuple[str, str]] = [
-                    ("baseline", blobs.get("baseline_body", "")),
-                    ("anomaly", blobs.get("anomaly_body", "")),
-                ]
-            elif scope in ("request_headers", "response_headers"):
-                parts = [("combined", combined)]
-            elif scope == "request_headers_response_body":
-                parts = [("combined", combined)]
-            else:
-                # request_response and unknown: one combined pass
-                parts = [("combined", combined)]
-
-            rule_hits = 0
-            for side_label, text in parts:
-                if not text.strip():
-                    continue
-                try:
-                    it = rule["compiled"].finditer(text)
-                except re.error:
-                    break
-                for idx, m in enumerate(it):
-                    if rule_hits >= MAX_MATCHES_PER_RULE_PER_RESULT_FILE:
-                        break
-                    matched = m.group(0)
-                    if not matched:
-                        continue
-                    rule_hits += 1
-                    match_count += 1
-                    mid = match_fingerprint(domain_label, result_file_abs, rule["name"], idx, matched)
-                    detail_path = matches_dir / f"m_{mid}.json"
-                    detail = {
-                        "domain_label": domain_label,
-                        "filter_name": rule["name"],
-                        "importance_score": int(rule.get("importance_score", 0) or 0),
-                        "filter_description": rule["description"],
-                        "scope": scope,
-                        "response_side": side_label,
-                        "regex": rule["regex"],
-                        "result_file": result_file_abs,
-                        "result_type": str(entry.get("result_type", "") or ""),
-                        "url": str(entry.get("url", "") or ""),
-                        "matched_text": matched,
-                        "match_index": idx,
-                        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-                    }
-                    detail_path.write_text(
-                        json.dumps(detail, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                    preview = matched.replace("\n", " ").strip()
-                    if len(preview) > 160:
-                        preview = preview[:157] + "..."
-                    rows_out.append(
-                        {
-                            "domain_label": domain_label,
-                            "url": str(entry.get("url", "") or ""),
-                            "filter_name": rule["name"],
-                            "importance_score": int(rule.get("importance_score", 0) or 0),
-                            "scope": scope,
-                            "response_side": side_label,
-                            "match_preview": preview,
-                            "result_file": result_file_abs,
-                            "match_file": str(detail_path.resolve()),
-                            "result_type": str(entry.get("result_type", "") or ""),
-                        }
-                    )
+        n, rows = apply_extractor_rules_to_entry(entry, domain_label, rules, matches_dir)
+        match_count += n
+        rows_out.extend(rows)
 
     summary_path = extractor_root / "summary.json"
     summary_payload = {
@@ -1252,6 +1534,8 @@ def default_extractor_config() -> dict[str, Any]:
     return {
         "scan_root": "output",
         "wordlist": "resources/wordlists/extractor_list.txt",
+        "javascript_wordlist": "resources/wordlists/javascript_extractor_list.txt",
+        "skip_javascript_extractor": False,
         "workers": 4,
         "force": False,
         "domain": None,
@@ -1300,6 +1584,8 @@ def run_extractor_scan(
     force: bool = False,
     domain_filter: str | None = None,
     workers: int = 1,
+    javascript_wordlist_path: Path | None = None,
+    skip_javascript_extractor: bool = False,
 ) -> int:
     scan_root = scan_root.resolve()
     state_path = scan_root / STATE_FILE_NAME
@@ -1343,6 +1629,7 @@ def run_extractor_scan(
         flush=True,
     )
 
+    failures = 0
     if workers <= 1:
         for domain_label, domain_output in to_process:
             print(f"[extractor] {domain_label} … ({domain_output})", flush=True)
@@ -1358,7 +1645,6 @@ def run_extractor_scan(
             save_extractor_incremental_state(state_path, state)
             processed += 1
     else:
-        failures = 0
 
         def _run_one(domain_label: str, domain_output: Path) -> tuple[str, Path, int, Path]:
             n, summary_path = run_extractors_for_domain(domain_label, domain_output, rules)
@@ -1395,13 +1681,68 @@ def run_extractor_scan(
 
         if failures > 0:
             print(f"[extractor] Completed with worker failures={failures}", flush=True)
-            return 1
+
+    js_state_path = scan_root / JAVASCRIPT_STATE_FILE_NAME
+    jwp = javascript_wordlist_path or DEFAULT_JAVASCRIPT_WORDLIST
+    jwp = jwp.expanduser()
+    if not jwp.is_absolute():
+        jwp = (EXTRACTOR_BASE / jwp).resolve()
+    else:
+        jwp = jwp.resolve()
+
+    if skip_javascript_extractor:
+        print("[extractor:js] skipped (--skip-javascript-extractor / config).", flush=True)
+    elif not jwp.is_file():
+        print(f"[extractor:js] wordlist not found ({jwp}); skipping JavaScript pass.", flush=True)
+    else:
+        try:
+            js_rules = load_extractor_rules(jwp)
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"[extractor:js] invalid wordlist ({jwp}): {exc}; skipping.", flush=True)
+        else:
+            if not js_rules:
+                print("[extractor:js] no rules passed validation; skipping.", flush=True)
+            else:
+                js_fp = wordlist_fingerprint(jwp)
+                js_state = load_javascript_extractor_state(js_state_path)
+                js_skipped = 0
+                js_processed = 0
+                for domain_label, domain_output in pairs:
+                    if not javascript_extractor_domain_needs_work(
+                        domain_label, domain_output, js_state, js_fp, force
+                    ):
+                        js_skipped += 1
+                        continue
+                    print(f"[extractor:js] {domain_label} … ({domain_output})", flush=True)
+                    n_js, js_summary = run_javascript_extractor_for_domain(
+                        domain_label,
+                        domain_output,
+                        js_rules,
+                        js_state,
+                        wordlist_path=jwp,
+                        wordlist_fp=js_fp,
+                        force=force,
+                    )
+                    save_javascript_extractor_state(js_state_path, js_state)
+                    js_processed += 1
+                    summ = js_summary or ""
+                    print(
+                        f"[extractor:js]   wrote {n_js} match(es) from re-scanned script(s); {summ}",
+                        flush=True,
+                    )
+                print(
+                    f"[extractor:js] Done. domains_processed={js_processed}, skipped_unchanged={js_skipped}, "
+                    f"state={js_state_path}",
+                    flush=True,
+                )
 
     print(
         f"[extractor] Done. Domains processed={processed}, skipped (unchanged)={skipped}, "
         f"state={state_path}",
         flush=True,
     )
+    if workers > 1 and failures > 0:
+        return 1
     return 0
 
 
@@ -1427,6 +1768,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--wordlist",
         default=None,
         help=f"JSON array of extractor rules (default: {DEFAULT_WORDLIST})",
+    )
+    p.add_argument(
+        "--javascript-wordlist",
+        default=None,
+        metavar="PATH",
+        help=(
+            f"JSON array of rules for collected_data/scripts (default: {DEFAULT_JAVASCRIPT_WORDLIST}). "
+            "State: <scan-root>/javascript_extractor_state.json"
+        ),
+    )
+    p.add_argument(
+        "--skip-javascript-extractor",
+        action="store_true",
+        default=None,
+        help="Do not run the JavaScript/collected_data/scripts regex pass.",
     )
     p.add_argument(
         "--workers",
@@ -1499,10 +1855,26 @@ def main(argv: list[str] | None = None) -> int:
 
     scan_root_raw = str(merged_value(args.scan_root, effective_config, "scan_root", str(DEFAULT_SCAN_ROOT)))
     wordlist_raw = str(merged_value(args.wordlist, effective_config, "wordlist", str(DEFAULT_WORDLIST)))
+    js_wordlist_raw = str(
+        merged_value(
+            getattr(args, "javascript_wordlist", None),
+            effective_config,
+            "javascript_wordlist",
+            str(DEFAULT_JAVASCRIPT_WORDLIST),
+        )
+    )
     workers = normalize_workers(merged_value(args.workers, effective_config, "workers", 4))
     force = bool(merged_value(args.force, effective_config, "force", False))
     domain_filter = merged_value(args.domain, effective_config, "domain", None)
     log_file_raw = str(merged_value(args.log_file, effective_config, "log_file", "") or "").strip()
+    skip_js = bool(
+        merged_value(
+            getattr(args, "skip_javascript_extractor", None),
+            effective_config,
+            "skip_javascript_extractor",
+            False,
+        )
+    )
 
     scan_root = Path(scan_root_raw).expanduser()
     if not scan_root.is_absolute():
@@ -1510,6 +1882,11 @@ def main(argv: list[str] | None = None) -> int:
     wordlist = Path(wordlist_raw).expanduser()
     if not wordlist.is_absolute():
         wordlist = (EXTRACTOR_BASE / wordlist).resolve()
+    javascript_wordlist = Path(js_wordlist_raw).expanduser()
+    if not javascript_wordlist.is_absolute():
+        javascript_wordlist = (EXTRACTOR_BASE / javascript_wordlist).resolve()
+    else:
+        javascript_wordlist = javascript_wordlist.resolve()
 
     if bool(getattr(args, "rebuild_trim_stats", False)):
         domain_filter_text = str(domain_filter).strip() if domain_filter is not None else ""
@@ -1543,6 +1920,7 @@ def main(argv: list[str] | None = None) -> int:
     install_extractor_log_tee(log_path)
     print(
         f"[extractor] config={config_path.resolve()} scan_root={scan_root} wordlist={wordlist} "
+        f"javascript_wordlist={javascript_wordlist} skip_js={skip_js} "
         f"workers={workers} force={force} domain={domain_filter}",
         flush=True,
     )
@@ -1553,6 +1931,8 @@ def main(argv: list[str] | None = None) -> int:
             force=force,
             domain_filter=str(domain_filter).strip() if domain_filter is not None else None,
             workers=workers,
+            javascript_wordlist_path=javascript_wordlist,
+            skip_javascript_extractor=skip_js,
         )
     except FileNotFoundError as exc:
         print(f"[extractor] {exc}", flush=True)

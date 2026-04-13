@@ -1,0 +1,370 @@
+[  
+  {
+    "name": "oauth_oidc_artifacts",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:client_id|client_secret|authorization_endpoint|token_endpoint|userinfo_endpoint|jwks_uri|redirect_uri|response_type|response_mode|scope|code_challenge|code_verifier|id_token|access_token|refresh_token|nonce|state|pkce|openid)\\b",
+    "description": "Identify OAuth and OpenID Connect artifacts in JavaScript.",
+    "output_filename": "oauth_oidc_artifacts.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "jwt_tokens",
+    "scope": "js_scripts",
+    "regex": "\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9._-]{8,}\\.[A-Za-z0-9._-]{8,}\\b",
+    "description": "Detect JWT-like tokens embedded in JavaScript.",
+    "output_filename": "jwt_tokens.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "api_key_assignments",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:api[_-]?key|apikey|client[_-]?secret|app[_-]?secret|consumer[_-]?secret|token|access[_-]?token|refresh[_-]?token|secret|password|passwd|pwd)\\b\\s*[:=]\\s*[\"'`][^\"'`\\n]{6,}[\"'`]",
+    "description": "Find hardcoded secrets, keys, passwords, and tokens assigned in JavaScript.",
+    "output_filename": "api_key_assignments.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "provider_specific_keys",
+    "scope": "js_scripts",
+    "regex": "\\b(?:AIza[0-9A-Za-z\\-_]{35}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk_live_[0-9A-Za-z]{16,}|pk_live_[0-9A-Za-z]{16,}|ghp_[0-9A-Za-z]{30,}|gho_[0-9A-Za-z]{30,}|github_pat_[0-9A-Za-z_]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,})\\b",
+    "description": "Identify common provider-specific key formats such as Google, AWS, Stripe, GitHub, Slack, and SendGrid.",
+    "output_filename": "provider_specific_keys.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "basic_auth_credentials_in_urls",
+    "scope": "js_scripts",
+    "regex": "https?:\\/\\/[^\\s:@\"'`]+:[^\\s:@\"'`]+@[^\\s\"'`]+",
+    "description": "Detect URLs containing embedded Basic Auth style credentials.",
+    "output_filename": "basic_auth_credentials_in_urls.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "private_key_blocks",
+    "scope": "js_scripts",
+    "regex": "-----BEGIN(?: RSA| DSA| EC| OPENSSH)? PRIVATE KEY-----",
+    "description": "Detect embedded private key blocks in JavaScript.",
+    "output_filename": "private_key_blocks.txt",
+    "importance_score": 10
+  },
+  {
+    "name": "certificate_and_pem_refs",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b[^\\s\"'`]+\\.(?:pem|key|p12|pfx|jks|keystore|crt|cer)\\b",
+    "description": "Find references to certificate, keystore, and private key files.",
+    "output_filename": "certificate_and_pem_refs.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "source_map_references",
+    "scope": "js_scripts",
+    "regex": "(?m)(?:\\/\\/# sourceMappingURL=[^\\s]+|\\/\\*# sourceMappingURL=[^*]+\\*\\/|\\b[^\\s\"'`]+\\.map\\b)",
+    "description": "Locate source map references that may expose original source code.",
+    "output_filename": "source_map_references.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "internal_hostnames_and_domains",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:[A-Za-z0-9-]+\\.)*(?:internal|intranet|corp|local|lan|svc|cluster|k8s|dev|qa|test|staging|uat)\\.[A-Za-z0-9.-]+\\b",
+    "description": "Find internal, staging, test, or otherwise sensitive domain references.",
+    "output_filename": "internal_hostnames_and_domains.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "private_ip_references",
+    "scope": "js_scripts",
+    "regex": "\\b(?:10\\.(?:\\d{1,3}\\.){2}\\d{1,3}|192\\.168\\.(?:\\d{1,3}\\.)\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.(?:\\d{1,3}\\.)\\d{1,3}|127\\.0\\.0\\.1|0\\.0\\.0\\.0|169\\.254\\.(?:\\d{1,3}\\.)\\d{1,3})\\b",
+    "description": "Extract references to loopback, link-local, and RFC1918 private IPs.",
+    "output_filename": "private_ip_references.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "cloud_storage_refs",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:[A-Za-z0-9._-]+\\.s3\\.amazonaws\\.com|s3[.-][A-Za-z0-9-]+\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+|storage\\.googleapis\\.com\\/[A-Za-z0-9._\\/-]+|[A-Za-z0-9.-]+\\.blob\\.core\\.windows\\.net|[A-Za-z0-9.-]+\\.digitaloceanspaces\\.com)\\b",
+    "description": "Locate cloud storage bucket or object references in JavaScript.",
+    "output_filename": "cloud_storage_refs.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "graphql_indicators",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:graphql|graphiql|apollo|relay|__schema|__type|IntrospectionQuery|mutation\\s+\\w+|query\\s+\\w+)\\b",
+    "description": "Identify GraphQL-related functionality and possible introspection usage.",
+    "output_filename": "graphql_indicators.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "swagger_openapi_refs",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:swagger(?:-ui)?|openapi|swagger\\.json|swagger\\.ya?ml|openapi\\.json|openapi\\.ya?ml|api-docs)\\b",
+    "description": "Find references to Swagger or OpenAPI documentation artifacts.",
+    "output_filename": "swagger_openapi_refs.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "websocket_endpoints",
+    "scope": "js_scripts",
+    "regex": "\\b(?:wss?|socket\\.io)://[^\\s\"'`]+|\\bnew\\s+WebSocket\\s*\\(",
+    "description": "Extract WebSocket endpoints and WebSocket constructor usage.",
+    "output_filename": "websocket_endpoints.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "dangerous_dom_sinks",
+    "scope": "js_scripts",
+    "regex": "\\b(?:innerHTML|outerHTML|insertAdjacentHTML|document\\.write|document\\.writeln|Range\\.createContextualFragment|srcdoc)\\b",
+    "description": "Find dangerous DOM sinks commonly involved in DOM XSS.",
+    "output_filename": "dangerous_dom_sinks.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "eval_and_dynamic_code",
+    "scope": "js_scripts",
+    "regex": "\\b(?:eval\\s*\\(|new\\s+Function\\s*\\(|setTimeout\\s*\\(\\s*[\"'`]|setInterval\\s*\\(\\s*[\"'`])",
+    "description": "Detect dynamic code execution patterns that increase XSS and code injection risk.",
+    "output_filename": "eval_and_dynamic_code.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "postmessage_usage",
+    "scope": "js_scripts",
+    "regex": "\\b(?:postMessage\\s*\\(|addEventListener\\s*\\(\\s*[\"'`]message[\"'`]|onmessage\\s*=)\\b",
+    "description": "Detect postMessage send and receive handlers for cross-origin messaging review.",
+    "output_filename": "postmessage_usage.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "cors_related_headers",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:Access-Control-Allow-Origin|Access-Control-Allow-Credentials|withCredentials|credentials\\s*:\\s*[\"'`](?:include|same-origin)[\"'`])\\b",
+    "description": "Find client-side CORS and credentialed request indicators.",
+    "output_filename": "cors_related_headers.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "insecure_http_urls",
+    "scope": "js_scripts",
+    "regex": "\\bhttp://[^\\s\"'`]+",
+    "description": "Locate insecure plain-HTTP URLs referenced in JavaScript.",
+    "output_filename": "insecure_http_urls.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "open_redirect_parameters",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:redirect|redirect_uri|redirectUrl|returnTo|return_to|returnUrl|next|continue|dest|destination|callback|callbackUrl|target|url)\\b",
+    "description": "Find redirect- or navigation-related parameter names that may warrant validation review.",
+    "output_filename": "open_redirect_parameters.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "ssrf_primitives",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:fetch|axios\\.(?:get|post|request)|XMLHttpRequest|\\.open\\s*\\(|request\\s*\\()\\b|\\b(?:url|uri|endpoint|feed|proxy|webhook|callback)\\b",
+    "description": "Locate network request primitives and user-controlled URL-like parameter names that may suggest SSRF-relevant features.",
+    "output_filename": "ssrf_primitives.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "path_traversal_parameters",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:path|filepath|file_path|filename|file|download|template|view|folder|dir|directory|include|resource)\\b|(?:\\.\\./|%2e%2e%2f|%252e%252e%252f)",
+    "description": "Extract file/path-related parameter names and traversal-like strings.",
+    "output_filename": "path_traversal_parameters.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "command_injection_indicators",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:cmd|command|exec|execute|shell|terminal|ping|curl|wget|bash|sh|powershell)\\b",
+    "description": "Find command- or shell-related strings that may indicate dangerous backend integrations.",
+    "output_filename": "command_injection_indicators.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "sql_related_strings",
+    "scope": "js_scripts",
+    "regex": "(\\s*([\\0\\b\\\'\\\"\\n\\r\\t\\%\\_\\\\]*\\s*(((select\\s*.+\\s*from\\s*.+)|(insert\\s*.+\\s*into\\s*.+)|(update\\s*.+\\s*set\\s*.+)|(delete\\s*.+\\s*from\\s*.+)|(drop\\s*.+)|(truncate\\s*.+)|(alter\\s*.+)|(exec\\s*.+)|(\\s*(all|any|not|and|between|in|like|or|some|contains|containsall|containskey)\\s*.+[\\=\\>\\<=\\!\\~]+.+)|(let\\s+.+[\\=]\\s*.*)|(begin\\s*.*\\s*end)|(\\s*[\\/\\*]+\\s*.*\\s*[\\*\\/]+)|(\\s*(\\-\\-)\\s*.*\\s+)|(\\s*(contains|containsall|containskey)\\s+.*)))(\\s*[\\;]\\s*)*)+)",
+    "description": "Detect embedded SQL-like statements or fragments in JavaScript.",
+    "output_filename": "sql_related_strings.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "nosql_related_strings",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:\\$where|\\$regex|\\$ne|\\$gt|\\$lt|findOne\\s*\\(|find\\s*\\(|aggregate\\s*\\()",
+    "description": "Identify NoSQL query operators and patterns embedded in JavaScript.",
+    "output_filename": "nosql_related_strings.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "template_injection_indicators",
+    "scope": "js_scripts",
+    "regex": "(?i)(?:\\{\\{[^}]+\\}\\}|<%=?[^%]+%>|\\$\\{[^}]+\\}|\\b(?:render|template|compileTemplate|Handlebars|Mustache|EJS|Twig|Velocity|Freemarker)\\b)",
+    "description": "Find server- or client-side templating indicators relevant to template injection review.",
+    "output_filename": "template_injection_indicators.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "dangerous_html_sanitizer_gaps",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:sanitize\\s*:\\s*false|escape\\s*:\\s*false|dangerouslySetInnerHTML|bypassSecurityTrustHtml|v-html|ng-bind-html)\\b",
+    "description": "Detect patterns where HTML sanitization may be disabled or bypassed.",
+    "output_filename": "dangerous_html_sanitizer_gaps.txt",
+    "importance_score": 9
+  },
+  {
+    "name": "storage_of_sensitive_data",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:localStorage|sessionStorage|indexedDB|document\\.cookie)\\b.{0,80}\\b(?:token|secret|jwt|auth|session|password|key)\\b|\\b(?:token|secret|jwt|auth|session|password|key)\\b.{0,80}\\b(?:localStorage|sessionStorage|indexedDB|document\\.cookie)\\b",
+    "description": "Find possible storage of sensitive data in browser-accessible storage locations.",
+    "output_filename": "storage_of_sensitive_data.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "cookie_security_flags",
+    "scope": "js_scripts",
+    "regex": "(?i)document\\.cookie\\s*=|\\b(?:SameSite|Secure|HttpOnly)\\b",
+    "description": "Identify client-side cookie setting and cookie flag references for security review.",
+    "output_filename": "cookie_security_flags.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "csrf_related_artifacts",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:csrf|xsrf|authenticity_token|anti[-_]?forgery|__RequestVerificationToken)\\b",
+    "description": "Find CSRF token names and anti-forgery artifacts in JavaScript.",
+    "output_filename": "csrf_related_artifacts.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "authorization_headers",
+    "scope": "js_scripts",
+    "regex": "(?i)\\bAuthorization\\b\\s*[:=]|\\bBearer\\s+[A-Za-z0-9._-]+",
+    "description": "Detect explicit Authorization header usage and bearer token strings.",
+    "output_filename": "authorization_headers.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "hardcoded_email_addresses",
+    "scope": "js_scripts",
+    "regex": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b",
+    "description": "Extract hardcoded email addresses that may reveal internal contacts or environments.",
+    "output_filename": "hardcoded_email_addresses.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "debug_and_test_artifacts",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:TODO|FIXME|HACK|BUG|DEBUG|console\\.log\\s*\\(|debugger\\b|staging|sandbox|testOnly|mock|fake|dummy)\\b",
+    "description": "Find debug, test, and development artifacts left in JavaScript.",
+    "output_filename": "debug_and_test_artifacts.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "framework_error_leakage",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:stack trace|exception|NullPointerException|SQLException|HibernateException|org\\.springframework|javax\\.servlet|jakarta\\.servlet|Tomcat|JBoss|Jetty|AEM|Magnolia)\\b",
+    "description": "Detect framework and stack trace references that may help fingerprint backend technology or leaked errors.",
+    "output_filename": "framework_error_leakage.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "admin_and_sensitive_paths",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:/admin\\b|/administrator\\b|/manage\\b|/management\\b|/actuator\\b|/console\\b|/api-docs\\b|/swagger\\b|/graphql\\b|/internal\\b|/debug\\b|/metrics\\b|/health\\b|/status\\b|/config\\b|/backup\\b)\\S*",
+    "description": "Extract potentially sensitive application paths referenced by client-side code.",
+    "output_filename": "admin_and_sensitive_paths.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "file_upload_indicators",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:multipart\\/form-data|FormData\\s*\\(|input[^\\n]{0,80}type\\s*=\\s*[\"']file[\"']|upload|dropzone|content-type\\s*[:=]\\s*[\"']multipart\\/form-data[\"'])\\b",
+    "description": "Find file upload features and multipart handling in JavaScript.",
+    "output_filename": "file_upload_indicators.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "dangerous_file_types",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:\\.php\\b|\\.jsp\\b|\\.jspx\\b|\\.asp\\b|\\.aspx\\b|\\.war\\b|\\.jar\\b|\\.class\\b|\\.exe\\b|\\.dll\\b|\\.sh\\b|\\.bat\\b)\\b",
+    "description": "Extract dangerous executable or server-side file extensions referenced in JavaScript.",
+    "output_filename": "dangerous_file_types.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "idor_candidate_parameters",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:userId|user_id|accountId|account_id|customerId|customer_id|profileId|profile_id|orgId|organizationId|tenantId|projectId|invoiceId|orderId|documentId|fileId|recordId|ownerId|memberId|uid|uuid|id)\\b",
+    "description": "Find object identifier parameter names that may be relevant for authorization testing.",
+    "output_filename": "idor_candidate_parameters.txt",
+    "importance_score": 7
+  },
+  {
+    "name": "prototype_pollution_indicators",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:__proto__|prototype|constructor\\.prototype|Object\\.assign\\s*\\(|lodash\\.merge\\s*\\(|merge\\s*\\(|deepMerge\\s*\\()\\b",
+    "description": "Detect prototype pollution-sensitive property names and merge patterns.",
+    "output_filename": "prototype_pollution_indicators.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "url_construction_patterns",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:baseUrl|baseURL|apiBase|apiHost|serviceUrl|endpoint|buildUrl|urljoin|location\\.href|window\\.location|document\\.location)\\b",
+    "description": "Find URL construction and navigation primitives that may reveal hidden routes or redirect logic.",
+    "output_filename": "url_construction_patterns.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "sensitive_query_parameters",
+    "scope": "js_scripts",
+    "regex": "(?i)[?&](?:token|access_token|refresh_token|auth|key|api_key|password|passwd|secret|code|session|jwt)=",
+    "description": "Detect sensitive data being handled in query-string style parameter names.",
+    "output_filename": "sensitive_query_parameters.txt",
+    "importance_score": 8
+  },
+  {
+    "name": "base64_blobs",
+    "scope": "js_scripts",
+    "regex": "(?:[\"'`])(?:[A-Za-z0-9+/]{80,}={0,2})(?:[\"'`])",
+    "description": "Find large base64-like blobs that may contain embedded data, tokens, or encoded content.",
+    "output_filename": "base64_blobs.txt",
+    "importance_score": 5
+  },
+  {
+    "name": "hex_blobs",
+    "scope": "js_scripts",
+    "regex": "\\b(?:0x)?[A-Fa-f0-9]{64,}\\b",
+    "description": "Find long hex-encoded values that may be hashes, keys, or opaque identifiers worth reviewing.",
+    "output_filename": "hex_blobs.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "embedded_html_comments_or_credentials",
+    "scope": "js_scripts",
+    "regex": "(?i)(?:<!--.*?(?:password|secret|token|key|todo|debug).*?-->)|(?:\\/\\*.*?(?:password|secret|token|key|todo|debug).*?\\*\\/)",
+    "description": "Find comments containing possible credentials, secrets, or useful debug notes.",
+    "output_filename": "embedded_html_comments_or_credentials.txt",
+    "importance_score": 6
+  },
+  {
+    "name": "mobile_backend_and_app_links",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:android-app:\\/\\/|ios-app:\\/\\/|itms-apps:\\/\\/|market:\\/\\/|appstore|play\\.google\\.com|bundleId|packageName)\\b",
+    "description": "Detect references to mobile apps and app backends that may expose additional attack surface.",
+    "output_filename": "mobile_backend_and_app_links.txt",
+    "importance_score": 4
+  },
+  {
+    "name": "payment_and_pii_terms",
+    "scope": "js_scripts",
+    "regex": "(?i)\\b(?:cardNumber|cvv|cvc|expiry|iban|routingNumber|accountNumber|ssn|socialSecurity|taxId|dob|dateOfBirth|passport|nationalId)\\b",
+    "description": "Find client-side handling of payment or sensitive personal data fields.",
+    "output_filename": "payment_and_pii_terms.txt",
+    "importance_score": 7
+  }
+]
