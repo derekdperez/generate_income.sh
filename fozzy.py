@@ -49,6 +49,7 @@ from typing import Any, Callable
 
 # Semaphore / RLock misuse or runtime issues should warn, not abort a long fuzz run.
 _FOZZY_LOCK_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, ValueError, AttributeError)
+RESPONSE_TIME_DISCREPANCY_MULTIPLIER = 3.0
 
 
 def _fozzy_safe_release(label: str, release_fn: Callable[[], None]) -> None:
@@ -894,6 +895,37 @@ def request_url(url: str, timeout: float) -> dict[str, Any]:
         url,
         headers=headers,
     )
+
+    def _extract_header_names(headers_obj: Any) -> list[str]:
+        if headers_obj is None:
+            return []
+        names: list[str] = []
+        try:
+            items = list(headers_obj.items())
+        except Exception:
+            items = []
+        for key, _value in items:
+            name = str(key or "").strip()
+            if name:
+                names.append(name)
+        if not names:
+            try:
+                for key in headers_obj.keys():
+                    name = str(key or "").strip()
+                    if name:
+                        names.append(name)
+            except Exception:
+                pass
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for name in names:
+            lowered = name.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(name)
+        return deduped
+
     t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -905,6 +937,7 @@ def request_url(url: str, timeout: float) -> dict[str, Any]:
                 "size": len(body),
                 "body_preview": body.decode("utf-8", errors="replace"),
                 "elapsed_ms": elapsed_ms,
+                "response_header_names": _extract_header_names(getattr(response, "headers", None)),
             }
     except urllib.error.HTTPError as exc:
         body = b""
@@ -919,6 +952,7 @@ def request_url(url: str, timeout: float) -> dict[str, Any]:
             "size": len(body),
             "body_preview": body.decode("utf-8", errors="replace"),
             "elapsed_ms": elapsed_ms,
+            "response_header_names": _extract_header_names(getattr(exc, "headers", None)),
         }
     except Exception as exc:
         elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
@@ -929,6 +963,7 @@ def request_url(url: str, timeout: float) -> dict[str, Any]:
             "body_preview": "",
             "error": str(exc),
             "elapsed_ms": elapsed_ms,
+            "response_header_names": [],
         }
 
 
@@ -1330,8 +1365,15 @@ def count_live_requests_for_group_with_allowlist(
     return total
 
 
-def anomaly_file_name(host: str, path: str, permutation: tuple[str, ...], parameter: str, value: str) -> str:
-    seed = f"{host}|{path}|{','.join(permutation)}|{parameter}|{value}"
+def anomaly_file_name(
+    host: str,
+    path: str,
+    permutation: tuple[str, ...],
+    parameter: str,
+    value: str,
+    anomaly_type: str | None = None,
+) -> str:
+    seed = f"{host}|{path}|{','.join(permutation)}|{parameter}|{value}|{str(anomaly_type or '').strip().lower()}"
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
     path_token = re.sub(r"[^A-Za-z0-9_-]+", "_", path.strip("/")) or "root"
     return f"anomaly_{host}_{path_token}_{digest}.json"
@@ -1373,6 +1415,64 @@ def _pair_elapsed_ms_summary(
     if b is not None and a is not None:
         return b, a, a - b
     return b, a, None
+
+
+def _response_header_names(response: dict[str, Any] | None) -> set[str]:
+    if not isinstance(response, dict):
+        return set()
+    raw = response.get("response_header_names", [])
+    if not isinstance(raw, list):
+        return set()
+    names: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip().lower()
+        if name:
+            names.add(name)
+    return names
+
+
+def detect_response_time_discrepancy(
+    baseline: dict[str, Any],
+    anomaly: dict[str, Any],
+    *,
+    multiplier: float = RESPONSE_TIME_DISCREPANCY_MULTIPLIER,
+) -> tuple[bool, str]:
+    baseline_ms = _response_elapsed_ms(baseline)
+    anomaly_ms = _response_elapsed_ms(anomaly)
+    if baseline_ms is None or anomaly_ms is None:
+        return False, ""
+    if baseline_ms <= 0:
+        return False, ""
+    threshold = baseline_ms * float(multiplier)
+    if float(anomaly_ms) > threshold:
+        return True, (
+            f"Response elapsed time anomaly: baseline={baseline_ms}ms, "
+            f"new={anomaly_ms}ms, ratio={float(anomaly_ms) / float(baseline_ms):.2f}x (> {multiplier:.1f}x)"
+        )
+    return False, ""
+
+
+def detect_header_change(
+    baseline: dict[str, Any],
+    anomaly: dict[str, Any],
+) -> tuple[bool, str]:
+    baseline_names = _response_header_names(baseline)
+    anomaly_names = _response_header_names(anomaly)
+    if not baseline_names and not anomaly_names:
+        return False, ""
+    if baseline_names == anomaly_names:
+        return False, ""
+    added = sorted(anomaly_names - baseline_names)
+    removed = sorted(baseline_names - anomaly_names)
+    parts = [
+        f"baseline_headers={len(baseline_names)}",
+        f"new_headers={len(anomaly_names)}",
+    ]
+    if added:
+        parts.append("added=" + ",".join(added))
+    if removed:
+        parts.append("removed=" + ",".join(removed))
+    return True, "Header change anomaly: " + "; ".join(parts)
 
 
 def load_result_entries_from_folders(
@@ -1448,9 +1548,16 @@ def load_result_entries_from_folders(
                 )
             )
             result_type = "reflection" if is_reflection_name else "anomaly"
+            anomaly_type = str(payload.get("anomaly_type", "") or "").strip()
+            display_type = result_type
+            if result_type == "anomaly" and anomaly_type:
+                display_type = f"anomaly:{anomaly_type}"
             entries.append(
                 {
                     "result_type": result_type,
+                    "display_type": display_type,
+                    "anomaly_type": anomaly_type,
+                    "anomaly_note": str(payload.get("anomaly_note", "") or "").strip(),
                     "source_domain": domain_label,
                     "result_file": str(path),
                     "captured_at_utc": captured_at,
@@ -2281,7 +2388,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
             diff_class = "size-diff-neg"
         diff_text = f"{size_diff:+d}"
 
-        result_type_raw = str(item.get("result_type", "") or "").strip() or "unknown"
+        result_type_raw = str(item.get("display_type", item.get("result_type", "")) or "").strip() or "unknown"
+        anomaly_note_raw = str(item.get("anomaly_note", "") or "").strip()
         type_display, type_raw = clip_cell(result_type_raw)
         source_domain_raw = str(item.get("source_domain", "") or "").strip()
         domain_cell = ""
@@ -2290,7 +2398,7 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
             domain_cell = f"<td data-raw='{html.escape(domain_raw_cell)}'>{domain_display}</td>"
 
         body_search = (
-            f"{result_type_raw}\n{source_domain_raw}\n{baseline_body}\n{anomaly_body}\n"
+            f"{result_type_raw}\n{anomaly_note_raw}\n{source_domain_raw}\n{baseline_body}\n{anomaly_body}\n"
             f"{elapsed_b_ms if elapsed_b_ms is not None else ''}\n"
             f"{elapsed_a_ms if elapsed_a_ms is not None else ''}\n"
             f"{elapsed_diff_ms if elapsed_diff_ms is not None else ''}"
@@ -2889,7 +2997,8 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
           const responseId = `r${{idx + 1}}`;
           const baseline = item.baseline_response && typeof item.baseline_response === "object" ? item.baseline_response : {{}};
           const anomaly = item.anomaly_response && typeof item.anomaly_response === "object" ? item.anomaly_response : {{}};
-          const typeRaw = String(item.result_type || "").trim() || "unknown";
+          const typeRaw = String(item.display_type || item.result_type || "").trim() || "unknown";
+          const anomalyNote = String(item.anomaly_note || "");
           const sourceDomainRaw = String(item.source_domain || "").trim();
           const capturedRaw = String(item.captured_at_utc || "");
           const capturedDisp = formatUtcTime(capturedRaw);
@@ -2907,7 +3016,7 @@ def render_anomaly_summary_html(payload: dict[str, Any]) -> str:
           const diffMs = baselineMs == null || anomalyMs == null ? null : (anomalyMs - baselineMs);
           const baselineLabel = `${{baselineStatus}} ${{statusPhrase(baselineStatus)}}`.trim();
           const anomalyLabel = `${{anomalyStatus}} ${{statusPhrase(anomalyStatus)}}`.trim();
-          const bodySearch = `${{typeRaw}}\\n${{sourceDomainRaw}}\\n${{String(baseline.body_preview || "")}}\\n${{String(anomaly.body_preview || "")}}\\n${{baselineMs == null ? "" : baselineMs}}\\n${{anomalyMs == null ? "" : anomalyMs}}\\n${{diffMs == null ? "" : diffMs}}`.toLowerCase();
+          const bodySearch = `${{typeRaw}}\\n${{anomalyNote}}\\n${{sourceDomainRaw}}\\n${{String(baseline.body_preview || "")}}\\n${{String(anomaly.body_preview || "")}}\\n${{baselineMs == null ? "" : baselineMs}}\\n${{anomalyMs == null ? "" : anomalyMs}}\\n${{diffMs == null ? "" : diffMs}}`.toLowerCase();
           const diffClass = diffMs == null ? "size-diff-zero" : (diffMs > 0 ? "size-diff-pos" : (diffMs < 0 ? "size-diff-neg" : "size-diff-zero"));
           const sizeDiffClass = sizeDiff > 0 ? "size-diff-pos" : (sizeDiff < 0 ? "size-diff-neg" : "size-diff-zero");
           const resultCell = resultRaw
@@ -3634,9 +3743,28 @@ def fuzz_group(
                             f"fuzz={summary['fuzz_requests']} anomalies={summary['anomalies']}"
                         )
 
+                    anomaly_signals: list[tuple[str, str]] = []
                     if response_differs(baseline_response, trial_response):
+                        anomaly_signals.append(("status_or_size_change", "Response status or size differs from baseline"))
+                    time_discrepancy, time_note = detect_response_time_discrepancy(
+                        baseline_response,
+                        trial_response,
+                    )
+                    if time_discrepancy:
+                        anomaly_signals.append(("response_time_discrepancy", time_note))
+                    header_change, header_note = detect_header_change(
+                        baseline_response,
+                        trial_response,
+                    )
+                    if header_change:
+                        anomaly_signals.append(("header_change", header_note))
+
+                    for anomaly_type, anomaly_note in anomaly_signals:
                         payload = {
                             "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+                            "result_type": "anomaly",
+                            "anomaly_type": anomaly_type,
+                            "anomaly_note": anomaly_note,
                             "host": group.host,
                             "path": group.path,
                             "permutation": list(permutation),
@@ -3646,12 +3774,21 @@ def fuzz_group(
                             "baseline": baseline_response,
                             "anomaly": trial_response,
                         }
-                        anomaly_path = results_dir / anomaly_file_name(group.host, group.path, permutation, name, fuzz_value)
+                        anomaly_path = results_dir / anomaly_file_name(
+                            group.host,
+                            group.path,
+                            permutation,
+                            name,
+                            fuzz_value,
+                            anomaly_type=anomaly_type,
+                        )
                         anomaly_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
                         summary["anomalies"] += 1
                         summary["anomaly_entries"].append(
                             {
                                 "result_type": "anomaly",
+                                "anomaly_type": anomaly_type,
+                                "anomaly_note": anomaly_note,
                                 "result_file": str(anomaly_path),
                                 "url": trial_url,
                                 "host": group.host,
