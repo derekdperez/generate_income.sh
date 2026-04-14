@@ -281,6 +281,67 @@ class HttpRequestQueue:
                 max_attempts=int(row["max_attempts"] or 5),
             )
 
+    def claim_request_if_ready(self, request_id: str) -> QueuedHttpRequest | None:
+        """Claim a specific request_id if it is queued/retry_wait and ready (not behind global FIFO).
+
+        Used by :meth:`submit_and_wait` so a waiter is not starved behind unrelated jobs when many
+        requests are outstanding (parallel Fozzy / Nightmare workers sharing one queue DB).
+        """
+        rid = str(request_id or "").strip()
+        if not rid:
+            return None
+        now = time.time()
+        lease_expires_at = now + float(self.lease_seconds)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT request_id, method, url, headers_json, body_base64, timeout_seconds,
+                       read_limit, metadata_json, attempts, max_attempts
+                  FROM http_request_queue
+                 WHERE request_id = ?
+                   AND status IN ('queued','retry_wait')
+                   AND scheduled_at <= ?
+                """,
+                (rid, now),
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
+            conn.execute(
+                """
+                UPDATE http_request_queue
+                   SET status='leased',
+                       leased_by=?,
+                       lease_expires_at=?,
+                       updated_at=?,
+                       attempts=attempts+1
+                 WHERE request_id=?
+                """,
+                (self.worker_id, lease_expires_at, now, rid),
+            )
+            attempt_no = int(row["attempts"] or 0) + 1
+            conn.execute(
+                """
+                INSERT INTO http_request_attempt(request_id, worker_id, attempt_no, started_at, outcome)
+                VALUES (?, ?, ?, ?, 'leased')
+                """,
+                (rid, self.worker_id, attempt_no, now),
+            )
+            conn.execute("COMMIT")
+        return QueuedHttpRequest(
+            request_id=str(row["request_id"]),
+            method=str(row["method"]),
+            url=str(row["url"]),
+            headers=json.loads(row["headers_json"] or "{}"),
+            body=base64.b64decode(row["body_base64"] or ""),
+            timeout_seconds=float(row["timeout_seconds"] or 30.0),
+            read_limit=int(row["read_limit"] or 4096),
+            metadata=json.loads(row["metadata_json"] or "{}"),
+            attempts=attempt_no,
+            max_attempts=int(row["max_attempts"] or 5),
+        )
+
     def load_result(self, request_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -480,12 +541,24 @@ class HttpRequestQueue:
             dedupe_key=dedupe_key,
             max_attempts=max_attempts,
         )
-        deadline = time.time() + float(wait_timeout_seconds or max(30.0, timeout_seconds * max_attempts + 5.0))
+        if wait_timeout_seconds is not None:
+            wait_budget = float(wait_timeout_seconds)
+        else:
+            # Per-attempt HTTP timeout * attempts, plus retry backoff headroom; avoid spurious timeouts
+            # when the global queue is busy or 5xx retries with sleep.
+            ts = float(timeout_seconds or 30.0)
+            ma = max(1, int(max_attempts or 5))
+            wait_budget = max(180.0, ts * float(ma) * 2.0 + 90.0)
+        deadline = time.time() + wait_budget
         while time.time() < deadline:
             self.requeue_expired_leases()
             result = self.load_result(request_id)
             if isinstance(result, dict):
                 return result
+            own = self.claim_request_if_ready(request_id)
+            if own is not None:
+                self.execute_claimed(own)
+                continue
             job = self.claim_next()
             if job is None:
                 time.sleep(0.05)
