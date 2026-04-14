@@ -58,7 +58,9 @@ def _merged_value(cli_value: Any, cfg: dict[str, Any], key: str, default: Any) -
     if cli_value is not None:
         return cli_value
     if key in cfg:
-        return cfg[key]
+        value = cfg[key]
+        if value is not None and value != "":
+            return value
     return default
 
 
