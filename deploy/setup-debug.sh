@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -68,4 +66,3 @@ echo "✓ Debug environment ready!"
 echo "  - coordinator.json is configured to use environment variables"
 echo "  - COORDINATOR_BASE_URL will override to https://localhost in debug mode"
 echo "  - API token loaded from .env"
->>>>>>> 2b3030f3734eb5acf044e8d87534b97539154acb
