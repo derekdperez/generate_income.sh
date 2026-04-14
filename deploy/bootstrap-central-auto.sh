@@ -389,6 +389,11 @@ chmod 600 "$WORKER_ENV_FILE"
 cd "$DEPLOY_DIR"
 run_compose -f docker-compose.central.yml --env-file .env up -d --build
 
+SETUP_PG="${DEPLOY_DIR}/setup-postgres.sh"
+if [[ -f "$SETUP_PG" ]]; then
+  bash "$SETUP_PG" --no-up || true
+fi
+
 echo "Central stack is running."
 echo "Generated files:"
 echo "  - ${ENV_FILE}"
