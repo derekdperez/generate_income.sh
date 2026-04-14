@@ -1,7 +1,4 @@
 {
-  "database_url": "",
-  "server_base_url": "",
-  "api_token": "",
   "output_root": "output",
   "lease_seconds": 180,
   "heartbeat_interval_seconds": 20.0,

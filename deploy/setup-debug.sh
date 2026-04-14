@@ -54,15 +54,12 @@ echo "Docker URL: ${COORDINATOR_BASE_URL} (from .env)"
 echo "Config file: $(cd .. && pwd)/config/coordinator.json (empty values use env vars)"
 echo ""
 
-# Check if containers are running
-if docker compose -f docker-compose.local.yml ps 2>/dev/null | grep -q "UP\|running"; then
-    echo "Containers are already running. Skipping docker compose up..."
-else
-    echo "Starting local Nightmare cluster..."
-    docker compose -f docker-compose.local.yml --env-file .env up -d --build
-    echo "Waiting for services to start..."
-    sleep 30
-fi
+# Always restart containers to ensure they have latest environment variables
+echo "Restarting local Nightmare cluster with updated configuration..."
+docker compose -f docker-compose.local.yml --env-file .env down 2>/dev/null || true
+docker compose -f docker-compose.local.yml --env-file .env up -d --build
+echo "Waiting for services to start..."
+sleep 10
 
 echo ""
 echo "✓ Debug environment ready!"

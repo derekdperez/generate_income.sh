@@ -108,10 +108,11 @@ class CoordinatorConfig:
 
 
 class CoordinatorClient:
-    def __init__(self, base_url: str, token: str, timeout_seconds: float = 20.0):
+    def __init__(self, base_url: str, token: str, timeout_seconds: float = 20.0, verify_ssl: bool = True):
         self.base_url = base_url.rstrip("/")
         self.token = token.strip()
         self.timeout_seconds = timeout_seconds
+        self.verify_ssl = verify_ssl
 
     def _headers(self) -> dict[str, str]:
         out = {"Content-Type": "application/json"}
@@ -129,6 +130,7 @@ class CoordinatorClient:
             json_payload=payload,
             timeout_seconds=self.timeout_seconds,
             user_agent="nightmare-coordinator/1.0",
+            verify=self.verify_ssl,
         )
 
     def claim_target(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
@@ -357,7 +359,9 @@ def run_subprocess(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
 class DistributedCoordinator:
     def __init__(self, cfg: CoordinatorConfig):
         self.cfg = cfg
-        self.client = CoordinatorClient(cfg.server_base_url, cfg.api_token)
+        # Disable SSL verification for localhost (self-signed cert in development)
+        verify_ssl = not cfg.server_base_url.startswith("https://localhost")
+        self.client = CoordinatorClient(cfg.server_base_url, cfg.api_token, verify_ssl=verify_ssl)
         host = socket.gethostname().strip() or "worker"
         self.worker_prefix = f"{host}-{uuid.uuid4().hex[:8]}"
         self.stop_event = threading.Event()
