@@ -38,8 +38,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from collections import defaultdict
 from contextlib import contextmanager
@@ -48,6 +46,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
+
+from http_client import request_capped
+from http_request_queue import HttpRequestQueue
 
 import scrapy
 from openai import APIError, APITimeoutError, BadRequestError, OpenAI, RateLimitError
@@ -94,6 +95,9 @@ PROMPT_CONFIG_PATH = CONFIG_DIR / "nightmare.prompts.json"
 TEMPLATE_DIR = CONFIG_DIR / "templates"
 STATIC_ASSET_EXTENSIONS: set[str] = set()
 AI_EXCLUDED_URL_EXTENSIONS: set[str] = set()
+HIGH_VALUE_EXTENSIONS: set[str] = set()
+# Longest-first URL path suffixes (normalized, no trailing slash except "/") for high-value captures.
+HIGH_VALUE_PATH_SUFFIXES: tuple[str, ...] = ()
 _EXTENSION_CONFIG_LOADED = False
 HELP_TEXTS: dict[str, Any] = {}
 MESSAGE_TEMPLATES: dict[str, Any] = {}
@@ -107,8 +111,12 @@ _PAGE_EXISTENCE_CRITERIA_LOADED = False
 OPENAI_PROMPT_BUDGET_STEPS = [180000, 120000, 80000, 50000, 30000]
 DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS = 90.0
 DEFAULT_EVIDENCE_BODY_MAX_BYTES = 4096
+# Inline request/response bodies in high_value *.json sidecars (full payload also saved as a sibling file).
+HIGH_VALUE_METADATA_BODY_MAX_BYTES = 256 * 1024
 # urllib probe: never read unbounded bodies (large downloads otherwise look like a hang).
 HTTP_PROBE_BODY_READ_MAX = DEFAULT_EVIDENCE_BODY_MAX_BYTES + 1
+_HTTP_QUEUE_LOCK = threading.Lock()
+_HTTP_QUEUE_INSTANCE: HttpRequestQueue | None = None
 # Above this response size, skip expensive selectors (e.g. every non-link href, all src,
 # regex over HTML, and scanning every URL-like attribute). Huge SPAs otherwise look "frozen"
 # for minutes while lxml walks millions of attributes.
@@ -271,6 +279,9 @@ def should_crawl_url(url: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path or "/"
 
+    if url_path_matches_high_value_suffix(url):
+        return True
+
     if path.endswith("/"):
         return True
 
@@ -279,6 +290,8 @@ def should_crawl_url(url: str) -> bool:
         return True
 
     extension = f".{filename.rsplit('.', 1)[-1].lower()}"
+    if HIGH_VALUE_EXTENSIONS and extension in HIGH_VALUE_EXTENSIONS:
+        return True
     return extension not in STATIC_ASSET_EXTENSIONS
 
 
@@ -399,23 +412,20 @@ def detect_soft_not_found_response(
 
 
 def is_effective_existing_record(record: UrlInventoryRecord | None) -> bool:
+    """True only when we have evidence the URL is a real page (not 404/410, not soft-404, not unverified).
+
+    Unverified discoveries (never crawled / probed, no status) are excluded so wordlist guesses and
+    backlog links do not appear as existing in sitemaps or source-of-truth outputs.
+    """
     if record is None:
         return False
     if bool(getattr(record, "soft_404_detected", False)):
         return False
-    not_found_statuses = configured_not_found_statuses()
-    for raw_status in (getattr(record, "crawl_status_code", None), getattr(record, "existence_status_code", None)):
-        try:
-            code = int(raw_status) if raw_status is not None else None
-        except (TypeError, ValueError):
-            code = None
-        if code is not None and code in not_found_statuses:
-            return False
     crawl_note = str(getattr(record, "crawl_note", "") or "").lower()
     existence_note = str(getattr(record, "existence_check_note", "") or "").lower()
     if "soft-404" in crawl_note or "soft-404" in existence_note:
         return False
-    return True
+    return derive_exists_for_requested_url(record)
 
 
 def _looks_like_hashed_bundle_filename(filename: str) -> bool:
@@ -1029,13 +1039,89 @@ def normalize_extension_config(value: Any, field_name: str) -> set[str]:
 
 
 def apply_extension_config(config: dict[str, Any]) -> None:
-    global STATIC_ASSET_EXTENSIONS, AI_EXCLUDED_URL_EXTENSIONS, _EXTENSION_CONFIG_LOADED
+    global STATIC_ASSET_EXTENSIONS, AI_EXCLUDED_URL_EXTENSIONS, HIGH_VALUE_EXTENSIONS, HIGH_VALUE_PATH_SUFFIXES, _EXTENSION_CONFIG_LOADED
     STATIC_ASSET_EXTENSIONS = normalize_extension_config(config.get("static_asset_extensions", []), "static_asset_extensions")
     AI_EXCLUDED_URL_EXTENSIONS = normalize_extension_config(
         config.get("ai_excluded_url_extensions", []),
         "ai_excluded_url_extensions",
     )
+    hv_raw = config.get("high_value_extensions")
+    if hv_raw is None:
+        hv_raw = config.get("high_value_extension")
+    hv_primary = normalize_extension_config(hv_raw or [], "high_value_extensions")
+    hv_extra = normalize_extension_config(
+        config.get("high_value_extensions_extra", []),
+        "high_value_extensions_extra",
+    )
+    HIGH_VALUE_EXTENSIONS = hv_primary | hv_extra
+    path_raw = config.get("high_value_path_suffixes")
+    if path_raw is None:
+        path_raw = config.get("high_value_directory_paths")
+    HIGH_VALUE_PATH_SUFFIXES = normalize_high_value_path_suffix_tuple(path_raw or [])
     _EXTENSION_CONFIG_LOADED = True
+
+
+def _normalize_high_value_path_suffix(raw: str) -> str:
+    s = str(raw or "").strip().replace("\\", "/").lower()
+    if not s:
+        return ""
+    if not s.startswith("/"):
+        s = "/" + s
+    s = s.rstrip("/")
+    return s if s else "/"
+
+
+def normalize_high_value_path_suffix_tuple(raw: list[Any]) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        norm = _normalize_high_value_path_suffix(str(item))
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    out.sort(key=len, reverse=True)
+    return tuple(out)
+
+
+def url_path_matches_high_value_suffix(url: str) -> str | None:
+    """Return the configured path suffix that this URL matches (longest wins), or None."""
+    ensure_extension_config_loaded()
+    if not HIGH_VALUE_PATH_SUFFIXES:
+        return None
+    parsed = urlparse(url)
+    path = (parsed.path or "/").lower().rstrip("/") or "/"
+    for suf in HIGH_VALUE_PATH_SUFFIXES:
+        if path == suf:
+            return suf
+        if suf != "/" and path.endswith(suf):
+            return suf
+    return None
+
+
+def path_high_value_extension(url: str) -> str | None:
+    """Return the high-value file extension for this URL path (primary + extra lists), or None."""
+    ensure_extension_config_loaded()
+    if not HIGH_VALUE_EXTENSIONS:
+        return None
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if path.endswith("/"):
+        return None
+    filename = path.rsplit("/", 1)[-1]
+    if "." not in filename:
+        return None
+    extension = f".{filename.rsplit('.', 1)[-1].lower()}"
+    return extension if extension in HIGH_VALUE_EXTENSIONS else None
+
+
+def high_value_domain_dir(evidence_dir: Path, root_domain: str) -> Path:
+    """``<output_root>/high_value/<root_domain>/`` (default layout: ``output/<domain>/…_evidence``)."""
+    ev = evidence_dir.resolve()
+    output_root = ev.parent.parent
+    return output_root / "high_value" / root_domain
 
 
 def default_page_existence_criteria() -> dict[str, Any]:
@@ -1381,10 +1467,15 @@ class CrawlState:
     scripts_fetched_urls: set[str] = field(default_factory=set)
     #: Normalized artifact URLs copied under ``collected_data/artifacts`` (resume-safe dedup).
     artifacts_saved_urls: set[str] = field(default_factory=set)
+    #: Normalized URLs already saved under ``output/high_value/<domain>/…`` (resume-safe dedup).
+    high_value_saved_urls: set[str] = field(default_factory=set)
     #: Normalized crawl seed URLs built from ``file_path_list.txt`` (for reporting under ``guessed_paths/``).
     wordlist_path_seeds: list[str] = field(default_factory=list)
     #: Source path used for wordlist path seed generation (repo-relative when possible).
     wordlist_source: str = FILE_PATH_WORDLIST_DISCOVERED_FROM
+    #: POST endpoints captured for Fozzy (forms + static JS heuristics); persisted to ``*.post.requests.json``.
+    post_requests: list[dict[str, Any]] = field(default_factory=list)
+    post_request_ids: set[str] = field(default_factory=set)
 
 
 DIRECT_DISCOVERY_SOURCES = {
@@ -1439,8 +1530,11 @@ def crawl_state_to_dict(state: CrawlState) -> dict[str, Any]:
         "url_inventory": {url: record.to_dict() for url, record in state.url_inventory.items()},
         "scripts_fetched_urls": sorted(state.scripts_fetched_urls),
         "artifacts_saved_urls": sorted(state.artifacts_saved_urls),
+        "high_value_saved_urls": sorted(state.high_value_saved_urls),
         "wordlist_path_seeds": list(state.wordlist_path_seeds),
         "wordlist_source": str(state.wordlist_source or FILE_PATH_WORDLIST_DISCOVERED_FROM),
+        "post_requests": list(state.post_requests),
+        "post_request_ids": sorted(state.post_request_ids),
     }
 
 
@@ -1523,6 +1617,24 @@ def crawl_state_from_dict(payload: dict[str, Any]) -> CrawlState:
         state.artifacts_saved_urls = {
             normalize_url(u) for u in artifacts_saved if isinstance(u, str) and u.strip()
         }
+
+    high_value_saved = payload.get("high_value_saved_urls", [])
+    if isinstance(high_value_saved, list):
+        state.high_value_saved_urls = {
+            normalize_url(u) for u in high_value_saved if isinstance(u, str) and u.strip()
+        }
+
+    pr_list = payload.get("post_requests", [])
+    if isinstance(pr_list, list):
+        state.post_requests = [x for x in pr_list if isinstance(x, dict)]
+    pr_ids = payload.get("post_request_ids", [])
+    if isinstance(pr_ids, list):
+        state.post_request_ids = {str(x) for x in pr_ids if str(x).strip()}
+    if state.post_requests and not state.post_request_ids:
+        for rec in state.post_requests:
+            rid = str(rec.get("id", "") or "").strip()
+            if rid:
+                state.post_request_ids.add(rid)
 
     return state
 
@@ -2108,18 +2220,28 @@ def extract_form_payloads_from_response(response: scrapy.http.Response, page_url
                 tag_name = tag.lower()
             else:
                 tag_name = "node"
-            inputs.append(
-                {
-                    "tag": tag_name,
-                    "type": (field.css("::attr(type)").get() or "").strip().lower(),
-                    "name": (field.css("::attr(name)").get() or "").strip(),
-                    "id": (field.css("::attr(id)").get() or "").strip(),
-                    "value": (field.css("::attr(value)").get() or "").strip(),
-                    "placeholder": (field.css("::attr(placeholder)").get() or "").strip(),
-                    "disabled": bool(field.css("::attr(disabled)").get()),
-                    "required": field.css("::attr(required)").get() is not None,
-                }
-            )
+            input_entry: dict[str, Any] = {
+                "tag": tag_name,
+                "type": (field.css("::attr(type)").get() or "").strip().lower(),
+                "name": (field.css("::attr(name)").get() or "").strip(),
+                "id": (field.css("::attr(id)").get() or "").strip(),
+                "value": (field.css("::attr(value)").get() or "").strip(),
+                "placeholder": (field.css("::attr(placeholder)").get() or "").strip(),
+                "disabled": bool(field.css("::attr(disabled)").get()),
+                "required": field.css("::attr(required)").get() is not None,
+            }
+            if tag_name == "select":
+                options: list[dict[str, Any]] = []
+                for opt in field.css("option"):
+                    options.append(
+                        {
+                            "value": (opt.css("::attr(value)").get() or "").strip(),
+                            "text": "".join(opt.xpath("string()").getall()).strip(),
+                            "selected": opt.css("::attr(selected)").get() is not None,
+                        }
+                    )
+                input_entry["options"] = options
+            inputs.append(input_entry)
         form_slug = _slug_file_component(name or fid, f"form_{idx}")
         forms_out.append(
             {
@@ -2136,6 +2258,218 @@ def extract_form_payloads_from_response(response: scrapy.http.Response, page_url
             }
         )
     return forms_out
+
+
+def _form_body_pairs_and_field_meta(inputs: list[dict[str, Any]]) -> tuple[list[tuple[str, str]], list[str], dict[str, Any]]:
+    """(name, value) pairs (doseq order), first-seen parameter names, per-name field metadata (last wins)."""
+    pairs: list[tuple[str, str]] = []
+    order: list[str] = []
+    seen: set[str] = set()
+    fields: dict[str, Any] = {}
+    for inp in inputs:
+        name = str(inp.get("name", "") or "").strip()
+        if not name:
+            continue
+        itype = str(inp.get("type", "") or "").strip().lower()
+        raw_val = inp.get("value")
+        val_s = str(raw_val) if raw_val is not None else ""
+        if itype in {"submit", "button", "image"} and not name:
+            continue
+        pairs.append((name, val_s))
+        if name not in seen:
+            seen.add(name)
+            order.append(name)
+        fields[name] = {
+            "tag": inp.get("tag"),
+            "type": itype or None,
+            "value": inp.get("value"),
+            "placeholder": inp.get("placeholder"),
+            "required": bool(inp.get("required")),
+            "disabled": bool(inp.get("disabled")),
+            "options": inp.get("options"),
+        }
+    return pairs, order, fields
+
+
+def form_spec_to_post_request_record(form: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a replay-oriented POST record from ``extract_form_payloads_from_response`` output."""
+    method = str(form.get("http_method", "GET") or "GET").strip().upper()
+    if method != "POST":
+        return None
+    target = normalize_url(str(form.get("action_url", "") or ""))
+    if not target:
+        return None
+    enctype = str(form.get("enctype", "") or "application/x-www-form-urlencoded").strip().lower()
+    inputs = form.get("inputs", [])
+    if not isinstance(inputs, list):
+        inputs = []
+    pairs, param_names, body_fields = _form_body_pairs_and_field_meta([x for x in inputs if isinstance(x, dict)])
+    urlencoded_body = urlencode(pairs, doseq=True) if pairs else ""
+    headers: dict[str, str] = {}
+    if "multipart" in enctype:
+        headers["Content-Type"] = "multipart/form-data"
+    elif "json" in enctype:
+        headers["Content-Type"] = "application/json"
+    else:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    rid_src = {
+        "target_url": target,
+        "method": "POST",
+        "source": "html_form",
+        "page": str(form.get("source_page_url", "") or ""),
+        "params": param_names,
+        "enctype": enctype,
+    }
+    rid = hashlib.sha256(json.dumps(rid_src, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
+    return {
+        "id": rid,
+        "source_type": "html_form",
+        "source_page_url": normalize_url(str(form.get("source_page_url", "") or "")),
+        "script_url": None,
+        "http_method": "POST",
+        "target_url": target,
+        "content_type": headers["Content-Type"],
+        "enctype": enctype,
+        "suggested_headers": headers,
+        "body_parameter_names": param_names,
+        "body_fields": body_fields,
+        "urlencoded_body": urlencoded_body,
+        "form_snapshot": {
+            "form_file_key": form.get("form_file_key"),
+            "name_attr": form.get("name_attr"),
+            "id_attr": form.get("id_attr"),
+            "autocomplete": form.get("autocomplete"),
+            "inputs": inputs,
+        },
+        "note": str(form.get("note", "") or ""),
+    }
+
+
+_JS_AXIOS_POST_DQ = re.compile(r"axios\s*\.\s*post\s*\(\s*(['\"])([^'\"]{1,4096})\1", re.I)
+_JS_AXIOS_POST_BT = re.compile(r"axios\s*\.\s*post\s*\(\s*`([^`]{1,4096})`", re.I)
+_JS_JQUERY_POST_DQ = re.compile(r"(?:jQuery|\$)\s*\.\s*post\s*\(\s*(['\"])([^'\"]{1,4096})\1", re.I)
+_JS_JQUERY_POST_BT = re.compile(r"(?:jQuery|\$)\s*\.\s*post\s*\(\s*`([^`]{1,4096})`", re.I)
+_JS_FETCH_POST_DQ = re.compile(
+    r"fetch\s*\(\s*(['\"])([^'\"]{1,4096})\1\s*,\s*\{[^}]{0,4000}?method\s*:\s*['\"]POST['\"]",
+    re.I | re.DOTALL,
+)
+_JS_FETCH_POST_BT = re.compile(
+    r"fetch\s*\(\s*`([^`]{1,4096})`\s*,\s*\{[^}]{0,4000}?method\s*:\s*['\"]POST['\"]",
+    re.I | re.DOTALL,
+)
+_JS_XHR_OPEN = re.compile(
+    r"\.open\s*\(\s*(['\"])(?:POST|post)\1\s*,\s*(['\"])([^'\"]{1,4096})\2",
+    re.I,
+)
+
+
+def _resolve_script_target_url(raw: str, base_url: str, root_domain: str) -> str | None:
+    text = (raw or "").strip()
+    if not text or text.startswith(("#", "javascript:", "data:", "mailto:")):
+        return None
+    if text.startswith("?"):
+        text = urljoin(base_url, text)
+    elif text.startswith("//"):
+        text = "https:" + text
+    elif not text.startswith("http://") and not text.startswith("https://"):
+        text = urljoin(base_url, text)
+    try:
+        norm = normalize_url(text)
+    except Exception:
+        return None
+    if not is_allowed_domain(norm, root_domain):
+        return None
+    return norm
+
+
+def extract_post_requests_from_javascript(
+    text: str,
+    *,
+    base_url: str,
+    root_domain: str,
+    script_url: str | None,
+    source_page_url: str,
+) -> list[dict[str, Any]]:
+    """Heuristic extraction of POST target URLs from JS (fetch/axios/jQuery/XHR)."""
+    if not text or len(text) < 8:
+        return []
+    hits: list[tuple[str, str, str]] = []
+    for rx in (_JS_AXIOS_POST_DQ, _JS_JQUERY_POST_DQ):
+        for m in rx.finditer(text):
+            hits.append(("axios_or_jquery_post", m.group(2), m.group(0)[:240]))
+    for m in _JS_AXIOS_POST_BT.finditer(text):
+        hits.append(("axios.post_template", m.group(1), m.group(0)[:240]))
+    for m in _JS_JQUERY_POST_BT.finditer(text):
+        hits.append(("jquery.post_template", m.group(1), m.group(0)[:240]))
+    for m in _JS_FETCH_POST_DQ.finditer(text):
+        hits.append(("fetch_post", m.group(2), m.group(0)[:240]))
+    for m in _JS_FETCH_POST_BT.finditer(text):
+        hits.append(("fetch_post_template", m.group(1), m.group(0)[:240]))
+    for m in _JS_XHR_OPEN.finditer(text):
+        hits.append(("xhr_open_post", m.group(3), m.group(0)[:240]))
+
+    out: list[dict[str, Any]] = []
+    seen_url: set[str] = set()
+    for pattern_name, raw_u, snippet in hits:
+        resolved = _resolve_script_target_url(raw_u, base_url, root_domain)
+        if resolved is None or resolved in seen_url:
+            continue
+        seen_url.add(resolved)
+        rid_src = {
+            "target_url": resolved,
+            "method": "POST",
+            "source": "javascript",
+            "page": source_page_url,
+            "script": script_url or "",
+            "pattern": pattern_name,
+        }
+        rid = hashlib.sha256(json.dumps(rid_src, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
+        out.append(
+            {
+                "id": rid,
+                "source_type": "javascript",
+                "source_page_url": normalize_url(source_page_url),
+                "script_url": normalize_url(script_url) if script_url else None,
+                "javascript_pattern": pattern_name,
+                "javascript_snippet": snippet,
+                "http_method": "POST",
+                "target_url": resolved,
+                "content_type": None,
+                "enctype": None,
+                "suggested_headers": {},
+                "body_parameter_names": [],
+                "body_fields": {},
+                "urlencoded_body": "",
+                "json_body_template": None,
+                "form_snapshot": None,
+                "note": "POST URL inferred from JavaScript; body parameters were not resolved statically.",
+            }
+        )
+    return out
+
+
+def merge_post_request_into_state(state: CrawlState, record: dict[str, Any]) -> None:
+    rid = str(record.get("id", "") or "").strip()
+    if not rid or rid in state.post_request_ids:
+        return
+    state.post_request_ids.add(rid)
+    state.post_requests.append(record)
+
+
+def build_post_requests_file_payload(root_domain: str, state: CrawlState) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "root_domain": root_domain,
+        "request_count": len(state.post_requests),
+        "requests": list(state.post_requests),
+    }
+
+
+def write_post_requests_json(path: Path, root_domain: str, state: CrawlState) -> None:
+    payload = build_post_requests_file_payload(root_domain, state)
+    ensure_directory(path.parent)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def looks_like_downloadable_script_url(url: str) -> bool:
@@ -2306,6 +2640,7 @@ class DomainSpider(scrapy.Spider):
         state: CrawlState,
         evidence_dir: str,
         session_state_path: str | None = None,
+        post_requests_json_path: str | None = None,
         verbose: bool = False,
         progress: ProgressReporter | None = None,
         wordlist_path_seeds: frozenset[str] | set[str] | None = None,
@@ -2326,6 +2661,7 @@ class DomainSpider(scrapy.Spider):
         self.state = state
         self.evidence_dir = Path(evidence_dir)
         self.session_state_path = Path(session_state_path) if session_state_path else None
+        self.post_requests_json_path = Path(post_requests_json_path) if post_requests_json_path else None
         self.verbose = verbose
         self.progress = progress
         self.wordlist_path_seeds = frozenset(wordlist_path_seeds or ())
@@ -2457,9 +2793,45 @@ class DomainSpider(scrapy.Spider):
             },
         )
 
+    def _flush_post_requests_json(self) -> None:
+        if self.post_requests_json_path is None:
+            return
+        try:
+            write_post_requests_json(self.post_requests_json_path, self.root_domain, self.state)
+        except Exception as exc:
+            self.logger.warning("failed to write post.requests.json: %s", exc)
+
+    def _ingest_post_requests_from_forms(self, forms: list[dict[str, Any]], page_url: str) -> None:
+        for spec in forms:
+            if not isinstance(spec, dict):
+                continue
+            rec = form_spec_to_post_request_record(spec)
+            if rec is None:
+                continue
+            merge_post_request_into_state(self.state, rec)
+
+    def _ingest_post_requests_from_js(
+        self,
+        text: str,
+        *,
+        page_url: str,
+        script_url: str | None,
+        resolve_base_url: str | None = None,
+    ) -> None:
+        base = resolve_base_url or script_url or page_url
+        for rec in extract_post_requests_from_javascript(
+            text,
+            base_url=base,
+            root_domain=self.root_domain,
+            script_url=script_url,
+            source_page_url=page_url,
+        ):
+            merge_post_request_into_state(self.state, rec)
+
     def _save_forms_for_page(self, response: scrapy.http.Response, page_url: str) -> None:
         forms_dir = self._collected["forms"]
         forms = extract_form_payloads_from_response(response, page_url)
+        self._ingest_post_requests_from_forms(forms, page_url)
         page_label = url_filesystem_label(page_url)[:80]
         used_names: dict[str, int] = {}
         for spec in forms:
@@ -2494,6 +2866,10 @@ class DomainSpider(scrapy.Spider):
                 f"// source_http_status: {int(response.status)}\n"
             )
             out_path.write_text(header + body, encoding="utf-8", errors="replace")
+            try:
+                self._ingest_post_requests_from_js(body, page_url=page_url, script_url=None)
+            except Exception as js_post_exc:
+                self.logger.debug("post-request JS scan (inline) skipped: %s", js_post_exc)
             discovered = extract_urls_from_javascript_for_discovery(body, page_url)
             self._record_js_endpoint_file(page_url, fname, discovered)
             out.append((fname, discovered))
@@ -2605,6 +2981,84 @@ class DomainSpider(scrapy.Spider):
         )
         self.state.artifacts_saved_urls.add(norm)
 
+    def _maybe_save_high_value_copy(self, response: scrapy.http.Response, logical_url: str) -> None:
+        if response.status >= 400:
+            return
+        ensure_extension_config_loaded()
+        if not HIGH_VALUE_EXTENSIONS and not HIGH_VALUE_PATH_SUFFIXES:
+            return
+        norm = normalize_url(logical_url)
+        if norm in self.state.high_value_saved_urls:
+            return
+        hv_ext = path_high_value_extension(norm)
+        path_hit = url_path_matches_high_value_suffix(norm)
+        if not hv_ext and not path_hit:
+            return
+
+        dest_root = high_value_domain_dir(self.evidence_dir, self.root_domain)
+        key = _url_fingerprint_component(norm)[:12]
+        req = response.request
+        max_b = HIGH_VALUE_METADATA_BODY_MAX_BYTES
+        body = response.body or b""
+
+        if hv_ext:
+            parsed = urlparse(norm)
+            tail = unquote((parsed.path or "/").rstrip("/").rsplit("/", 1)[-1] or "file")
+            stem, path_ext = split_path_tail_stem_ext(tail)
+            ext_for_file = path_ext if path_ext else hv_ext
+            if not ext_for_file.startswith("."):
+                ext_for_file = f".{ext_for_file}"
+            stem_slug = _slug_file_component(stem, "file")[:100]
+            filename = f"{stem_slug}_{key}{ext_for_file}"
+            ext_subdir = hv_ext.lstrip(".").lower()
+        else:
+            slug_src = (path_hit or "").replace("/", "_").strip("_") or "root"
+            stem_slug = _slug_file_component(slug_src, "path")[:80]
+            ct = (response.headers.get("Content-Type") or b"").decode("latin-1", errors="ignore").lower()
+            if "html" in ct:
+                ext_for_file = ".html"
+            elif "json" in ct:
+                ext_for_file = ".json"
+            elif "xml" in ct:
+                ext_for_file = ".xml"
+            elif "text/" in ct or "javascript" in ct:
+                ext_for_file = ".txt"
+            else:
+                ext_for_file = ".bin"
+            filename = f"{stem_slug}_{key}{ext_for_file}"
+            ext_subdir = "_paths"
+
+        out_dir = dest_root / ext_subdir
+        ensure_directory(out_dir)
+        data_path = out_dir / filename
+        meta_path = out_dir / f"{filename}.json"
+        data_path.write_bytes(body)
+        meta: dict[str, Any] = {
+            "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+            "root_domain": self.root_domain,
+            "url": norm,
+            "high_value_extension": hv_ext,
+            "high_value_path_suffix": path_hit,
+            "saved_relative": f"{ext_subdir}/{filename}",
+            "request": {
+                "method": req.method,
+                "url": req.url,
+                "headers": req.headers.to_unicode_dict(),
+                **encode_body_for_evidence(req.body or b"", max_bytes=max_b),
+            },
+            "response": {
+                "status": int(response.status),
+                "url": response.url,
+                "headers": response.headers.to_unicode_dict(),
+                "binary_file": filename,
+                "body_size_bytes": len(body),
+                "body_sha256": hashlib.sha256(body).hexdigest(),
+                **encode_body_for_evidence(body, max_bytes=max_b),
+            },
+        }
+        save_json_file(meta_path.resolve(), meta)
+        self.state.high_value_saved_urls.add(norm)
+
     def _schedule_script_fetch(self, script_url: str, page_url: str) -> scrapy.Request | None:
         norm = normalize_url(script_url)
         if norm in self.state.scripts_fetched_urls:
@@ -2661,7 +3115,17 @@ class DomainSpider(scrapy.Spider):
                 "parent_page_url": normalize_url(parent),
             },
         )
+        try:
+            self._maybe_save_high_value_copy(response, logical)
+        except Exception as hv_exc:
+            self.logger.warning("high_value save (script asset) failed: %s", hv_exc)
         text = body.decode("utf-8", errors="replace")
+        try:
+            self._ingest_post_requests_from_js(
+                text, page_url=parent, script_url=logical, resolve_base_url=logical
+            )
+        except Exception as js_post_exc:
+            self.logger.debug("post-request JS scan (asset) skipped: %s", js_post_exc)
         discovered = extract_urls_from_javascript_for_discovery(text, logical)
         self._record_js_endpoint_file(parent, out_path.name, discovered)
         self._maybe_refresh_collected_data_rollup()
@@ -2751,6 +3215,7 @@ class DomainSpider(scrapy.Spider):
             self._persist_endpoint_record(response, role="page_visit")
             self._append_cookie_record(response, current_url)
             self._maybe_save_artifact_copy(response, current_url)
+            self._maybe_save_high_value_copy(response, current_url)
         except Exception as coll_exc:
             self.logger.warning("collected_data snapshot failed: %s", coll_exc)
 
@@ -2926,26 +3391,36 @@ class DomainSpider(scrapy.Spider):
         self._save_session_state()
 
     def _save_session_state(self) -> None:
-        if self.session_state_path is None:
-            return
-        save_session_state(
-            session_state_path=self.session_state_path,
-            start_url=self.start_url,
-            root_domain=self.root_domain,
-            max_pages=self.max_pages,
-            state=self.state,
-        )
+        if self.session_state_path is not None:
+            save_session_state(
+                session_state_path=self.session_state_path,
+                start_url=self.start_url,
+                root_domain=self.root_domain,
+                max_pages=self.max_pages,
+                state=self.state,
+            )
+        self._flush_post_requests_json()
 
 
 def build_sitemap(start_url: str, state: CrawlState) -> dict[str, Any]:
     normalized_graph: dict[str, set[str]] = defaultdict(set)
     for source, targets in state.link_graph.items():
+        src_key = normalize_url(source)
+        if not is_effective_existing_record(state.url_inventory.get(src_key)):
+            continue
         normalized_source = normalize_url_for_sitemap(source)
         for target in targets:
+            tgt_key = normalize_url(target)
+            if not is_effective_existing_record(state.url_inventory.get(tgt_key)):
+                continue
             normalized_target = normalize_url_for_sitemap(target)
             normalized_graph[normalized_source].add(normalized_target)
 
-    normalized_discovered_urls = {normalize_url_for_sitemap(url) for url in state.discovered_urls}
+    normalized_discovered_urls: set[str] = set()
+    for url in state.discovered_urls:
+        if not is_effective_existing_record(state.url_inventory.get(url)):
+            continue
+        normalized_discovered_urls.add(normalize_url_for_sitemap(url))
     normalized_discovered_urls.update(normalized_graph.keys())
     for targets in normalized_graph.values():
         normalized_discovered_urls.update(targets)
@@ -3434,13 +3909,12 @@ def merge_source_of_truth_payload(existing: dict[str, Any], current: dict[str, A
         ),
     }
 
+    current_unique_raw = current.get("unique_urls", []) if isinstance(current.get("unique_urls"), list) else []
     merged_unique_urls = sorted(
-        {
-            *(existing.get("unique_urls", []) if isinstance(existing.get("unique_urls"), list) else []),
-            *(current.get("unique_urls", []) if isinstance(current.get("unique_urls"), list) else []),
-        }
+        {normalize_url(u) for u in current_unique_raw if isinstance(u, str) and u.strip()}
     )
     merged["unique_urls"] = merged_unique_urls
+    url_allow = set(merged_unique_urls)
 
     def _merge_named_rows(existing_rows: Any, current_rows: Any, key_name: str) -> list[dict[str, Any]]:
         table: dict[str, dict[str, Any]] = {}
@@ -3481,6 +3955,20 @@ def merge_source_of_truth_payload(existing: dict[str, Any], current: dict[str, A
         current.get("likely_api_endpoints"),
         "endpoint",
     )
+    merged["parameterized_urls"] = [
+        row
+        for row in merged["parameterized_urls"]
+        if isinstance(row, dict)
+        and isinstance(row.get("url"), str)
+        and normalize_url(row["url"]) in url_allow
+    ]
+    merged["likely_api_endpoints"] = [
+        row
+        for row in merged["likely_api_endpoints"]
+        if isinstance(row, dict)
+        and isinstance(row.get("endpoint"), str)
+        and normalize_url(row["endpoint"]) in url_allow
+    ]
     return merged
 
 
@@ -4490,6 +4978,60 @@ def ask_openai_for_probe_requests(
     return cleaned_requests, final_prompt, output_text
 
 
+
+def _nightmare_queue_enabled() -> bool:
+    global config
+    if isinstance(globals().get("config"), dict):
+        cfg = globals().get("config") or {}
+        return bool(cfg.get("http_queue_enabled", False))
+    return False
+
+
+def _get_nightmare_http_queue() -> HttpRequestQueue:
+    global _HTTP_QUEUE_INSTANCE
+    cfg = globals().get("config") or {}
+    with _HTTP_QUEUE_LOCK:
+        if _HTTP_QUEUE_INSTANCE is None:
+            _HTTP_QUEUE_INSTANCE = HttpRequestQueue(
+                db_path=str(cfg.get("http_queue_db_path") or "output/http_request_queue.sqlite3"),
+                spool_dir=str(cfg.get("http_queue_spool_dir") or "output/http-request-spool"),
+                lease_seconds=int(cfg.get("http_queue_lease_seconds", 90) or 90),
+                retry_base_seconds=float(cfg.get("http_queue_retry_base_seconds", 1.0) or 1.0),
+                retry_max_seconds=float(cfg.get("http_queue_retry_max_seconds", 60.0) or 60.0),
+                worker_id=f"nightmare-{os.getpid()}-{threading.get_ident()}",
+            )
+        return _HTTP_QUEUE_INSTANCE
+
+
+def _http_probe_result_from_queue_result(result: dict[str, Any], *, fallback_url: str, method: str, success_note: str) -> dict[str, Any]:
+    response = result.get("response") if isinstance(result.get("response"), dict) else {}
+    headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
+    preview_text = str(response.get("body_text_preview", "") or "")
+    payload = {
+        "ok": bool(result.get("ok", False)),
+        "status_code": result.get("status_code"),
+        "note": success_note if result.get("ok", False) else str(result.get("note") or "HTTP probe failed"),
+        "request": result.get("request") if isinstance(result.get("request"), dict) else {
+            "method": method,
+            "url": fallback_url,
+            "headers": {},
+            "body_base64": "",
+        },
+        "response": None,
+    }
+    if response:
+        payload["response"] = {
+            "status": response.get("status"),
+            "url": str(response.get("url") or fallback_url),
+            "headers": headers,
+            "body_text_preview": preview_text,
+            "body_base64": str(response.get("body_base64", "") or ""),
+            "body_size": int(response.get("body_size", 0) or 0),
+            "elapsed_ms": int(response.get("elapsed_ms", 0) or 0),
+        }
+    return payload
+
+
 def execute_ai_probe_request(
     url: str,
     method: str,
@@ -4508,47 +5050,52 @@ def execute_ai_probe_request(
         "Accept": "*/*",
         "Connection": "close",
     }
-    request_payload = {
-        "method": request_method,
-        "url": url,
-        "headers": headers,
-        "body_base64": "",
-    }
-    request = urllib.request.Request(url, method=request_method, headers=headers)
+
+    if _nightmare_queue_enabled():
+        result = _get_nightmare_http_queue().submit_and_wait(
+            method=request_method,
+            url=url,
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+            read_limit=HTTP_PROBE_BODY_READ_MAX,
+            metadata={"component": "nightmare", "operation": "execute_ai_probe_request"},
+            max_attempts=int((globals().get("config") or {}).get("http_queue_max_attempts", 5) or 5),
+            wait_timeout_seconds=max(timeout_seconds * 6.0, 30.0),
+        )
+        return _http_probe_result_from_queue_result(
+            result,
+            fallback_url=url,
+            method=request_method,
+            success_note="HTTP probe completed",
+        )
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            status_code = int(response.getcode())
-            response_body = read_http_body_capped(response)
-            preview_text = response_body[:1200].decode("utf-8", errors="replace")
-            return {
-                "ok": status_code < 400,
-                "status_code": status_code,
-                "note": "HTTP probe completed",
-                "request": request_payload,
-                "response": {
-                    "status": status_code,
-                    "url": response.geturl(),
-                    "headers": dict(response.headers.items()),
-                    "body_text_preview": preview_text,
-                    **encode_body_for_evidence(response_body),
-                },
-            }
-    except urllib.error.HTTPError as error:
-        status_code = int(error.code)
-        response_body = read_http_body_capped(error) if hasattr(error, "read") else b""
-        preview_text = response_body[:1200].decode("utf-8", errors="replace")
+        response = request_capped(
+            request_method,
+            url,
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+            read_limit=HTTP_PROBE_BODY_READ_MAX,
+            user_agent=headers["User-Agent"],
+        )
+        preview_text = response.body[:1200].decode("utf-8", errors="replace")
         return {
-            "ok": False,
-            "status_code": status_code,
-            "note": "HTTP error response",
-            "request": request_payload,
-            "response": {
-                "status": status_code,
+            "ok": int(response.status_code) < 400,
+            "status_code": int(response.status_code),
+            "note": "HTTP probe completed",
+            "request": {
+                "method": request_method,
                 "url": url,
-                "headers": dict(error.headers.items()) if error.headers else {},
+                "headers": headers,
+                "body_base64": "",
+            },
+            "response": {
+                "status": int(response.status_code),
+                "url": response.url,
+                "headers": response.headers,
                 "body_text_preview": preview_text,
-                **encode_body_for_evidence(response_body),
+                **encode_body_for_evidence(response.body),
+                "elapsed_ms": int(response.elapsed_ms or 0),
             },
         }
     except Exception as error:
@@ -4556,7 +5103,12 @@ def execute_ai_probe_request(
             "ok": False,
             "status_code": None,
             "note": f"Probe failed: {error}",
-            "request": request_payload,
+            "request": {
+                "method": request_method,
+                "url": url,
+                "headers": headers,
+                "body_base64": "",
+            },
             "response": None,
         }
 
@@ -4618,57 +5170,48 @@ def probe_url_existence(
             },
             "body_base64": "",
         }
-        request = urllib.request.Request(url, method=method, headers=request_payload["headers"])
 
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                status_code = int(response.getcode())
-                response_body = read_http_body_capped(response)
-                if method == "HEAD" and status_code == 200:
-                    # HEAD 200 is not sufficient for existence; validate body content with GET.
-                    continue
-                soft_404_detected, soft_404_reason = detect_soft_not_found_response(status_code, response_body)
-                exists_confirmed = status_code not in configured_not_found_statuses()
-                if soft_404_detected:
-                    exists_confirmed = False
-                return {
-                    "exists_confirmed": exists_confirmed,
-                    "status_code": status_code,
-                    "method": method,
-                    "note": (
-                        f"Soft-404 detected in 200 response: {soft_404_reason}"
-                        if soft_404_detected
-                        else "Confirmed by direct HTTP probe"
-                    ),
-                    "soft_404_detected": soft_404_detected,
-                    "soft_404_reason": soft_404_reason,
-                    "request": request_payload,
-                    "response": {
-                        "status": status_code,
-                        "url": response.geturl(),
-                        "headers": dict(response.headers.items()),
-                        **encode_body_for_evidence(response_body),
-                    },
-                }
-        except urllib.error.HTTPError as error:
-            status_code = int(error.code)
-            response_body = read_http_body_capped(error) if hasattr(error, "read") else b""
-            if method == "HEAD" and status_code in {405, 501}:
-                continue
+            if _nightmare_queue_enabled():
+                queued_result = _get_nightmare_http_queue().submit_and_wait(
+                    method=method,
+                    url=url,
+                    headers=request_payload["headers"],
+                    timeout_seconds=timeout_seconds,
+                    read_limit=HTTP_PROBE_BODY_READ_MAX,
+                    metadata={"component": "nightmare", "operation": "probe_url_existence"},
+                    max_attempts=int((globals().get("config") or {}).get("http_queue_max_attempts", 5) or 5),
+                    wait_timeout_seconds=max(timeout_seconds * 6.0, 30.0),
+                )
+                status_code = int(queued_result.get("status_code", 0) or 0)
+                response_dict = queued_result.get("response") if isinstance(queued_result.get("response"), dict) else {}
+                response_body = base64.b64decode(str(response_dict.get("body_base64", "") or ""))
+                response_headers = response_dict.get("headers") if isinstance(response_dict.get("headers"), dict) else {}
+                response_url = str(response_dict.get("url") or url)
+            else:
+                response = request_capped(
+                    method,
+                    url,
+                    headers=request_payload["headers"],
+                    timeout_seconds=timeout_seconds,
+                    read_limit=HTTP_PROBE_BODY_READ_MAX,
+                    user_agent=user_agent,
+                )
+                status_code = int(response.status_code)
+                response_body = response.body
+                response_headers = response.headers
+                response_url = response.url
 
+            if method == "HEAD" and status_code == 200:
+                continue
             soft_404_detected, soft_404_reason = detect_soft_not_found_response(status_code, response_body)
             exists_confirmed = status_code not in configured_not_found_statuses()
-            note = "Received HTTP error status during probe"
-            if status_code in configured_not_found_statuses():
-                note = "URL returned explicit not-found status"
+            note = "Confirmed by direct HTTP probe"
             if soft_404_detected:
                 exists_confirmed = False
-                note = (
-                    f"Soft-404 or block page detected in HTTP error response: {soft_404_reason}"
-                    if soft_404_reason
-                    else "Soft-404 or block page detected in HTTP error response"
-                )
-
+                note = f"Soft-404 detected in 200 response: {soft_404_reason}" if soft_404_reason else "Soft-404 detected"
+            elif status_code in configured_not_found_statuses():
+                note = "URL returned explicit not-found status"
             return {
                 "exists_confirmed": exists_confirmed,
                 "status_code": status_code,
@@ -4679,14 +5222,12 @@ def probe_url_existence(
                 "request": request_payload,
                 "response": {
                     "status": status_code,
-                    "url": url,
-                    "headers": dict(error.headers.items()) if error.headers else {},
+                    "url": response_url,
+                    "headers": dict(response_headers.items()) if hasattr(response_headers, "items") else dict(response_headers or {}),
                     **encode_body_for_evidence(response_body),
                 },
             }
-        except urllib.error.URLError as error:
-            last_error = str(getattr(error, "reason", error))
-        except TimeoutError as error:
+        except Exception as error:
             last_error = str(error)
 
     return {
@@ -4987,6 +5528,8 @@ def crawl_domain(
             '"resume": false in config.'
         )
 
+    post_requests_path = Path(evidence_dir).resolve().parent / f"{root_domain}.post.requests.json"
+
     process = CrawlerProcess(settings=process_settings)
     process.crawl(
         DomainSpider,
@@ -4997,6 +5540,7 @@ def crawl_domain(
         state=state,
         evidence_dir=evidence_dir,
         session_state_path=str(session_path) if session_path is not None else None,
+        post_requests_json_path=str(post_requests_path),
         verbose=verbose,
         progress=progress,
         wordlist_path_seeds=wordlist_seed_set,
@@ -5036,6 +5580,11 @@ def crawl_domain(
             max_pages=effective_max_pages,
             state=state,
         )
+
+    try:
+        write_post_requests_json(post_requests_path, root_domain, state)
+    except Exception:
+        pass
 
     return root_domain, state
 
@@ -6178,6 +6727,7 @@ def main() -> None:
     interrupted = False
     interrupt_stage = ""
     state = CrawlState()
+    post_requests_output_path = parameters_output_path.parent / f"{root_domain}.post.requests.json"
 
     progress.info(f"Starting crawl for {args.url}")
     try:
@@ -6214,9 +6764,11 @@ def main() -> None:
             except Exception as recovery_error:
                 progress.info(f"Failed to recover state from session after interrupt: {recovery_error}")
 
+    post_requests_output_path = parameters_output_path.parent / f"{root_domain}.post.requests.json"
     progress.info(
         f"Crawl completed with {len(state.visited_urls)} visited pages and {len(state.discovered_urls)} discovered URLs"
     )
+    progress.info(f"POST requests JSON file: {post_requests_output_path.resolve()}")
     if len(state.visited_urls) <= 1:
         seed_record = state.url_inventory.get(normalize_url(args.url))
         if seed_record is not None and seed_record.crawl_note:
@@ -6235,9 +6787,11 @@ def main() -> None:
         write_json(condensed_sitemap_output_path, condensed_sitemap)
     progress.info(f"Wrote condensed sitemap to {condensed_sitemap_output_path.resolve()}")
 
-    discovered_urls = sorted(state.discovered_urls)
+    effective_discovered_urls = sorted(
+        u for u in state.discovered_urls if is_effective_existing_record(state.url_inventory.get(u))
+    )
     with dev_timed_call("main.build_endpoint_schema_payload", progress):
-        endpoint_schema_payload = build_endpoint_schema_payload(discovered_urls)
+        endpoint_schema_payload = build_endpoint_schema_payload(effective_discovered_urls)
     with dev_timed_call("main.render_endpoint_schema_text", progress):
         ai_data_text = render_endpoint_schema_text(endpoint_schema_payload)
     with dev_timed_call("main.write_ai_data_text", progress):
@@ -6250,7 +6804,10 @@ def main() -> None:
     ai_probe_results: list[dict[str, Any]] = []
 
     if should_run_ai_stage(client, interrupted, interrupt_stage):
-        progress.info(f"Requesting AI-suggested additional URLs from existing sitemap ({len(discovered_urls)} URLs)")
+        progress.info(
+            f"Requesting AI-suggested additional URLs from existing sitemap "
+            f"({len(effective_discovered_urls)} effective URLs of {len(state.discovered_urls)} discovered)"
+        )
         try:
             with dev_timed_call("main.ask_openai_for_additional_urls", progress):
                 additional_urls, additional_prompt, additional_output = ask_openai_for_additional_urls(
@@ -6521,6 +7078,11 @@ def main() -> None:
     progress.info(f"Wrote source-of-truth file to {source_of_truth_output_path.resolve()}")
     progress.info(f"Wrote parameters JSON to {parameters_output_path.resolve()}")
     progress.info(f"Wrote parameters text to {parameters_text_output_path.resolve()}")
+    try:
+        write_post_requests_json(post_requests_output_path, root_domain, state)
+        progress.info(f"Wrote POST requests JSON to {post_requests_output_path.resolve()}")
+    except Exception as post_w_exc:
+        progress.info(f"POST requests JSON write failed: {post_w_exc}")
 
     analysis = ""
     if should_run_ai_stage(client, interrupted, interrupt_stage):
@@ -6666,6 +7228,8 @@ def main() -> None:
     print(f"Requests inventory saved to: {requests_output_path.resolve()}")
     print(f"Evidence directory: {evidence_dir_path.resolve()}")
     print(f"Collected data directory: {collected_data_root_from_evidence_dir(evidence_dir_path).resolve()}")
+    if HIGH_VALUE_EXTENSIONS or HIGH_VALUE_PATH_SUFFIXES:
+        print(f"High-value capture directory: {high_value_domain_dir(evidence_dir_path, root_domain).resolve()}")
     print(f"Session state saved to: {session_state_path.resolve()}")
     print(f"Application logs: {app_log_file_path.resolve()}")
     print(f"Scrapy logs: {scrapy_log_file_path.resolve()}")
@@ -6673,6 +7237,7 @@ def main() -> None:
     print(f"Source-of-truth file: {source_of_truth_output_path.resolve()}")
     print(f"Parameters JSON file: {parameters_output_path.resolve()}")
     print(f"Parameters text file: {parameters_text_output_path.resolve()}")
+    print(f"POST requests JSON file: {post_requests_output_path.resolve()}")
     if report_path is not None and report_link is not None:
         print(f"HTML report: {report_path.resolve()}")
         print(f"HTML report link: {report_link}")

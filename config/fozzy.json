@@ -1,6 +1,6 @@
 {
   "timeout_seconds": 10.0,
-  "delay_seconds": 0.50,
+  "delay_seconds": 0.5,
   "max_permutations": 512,
   "quick_fuzz_list": "resources/quick_fuzz_list.txt",
   "output_dir": null,
@@ -47,5 +47,12 @@
   "request_headers": {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
     "Accept": "*/*"
-  }
+  },
+  "http_queue_enabled": true,
+  "http_queue_db_path": "output/http_request_queue.sqlite3",
+  "http_queue_spool_dir": "output/http-request-spool",
+  "http_queue_lease_seconds": 90,
+  "http_queue_retry_base_seconds": 1.0,
+  "http_queue_retry_max_seconds": 60.0,
+  "http_queue_max_attempts": 5
 }

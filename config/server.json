@@ -6,5 +6,6 @@
   "key_file": "",
   "database_url": "",
   "coordinator_api_token": "",
+  "master_report_regen_token": "",
   "output_root": "output"
 }

@@ -3,9 +3,18 @@
 
 Usage:
     python server.py
-    python server.py --host 127.0.0.1 --port 8080 --output-root output
+    python server.py --host 0.0.0.0 --http-port 80 --output-root output
     python server.py --config server.json
     python server.py --reset-coordinator --reset-confirm RESET_COORDINATOR_DATA --database-url ...
+
+Public master report:
+- When ``output_root/all_domains.results_summary.html`` exists, ``GET /`` serves that file.
+- Regenerate on the server (same tree as ``output_root``) via authenticated POST::
+
+    curl -X POST -H "Authorization: Bearer YOUR_TOKEN" http://HOST/api/regenerate-master-report
+
+  Token resolution: ``master_report_regen_token`` in config, else env ``MASTER_REPORT_REGEN_TOKEN``,
+  else ``coordinator_api_token`` (must be non-empty; the endpoint is disabled if none are set).
 
 The dashboard provides:
 - aggregate counts (domains discovered, completed/running/pending/failed),
@@ -25,6 +34,7 @@ import mimetypes
 import os
 import re
 import ssl
+import subprocess
 import sys
 import time
 import threading
@@ -81,6 +91,7 @@ def _default_server_config() -> dict[str, Any]:
         "output_root": "output",
         "database_url": "",
         "coordinator_api_token": "",
+        "master_report_regen_token": "",
     }
 
 
@@ -1061,6 +1072,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def coordinator_token(self) -> str:
         return str(getattr(self.server, "coordinator_token", "") or "")  # type: ignore[attr-defined]
 
+    @property
+    def master_report_regen_token(self) -> str:
+        return str(getattr(self.server, "master_report_regen_token", "") or "").strip()  # type: ignore[attr-defined]
+
     def log_message(self, format: str, *args: Any) -> None:
         # Keep server output concise.
         sys.stdout.write("[server] " + format % args + "\n")
@@ -1071,7 +1086,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1083,7 +1098,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1105,7 +1120,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -1137,10 +1152,90 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return True
         return x_token == token
 
+    def _is_master_report_regen_authorized(self) -> bool:
+        expected = self.master_report_regen_token
+        if not expected:
+            return False
+        authz = str(self.headers.get("Authorization", "") or "").strip()
+        if authz.lower().startswith("bearer "):
+            if authz[7:].strip() == expected:
+                return True
+        x_coord = str(self.headers.get("X-Coordinator-Token", "") or "").strip()
+        x_master = str(self.headers.get("X-Master-Report-Token", "") or "").strip()
+        return x_coord == expected or x_master == expected
+
+    def _handle_regenerate_master_report(self) -> None:
+        if not self.master_report_regen_token:
+            self._write_json(
+                {
+                    "error": (
+                        "master report regeneration is not configured "
+                        "(set master_report_regen_token, MASTER_REPORT_REGEN_TOKEN, or coordinator_api_token)"
+                    ),
+                },
+                status=503,
+            )
+            return
+        if not self._is_master_report_regen_authorized():
+            self._write_json({"error": "unauthorized"}, status=401)
+            return
+        lock = getattr(self.server, "_master_regen_lock", None)
+        acquired = False
+        if lock is not None:
+            acquired = lock.acquire(blocking=False)
+            if not acquired:
+                self._write_json({"error": "regeneration already in progress"}, status=409)
+                return
+        try:
+            fozzy = self.app_root / "fozzy.py"
+            if not fozzy.is_file():
+                self._write_json({"error": "fozzy.py not found next to server.py"}, status=500)
+                return
+            out_root = self.output_root.resolve()
+            if not out_root.is_dir():
+                self._write_json({"error": f"output_root is not a directory: {out_root}"}, status=500)
+                return
+            cmd = [sys.executable, str(fozzy), "--generate-master-report", str(out_root)]
+            env = {**os.environ, "PYTHONUTF8": "1"}
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(self.app_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=3600,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired:
+                self._write_json({"error": "fozzy.py timed out after 3600s"}, status=504)
+                return
+            except OSError as exc:
+                self._write_json({"error": f"failed to run fozzy.py: {exc}"}, status=500)
+                return
+            if proc.returncode != 0:
+                tail = (proc.stderr or "")[-8000:]
+                self._write_json({"ok": False, "exit_code": proc.returncode, "stderr_tail": tail}, status=500)
+                return
+            json_path = out_root / "all_domains.results_summary.json"
+            html_path = out_root / "all_domains.results_summary.html"
+            self.log_message("regenerated master report under %s", str(out_root))
+            self._write_json(
+                {
+                    "ok": True,
+                    "output_root": str(out_root),
+                    "json_path": str(json_path) if json_path.is_file() else None,
+                    "html_path": str(html_path) if html_path.is_file() else None,
+                    "stdout_tail": (proc.stdout or "")[-4000:],
+                }
+            )
+        finally:
+            if acquired and lock is not None:
+                lock.release()
+
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
@@ -1287,6 +1382,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_json_body()
+
+        if path == "/api/regenerate-master-report":
+            self._handle_regenerate_master_report()
+            return
 
         if not path.startswith("/api/coord/"):
             self._write_json({"error": "not found"}, status=404)
@@ -1628,6 +1727,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         or ""
     ).strip()
+    master_report_regen_token = str(merged_cfg.get("master_report_regen_token") or "").strip()
+    if not master_report_regen_token:
+        master_report_regen_token = os.getenv("MASTER_REPORT_REGEN_TOKEN", "").strip()
+    if not master_report_regen_token:
+        master_report_regen_token = coordinator_token
 
     if args.http_port is None and args.https_port is None and args.port is not None:
         http_port = legacy_port
@@ -1672,6 +1776,8 @@ def main(argv: list[str] | None = None) -> int:
         srv.output_root = output_root  # type: ignore[attr-defined]
         srv.coordinator_store = coordinator_store  # type: ignore[attr-defined]
         srv.coordinator_token = coordinator_token  # type: ignore[attr-defined]
+        srv.master_report_regen_token = master_report_regen_token  # type: ignore[attr-defined]
+        srv._master_regen_lock = threading.Lock()  # type: ignore[attr-defined]
         return srv
 
     servers: list[tuple[str, ThreadingHTTPServer]] = []

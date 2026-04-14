@@ -7,8 +7,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from http_client import request_json
 
 
 def _read_targets(path: Path) -> list[str]:
@@ -23,21 +22,17 @@ def _read_targets(path: Path) -> list[str]:
 
 
 def _post_json(base_url: str, token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if token.strip():
         headers["Authorization"] = f"Bearer {token.strip()}"
-    req = Request(url=f"{base_url.rstrip('/')}{path}", method="POST", data=data, headers=headers)
-    try:
-        with urlopen(req, timeout=30) as rsp:
-            raw = rsp.read().decode("utf-8", errors="replace")
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Network error: {exc}") from exc
-    parsed = json.loads(raw or "{}")
-    return parsed if isinstance(parsed, dict) else {}
+    return request_json(
+        "POST",
+        f"{base_url.rstrip('/')}{path}",
+        headers=headers,
+        json_payload=payload,
+        timeout_seconds=30.0,
+        user_agent="nightmare-register-targets/1.0",
+    )
 
 
 def parse_args() -> argparse.Namespace:

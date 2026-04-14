@@ -7,16 +7,15 @@ import argparse
 import json
 import os
 import shlex
-import ssl
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+from http_client import request_json
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -57,25 +56,15 @@ def _http_get_json(
     headers: dict[str, str] = {}
     if token.strip():
         headers["Authorization"] = f"Bearer {token.strip()}"
-    req = Request(url=url, method="GET", headers=headers)
-    ssl_ctx: ssl.SSLContext | None = None
-    if insecure_tls and url.lower().startswith("https://"):
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-    try:
-        with urlopen(req, timeout=30, context=ssl_ctx) as rsp:
-            raw = rsp.read().decode("utf-8", errors="replace")
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} GET {url}: {body[:400]}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Network error GET {url}: {exc}") from exc
-    try:
-        parsed = json.loads(raw or "{}")
-    except Exception:
-        parsed = {}
-    return parsed if isinstance(parsed, dict) else {}
+    return request_json(
+        "GET",
+        url,
+        headers=headers,
+        timeout_seconds=30.0,
+        verify=not insecure_tls,
+        follow_redirects=True,
+        user_agent="nightmare-client/1.0",
+    )
 
 
 def _run_aws_json(args: list[str]) -> dict[str, Any]:

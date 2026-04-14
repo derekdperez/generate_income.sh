@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import copy
 import difflib
 import hashlib
@@ -31,14 +32,13 @@ import itertools
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -47,12 +47,18 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
 
+from http_client import request_capped
+from http_request_queue import HttpRequestQueue
+
 # Semaphore / RLock misuse or runtime issues should warn, not abort a long fuzz run.
 _FOZZY_LOCK_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, ValueError, AttributeError)
 RESPONSE_TIME_DISCREPANCY_MULTIPLIER = 3.0
 MASTER_REPORT_BODY_PREVIEW_MAX_CHARS = 240
 MASTER_REPORT_DIFF_TEXT_MAX_LINES = 60
 MASTER_REPORT_EXTRACTOR_ROWS_MAX = 10000
+
+_HTTP_QUEUE_LOCK = threading.Lock()
+_HTTP_QUEUE_INSTANCE: HttpRequestQueue | None = None
 
 
 def _fozzy_safe_release(label: str, release_fn: Callable[[], None]) -> None:
@@ -184,7 +190,7 @@ def normalize_fozzy_config(cfg: dict[str, Any]) -> None:
         cfg["max_workers_per_domain"] = 1
         cfg["max_workers_per_subdomain"] = 1
     # None / missing / 0 / negative: no per-endpoint cap (all planned requests; throttle via delay_seconds).
-    # Positive int: optional cap on plan lines per host+path.
+    # Positive int: optional cap on plan lines per method+host+path.
     raw_mre = cfg.get("max_requests_per_endpoint", None)
     if raw_mre is None:
         cfg["max_requests_per_endpoint"] = None
@@ -500,8 +506,16 @@ class RouteGroup:
     host: str
     path: str
     scheme: str
+    #: GET, POST, etc. GET may still carry a request body for fuzzing (non-standard but supported).
+    http_method: str = "GET"
     observed_param_sets: set[frozenset[str]] = field(default_factory=set)
     params: dict[str, ParameterMeta] = field(default_factory=dict)
+    body_params: dict[str, ParameterMeta] = field(default_factory=dict)
+    observed_body_param_sets: set[frozenset[str]] = field(default_factory=set)
+    #: Query ∪ body keys observed together (drives permutation generation).
+    observed_combined_sets: set[frozenset[str]] = field(default_factory=set)
+    extra_request_headers: dict[str, str] = field(default_factory=dict)
+    body_content_type: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -557,7 +571,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Live run only: optional cap on HTTP requests per host+path (plan lines; baseline + mutations per block). "
+            "Live run only: optional cap on HTTP requests per method+host+path (plan lines; baseline + mutations per block). "
             "Default is no cap (run all planned requests); config may set max_requests_per_endpoint. "
             "Use 0 for no cap when overriding a capped config."
         ),
@@ -785,8 +799,25 @@ def infer_value_type(value: str) -> str:
     return "string"
 
 
+def _merge_parameter_meta_dict(
+    target: dict[str, ParameterMeta],
+    name: str,
+    dtype: str,
+    observed_values: list[Any] | None,
+) -> None:
+    meta = target.get(name)
+    if meta is None:
+        meta = ParameterMeta(name=name, data_type=dtype)
+        target[name] = meta
+    else:
+        meta.data_type = merge_data_type(meta.data_type, dtype)
+    if isinstance(observed_values, list):
+        for value in observed_values:
+            meta.observed_values.add(str(value))
+
+
 def load_route_groups(parameters_payload: dict[str, Any]) -> list[RouteGroup]:
-    grouped: dict[tuple[str, str], RouteGroup] = {}
+    grouped: dict[tuple[str, str, str], RouteGroup] = {}
     entries = parameters_payload.get("entries", [])
     if not isinstance(entries, list):
         return []
@@ -804,16 +835,16 @@ def load_route_groups(parameters_payload: dict[str, Any]) -> list[RouteGroup]:
         path = parsed.path or "/"
         if path != "/":
             path = path.rstrip("/") or "/"
-        key = (host, path)
+        method = str(entry.get("http_method", "GET") or "GET").strip().upper() or "GET"
+        key = (host, path, method)
         if key not in grouped:
-            grouped[key] = RouteGroup(host=host, path=path, scheme=parsed.scheme.lower())
+            grouped[key] = RouteGroup(host=host, path=path, scheme=parsed.scheme.lower(), http_method=method)
         group = grouped[key]
 
-        # Observed parameter set from URL query.
         query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        observed_keys = frozenset(key for key, _ in query_items if key)
-        if observed_keys:
-            group.observed_param_sets.add(observed_keys)
+        qk = frozenset(k for k, _ in query_items if k)
+        if qk:
+            group.observed_param_sets.add(qk)
 
         parameters = entry.get("parameters", [])
         if isinstance(parameters, list):
@@ -824,18 +855,32 @@ def load_route_groups(parameters_payload: dict[str, Any]) -> list[RouteGroup]:
                 if not name:
                     continue
                 dtype = str(param.get("canonical_data_type", "string")).strip().lower() or "string"
-                meta = group.params.get(name)
-                if meta is None:
-                    meta = ParameterMeta(name=name, data_type=dtype)
-                    group.params[name] = meta
-                else:
-                    meta.data_type = merge_data_type(meta.data_type, dtype)
-                observed_values = param.get("observed_values", [])
-                if isinstance(observed_values, list):
-                    for value in observed_values:
-                        meta.observed_values.add(str(value))
+                ovs = param.get("observed_values", [])
+                ovs_list = ovs if isinstance(ovs, list) else []
+                _merge_parameter_meta_dict(group.params, name, dtype, ovs_list)
 
-        # Backfill param metadata from URL query values.
+        body_parameters = entry.get("body_parameters", [])
+        body_names: set[str] = set()
+        if isinstance(body_parameters, list):
+            for param in body_parameters:
+                if not isinstance(param, dict):
+                    continue
+                name = str(param.get("name", "")).strip()
+                if not name:
+                    continue
+                body_names.add(name)
+                dtype = str(param.get("canonical_data_type", "string")).strip().lower() or "string"
+                ovs = param.get("observed_values", [])
+                ovs_list = ovs if isinstance(ovs, list) else []
+                _merge_parameter_meta_dict(group.body_params, name, dtype, ovs_list)
+
+        bk = frozenset(body_names)
+        if bk:
+            group.observed_body_param_sets.add(bk)
+        combined = qk | bk
+        if combined:
+            group.observed_combined_sets.add(combined)
+
         for key_name, value in query_items:
             if not key_name:
                 continue
@@ -848,7 +893,122 @@ def load_route_groups(parameters_payload: dict[str, Any]) -> list[RouteGroup]:
                 meta.data_type = merge_data_type(meta.data_type, inferred)
             meta.observed_values.add(value)
 
-    return [grouped[key] for key in sorted(grouped.keys())]
+    return [grouped[k] for k in sorted(grouped.keys())]
+
+
+def load_post_requests_route_groups(post_payload: dict[str, Any]) -> list[RouteGroup]:
+    raw_list = post_payload.get("requests", [])
+    if not isinstance(raw_list, list):
+        return []
+    grouped: dict[tuple[str, str, str], RouteGroup] = {}
+    for rec in raw_list:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("http_method", "POST") or "POST").strip().upper() != "POST":
+            continue
+        raw_u = str(rec.get("target_url", "")).strip()
+        if not raw_u:
+            continue
+        parsed = urllib.parse.urlparse(raw_u)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        host = parsed.netloc.lower()
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/") or "/"
+        method = "POST"
+        key = (host, path, method)
+        if key not in grouped:
+            g = RouteGroup(host=host, path=path, scheme=parsed.scheme.lower(), http_method=method)
+            ct = str(rec.get("content_type") or rec.get("enctype") or "").strip()
+            if ct:
+                g.body_content_type = ct
+            sug = rec.get("suggested_headers")
+            if isinstance(sug, dict):
+                for hk, hv in sug.items():
+                    if str(hk).strip():
+                        g.extra_request_headers[str(hk)] = str(hv)
+            grouped[key] = g
+        group = grouped[key]
+
+        query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        qk = frozenset(k for k, _ in query_items if k)
+        if qk:
+            group.observed_param_sets.add(qk)
+        for key_name, value in query_items:
+            if not key_name:
+                continue
+            meta = group.params.get(key_name)
+            inferred = infer_value_type(value)
+            if meta is None:
+                group.params[key_name] = ParameterMeta(name=key_name, data_type=inferred)
+            else:
+                meta.data_type = merge_data_type(meta.data_type, inferred)
+            group.params[key_name].observed_values.add(value)
+
+        body_fields = rec.get("body_fields")
+        body_names: set[str] = set()
+        if isinstance(body_fields, dict):
+            for fname, finfo in body_fields.items():
+                name = str(fname).strip()
+                if not name:
+                    continue
+                body_names.add(name)
+                if not isinstance(finfo, dict):
+                    finfo = {}
+                dtype = str(finfo.get("type") or "string").strip().lower() or "string"
+                val = finfo.get("value")
+                ovs = [str(val)] if val is not None else []
+                ph = finfo.get("placeholder")
+                if ph is not None:
+                    ovs.append(str(ph))
+                _merge_parameter_meta_dict(group.body_params, name, dtype, ovs)
+        bk = frozenset(body_names)
+        if bk:
+            group.observed_body_param_sets.add(bk)
+        combined = qk | bk
+        if combined:
+            group.observed_combined_sets.add(combined)
+
+    return [grouped[k] for k in sorted(grouped.keys())]
+
+
+def merge_route_groups_lists(primary: list[RouteGroup], extra: list[RouteGroup]) -> list[RouteGroup]:
+    def _merge_meta_maps(
+        dest: dict[str, ParameterMeta],
+        src: dict[str, ParameterMeta],
+    ) -> None:
+        for name, sm in src.items():
+            dm = dest.get(name)
+            if dm is None:
+                dest[name] = ParameterMeta(
+                    name=sm.name,
+                    data_type=sm.data_type,
+                    observed_values=set(sm.observed_values),
+                )
+            else:
+                dm.data_type = merge_data_type(dm.data_type, sm.data_type)
+                dm.observed_values |= sm.observed_values
+
+    idx: dict[tuple[str, str, str], RouteGroup] = {}
+    for g in primary:
+        idx[(g.host, g.path, g.http_method.upper())] = g
+    for g in extra:
+        k = (g.host, g.path, g.http_method.upper())
+        if k not in idx:
+            idx[k] = g
+            continue
+        t = idx[k]
+        _merge_meta_maps(t.params, g.params)
+        _merge_meta_maps(t.body_params, g.body_params)
+        t.observed_param_sets |= g.observed_param_sets
+        t.observed_body_param_sets |= g.observed_body_param_sets
+        t.observed_combined_sets |= g.observed_combined_sets
+        for hk, hv in g.extra_request_headers.items():
+            t.extra_request_headers.setdefault(hk, hv)
+        if g.body_content_type and not t.body_content_type:
+            t.body_content_type = g.body_content_type
+    return [idx[k] for k in sorted(idx.keys())]
 
 
 def generic_value_for(meta: ParameterMeta) -> str:
@@ -900,84 +1060,227 @@ def build_placeholder_url(scheme: str, host: str, path: str, params: list[Parame
     return urllib.parse.urlunparse((scheme, host, path, "", query, ""))
 
 
-def request_url(url: str, timeout: float) -> dict[str, Any]:
-    cfg = active_fozzy_config()
-    headers = cfg.get("request_headers") or {}
-    preview_limit = int(cfg.get("body_preview_limit", 2048))
-    req = urllib.request.Request(
-        url,
-        headers=headers,
+def route_group_param_meta(group: RouteGroup, name: str) -> ParameterMeta:
+    if name in group.params:
+        return group.params[name]
+    if name in group.body_params:
+        return group.body_params[name]
+    raise KeyError(name)
+
+
+def route_group_all_param_names(group: RouteGroup) -> set[str]:
+    return set(group.params.keys()) | set(group.body_params.keys())
+
+
+def _merge_fozzy_headers(group: RouteGroup) -> dict[str, str]:
+    base = active_fozzy_config().get("request_headers") or {}
+    out = {str(k): str(v) for k, v in base.items() if str(k).strip()}
+    for k, v in group.extra_request_headers.items():
+        key = str(k).strip()
+        if key:
+            out[key] = str(v)
+    return out
+
+
+def build_urlencoded_form_body(values: dict[str, str]) -> bytes:
+    pairs = [(name, values[name]) for name in sorted(values.keys())]
+    return urllib.parse.urlencode(pairs, doseq=True).encode("utf-8")
+
+
+def build_fuzz_http_request(
+    group: RouteGroup,
+    values: dict[str, str],
+) -> tuple[str, str, dict[str, str], bytes]:
+    """Return (method, url, headers, body_bytes)."""
+    qvals = {k: values[k] for k in group.params if k in values}
+    bvals = {k: values[k] for k in group.body_params if k in values}
+    url = build_url(group.scheme, group.host, group.path, qvals)
+    headers = _merge_fozzy_headers(group)
+    body = b""
+    if bvals:
+        ct = (group.body_content_type or "application/x-www-form-urlencoded").strip().lower()
+        if "json" in ct:
+            headers.setdefault("Content-Type", group.body_content_type or "application/json")
+            body = json.dumps({k: bvals[k] for k in sorted(bvals.keys())}, ensure_ascii=False).encode("utf-8")
+        else:
+            headers.setdefault("Content-Type", group.body_content_type or "application/x-www-form-urlencoded")
+            body = build_urlencoded_form_body(bvals)
+    method = (group.http_method or "GET").strip().upper() or "GET"
+    return method, url, headers, body
+
+
+def _request_body_fingerprint(body: bytes | None) -> str:
+    if not body:
+        return ""
+    return hashlib.sha256(body).hexdigest()[:16]
+
+
+def build_placeholder_request_summary(group: RouteGroup, permutation: tuple[str, ...]) -> str:
+    """Human-readable plan line including method and body placeholders when applicable."""
+    qnames = [n for n in permutation if n in group.params]
+    bnames = [n for n in permutation if n in group.body_params]
+    q_meta = [group.params[n] for n in sorted(qnames)]
+    url_ph = build_placeholder_url(group.scheme, group.host, group.path, q_meta) if q_meta else urllib.parse.urlunparse(
+        (group.scheme, group.host, group.path, "", "", "")
     )
+    method = (group.http_method or "GET").upper()
+    if not bnames:
+        return f"{method} {url_ph}"
+    b_meta = [route_group_param_meta(group, n) for n in sorted(bnames)]
+    counters: dict[str, int] = defaultdict(int)
+    body_parts: list[str] = []
+    for param in sorted(b_meta, key=lambda item: item.name):
+        dtype = param.data_type or "string"
+        counters[dtype] += 1
+        ph = f"{{{dtype}{counters[dtype]}}}"
+        key_enc = urllib.parse.quote_plus(param.name, safe="[]")
+        body_parts.append(f"{key_enc}={ph}")
+    body_s = "&".join(body_parts)
+    return f"{method} {url_ph}  body({group.body_content_type or 'application/x-www-form-urlencoded'}): {body_s}"
 
-    def _extract_header_names(headers_obj: Any) -> list[str]:
-        if headers_obj is None:
-            return []
-        names: list[str] = []
-        try:
-            items = list(headers_obj.items())
-        except Exception:
-            items = []
-        for key, _value in items:
-            name = str(key or "").strip()
-            if name:
-                names.append(name)
-        if not names:
-            try:
-                for key in headers_obj.keys():
-                    name = str(key or "").strip()
-                    if name:
-                        names.append(name)
-            except Exception:
-                pass
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for name in names:
-            lowered = name.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            deduped.append(name)
-        return deduped
 
-    t0 = time.perf_counter()
+def _fozzy_queue_enabled() -> bool:
+    cfg = active_fozzy_config()
+    return bool(cfg.get("http_queue_enabled", False))
+
+
+def _get_fozzy_http_queue() -> HttpRequestQueue:
+    global _HTTP_QUEUE_INSTANCE
+    with _HTTP_QUEUE_LOCK:
+        if _HTTP_QUEUE_INSTANCE is None:
+            cfg = active_fozzy_config()
+            _HTTP_QUEUE_INSTANCE = HttpRequestQueue(
+                db_path=str(cfg.get("http_queue_db_path") or "output/http_request_queue.sqlite3"),
+                spool_dir=str(cfg.get("http_queue_spool_dir") or "output/http-request-spool"),
+                lease_seconds=int(cfg.get("http_queue_lease_seconds", 90) or 90),
+                retry_base_seconds=float(cfg.get("http_queue_retry_base_seconds", 1.0) or 1.0),
+                retry_max_seconds=float(cfg.get("http_queue_retry_max_seconds", 60.0) or 60.0),
+                worker_id=f"fozzy-{os.getpid()}-{threading.get_ident()}",
+            )
+        return _HTTP_QUEUE_INSTANCE
+
+
+def _extract_response_header_names(headers_obj: Any) -> list[str]:
+    if headers_obj is None:
+        return []
+    names: list[str] = []
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            body = response.read(preview_limit)
-            elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
-            return {
-                "url": url,
-                "status": int(getattr(response, "status", 0) or 0),
-                "size": len(body),
-                "body_preview": body.decode("utf-8", errors="replace"),
-                "elapsed_ms": elapsed_ms,
-                "response_header_names": _extract_header_names(getattr(response, "headers", None)),
-            }
-    except urllib.error.HTTPError as exc:
-        body = b""
+        items = list(headers_obj.items())
+    except Exception:
+        items = []
+    for key, _value in items:
+        name = str(key or "").strip()
+        if name:
+            names.append(name)
+    if not names:
         try:
-            body = exc.read(preview_limit)
+            for key in headers_obj.keys():
+                name = str(key or "").strip()
+                if name:
+                    names.append(name)
         except Exception:
-            body = b""
-        elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
+            pass
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for name in names:
+        lowered = name.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(name)
+    return deduped
+
+
+def perform_fozzy_http_request(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    timeout: float,
+) -> dict[str, Any]:
+    cfg = active_fozzy_config()
+    preview_limit = int(cfg.get("body_preview_limit", 2048))
+    m = (method or "GET").strip().upper() or "GET"
+    hdrs = dict(headers or {})
+
+    if _fozzy_queue_enabled():
+        result = _get_fozzy_http_queue().submit_and_wait(
+            method=m,
+            url=url,
+            headers=hdrs,
+            body=body if body else None,
+            timeout_seconds=timeout,
+            read_limit=preview_limit,
+            metadata={"component": "fozzy", "operation": "perform_fozzy_http_request"},
+            dedupe_key=None,
+            max_attempts=int(cfg.get("http_queue_max_attempts", 5) or 5),
+            wait_timeout_seconds=max(timeout * 6.0, 30.0),
+        )
+        response = result.get("response") if isinstance(result.get("response"), dict) else {}
+        body_preview = str(response.get("body_text_preview", "") or "")
+        header_names = _extract_response_header_names(response.get("headers"))
+        elapsed_ms = int(response.get("elapsed_ms", 0) or 0)
+        out: dict[str, Any] = {
+            "url": url,
+            "http_method": m,
+            "status": int(result.get("status_code", 0) or 0),
+            "size": len(body_preview.encode("utf-8", errors="ignore")),
+            "body_preview": body_preview,
+            "elapsed_ms": elapsed_ms,
+            "response_header_names": header_names,
+            "request_body_size": len(body or b""),
+        }
+        if not bool(result.get("ok", False)):
+            out["error"] = str(result.get("note"))
+        return out
+
+    try:
+        response = request_capped(
+            m,
+            url,
+            headers=hdrs,
+            content=body,
+            timeout_seconds=timeout,
+            read_limit=preview_limit,
+            user_agent=str(hdrs.get("User-Agent") or "nightmare-fozzy/1.0"),
+        )
         return {
             "url": url,
-            "status": int(getattr(exc, "code", 0) or 0),
-            "size": len(body),
-            "body_preview": body.decode("utf-8", errors="replace"),
-            "elapsed_ms": elapsed_ms,
-            "response_header_names": _extract_header_names(getattr(exc, "headers", None)),
+            "http_method": m,
+            "status": int(response.status_code or 0),
+            "size": len(response.body),
+            "body_preview": response.body.decode("utf-8", errors="replace"),
+            "elapsed_ms": int(response.elapsed_ms or 0),
+            "response_header_names": _extract_response_header_names(response.headers),
+            "request_body_size": len(body or b""),
         }
     except Exception as exc:
-        elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
         return {
             "url": url,
+            "http_method": m,
             "status": 0,
             "size": 0,
             "body_preview": "",
-            "error": str(exc),
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms": 0,
             "response_header_names": [],
+            "request_body_size": len(body or b""),
+            "error": str(exc),
         }
+
+
+def request_url(url: str, timeout: float) -> dict[str, Any]:
+    cfg = active_fozzy_config()
+    headers = cfg.get("request_headers") or {}
+    if not isinstance(headers, dict):
+        headers = {}
+    return perform_fozzy_http_request(
+        method="GET",
+        url=url,
+        headers={str(k): str(v) for k, v in headers.items()},
+        body=None,
+        timeout=timeout,
+    )
 
 
 def response_differs(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -985,11 +1288,37 @@ def response_differs(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def curl_command_for_url(url: str, timeout: float) -> str:
+    return curl_command_for_fozzy_request(
+        method="GET",
+        url=url,
+        headers={},
+        body=None,
+        timeout=timeout,
+    )
+
+
+def curl_command_for_fozzy_request(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    *,
+    timeout: float,
+) -> str:
     timeout_token = str(int(timeout)) if timeout > 0 else "10"
     parts = ["curl", "-sS", "-L", "--max-time", timeout_token]
-    headers = active_fozzy_config().get("request_headers") or {}
-    for key, value in headers.items():
+    cfg_headers = active_fozzy_config().get("request_headers") or {}
+    if isinstance(cfg_headers, dict):
+        for key, value in cfg_headers.items():
+            parts.extend(["-H", f"\"{key}: {value}\""])
+    for key, value in (headers or {}).items():
         parts.extend(["-H", f"\"{key}: {value}\""])
+    m = (method or "GET").strip().upper() or "GET"
+    if m != "GET":
+        parts.extend(["-X", m])
+    if body:
+        body_s = body.decode("utf-8", errors="replace")
+        parts.extend(["--data-binary", shlex.quote(body_s)])
     parts.append(f"\"{url}\"")
     return " ".join(parts)
 
@@ -1007,6 +1336,8 @@ def make_request_key(
     mutated_parameter: str | None,
     mutated_value: str | None,
     url: str,
+    http_method: str = "GET",
+    body_fingerprint: str = "",
 ) -> str:
     payload = {
         "phase": str(phase or "").strip(),
@@ -1016,6 +1347,8 @@ def make_request_key(
         "mutated_parameter": str(mutated_parameter or ""),
         "mutated_value": str(mutated_value or ""),
         "url": str(url or "").strip(),
+        "http_method": str(http_method or "GET").strip().upper() or "GET",
+        "body_fingerprint": str(body_fingerprint or ""),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -1029,6 +1362,8 @@ def request_key_from_plan_line(line: dict[str, Any]) -> str:
         mutated_parameter=str(line.get("mutated_parameter", "") or ""),
         mutated_value=str(line.get("mutated_value", "") or ""),
         url=str(line.get("url", "")),
+        http_method=str(line.get("http_method", "GET") or "GET"),
+        body_fingerprint=str(line.get("body_fingerprint", "") or ""),
     )
 
 
@@ -1067,10 +1402,17 @@ def queue_dry_run_request(
     mutated_parameter: str | None,
     mutated_value: str | None,
     expected_baseline_response: dict[str, Any],
+    *,
+    http_method: str = "GET",
+    request_headers: dict[str, str] | None = None,
+    request_body: bytes | None = None,
 ) -> None:
     if plan_lines is None:
         return
     request_id = len(plan_lines) + 1
+    rh = dict(request_headers or {})
+    rb = request_body or b""
+    bf = _request_body_fingerprint(rb)
     line = {
         "request_id": request_id,
         "phase": phase,
@@ -1080,7 +1422,17 @@ def queue_dry_run_request(
         "mutated_parameter": mutated_parameter,
         "mutated_value": mutated_value,
         "url": url,
-        "curl": curl_command_for_url(url, timeout=timeout),
+        "http_method": str(http_method or "GET").strip().upper() or "GET",
+        "body_fingerprint": bf,
+        "request_headers": rh,
+        "request_body_base64": base64.b64encode(rb).decode("ascii") if rb else "",
+        "curl": curl_command_for_fozzy_request(
+            str(http_method or "GET"),
+            url,
+            rh,
+            rb if rb else None,
+            timeout=timeout,
+        ),
         "expected_baseline_response": expected_baseline_response,
         "actual_response": {},
     }
@@ -1107,7 +1459,8 @@ def build_endpoint_request_counts(plan_lines: list[dict[str, Any]]) -> list[dict
         path = str(line.get("path", "")).strip() or "/"
         if not host:
             continue
-        endpoint = f"{host}{path}"
+        method = str(line.get("http_method", "GET") or "GET").strip().upper() or "GET"
+        endpoint = f"{method} {host}{path}"
         counts[endpoint] = counts.get(endpoint, 0) + 1
     rows = [{"endpoint": endpoint, "request_count": count} for endpoint, count in counts.items()]
     rows.sort(key=lambda item: (-int(item["request_count"]), str(item["endpoint"])))
@@ -1117,7 +1470,8 @@ def build_endpoint_request_counts(plan_lines: list[dict[str, Any]]) -> list[dict
 def plan_line_endpoint_key(line: dict[str, Any]) -> str:
     host = str(line.get("host", "")).strip().lower()
     path = str(line.get("path", "")).strip() or "/"
-    return f"{host}{path}"
+    method = str(line.get("http_method", "GET") or "GET").strip().upper() or "GET"
+    return f"{method}\t{host}\t{path}"
 
 
 def _plan_lines_to_permutation_blocks(ep_lines: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -1140,7 +1494,7 @@ def _plan_lines_to_permutation_blocks(ep_lines: list[dict[str, Any]]) -> list[li
 
 
 def cap_plan_lines_by_endpoint(plan_lines: list[dict[str, Any]], max_per_endpoint: int) -> list[dict[str, Any]]:
-    """Keep plan lines in file order, at most ``max_per_endpoint`` lines per host+path, cutting only on block boundaries."""
+    """Keep plan lines in file order, at most ``max_per_endpoint`` lines per method+host+path, cutting only on block boundaries."""
     if max_per_endpoint <= 0:
         return list(plan_lines)
     out: list[dict[str, Any]] = []
@@ -1185,21 +1539,26 @@ def infer_required_and_optional(
     dry_run: bool,
     dry_run_plan_lines: list[dict[str, Any]] | None = None,
 ) -> tuple[set[str], set[str]]:
-    all_params = set(group.params.keys())
+    all_params = route_group_all_param_names(group)
     if not all_params:
         return set(), set()
 
-    if group.observed_param_sets:
-        observed_list = list(group.observed_param_sets)
-        required = set(observed_list[0])
-        for values in observed_list[1:]:
-            required &= set(values)
+    obs_sets: list[frozenset[str]] = list(group.observed_combined_sets) if group.observed_combined_sets else []
+    if not obs_sets:
+        for s in group.observed_param_sets:
+            obs_sets.append(frozenset(s))
+        for s in group.observed_body_param_sets:
+            obs_sets.append(frozenset(s))
+    if obs_sets:
+        required = set(obs_sets[0])
+        for s in obs_sets[1:]:
+            required &= set(s)
     else:
         required = set()
     optional = set(all_params - required)
 
-    baseline_values = {name: baseline_seed_value_for(group.params[name]) for name in sorted(all_params)}
-    baseline_url = build_url(group.scheme, group.host, group.path, baseline_values)
+    baseline_values = {name: baseline_seed_value_for(route_group_param_meta(group, name)) for name in sorted(all_params)}
+    bm, baseline_url, bh, bb = build_fuzz_http_request(group, baseline_values)
     baseline_ref = {
         **empty_expected_response(),
         "source": "requiredness_baseline",
@@ -1217,11 +1576,14 @@ def infer_required_and_optional(
             mutated_parameter=None,
             mutated_value=None,
             expected_baseline_response=baseline_ref,
+            http_method=bm,
+            request_headers=bh,
+            request_body=bb,
         )
         for candidate in sorted(optional):
             trial_values = dict(baseline_values)
             trial_values.pop(candidate, None)
-            trial_url = build_url(group.scheme, group.host, group.path, trial_values)
+            tm, trial_url, th, tb = build_fuzz_http_request(group, trial_values)
             queue_dry_run_request(
                 plan_lines=dry_run_plan_lines,
                 phase="requiredness_probe_remove_parameter",
@@ -1233,13 +1595,16 @@ def infer_required_and_optional(
                 mutated_parameter=candidate,
                 mutated_value=None,
                 expected_baseline_response=baseline_ref,
+                http_method=tm,
+                request_headers=th,
+                request_body=tb,
             )
         return required, optional
 
     if not optional:
         return required, optional
 
-    baseline = request_url(baseline_url, timeout=timeout)
+    baseline = perform_fozzy_http_request(method=bm, url=baseline_url, headers=bh, body=bb, timeout=timeout)
     time.sleep(delay)
 
     if int(baseline.get("status", 0)) == 0:
@@ -1248,15 +1613,26 @@ def infer_required_and_optional(
     for candidate in sorted(optional):
         trial_values = dict(baseline_values)
         trial_values.pop(candidate, None)
-        trial_url = build_url(group.scheme, group.host, group.path, trial_values)
-        trial = request_url(trial_url, timeout=timeout)
+        tm, trial_url, th, tb = build_fuzz_http_request(group, trial_values)
+        trial = perform_fozzy_http_request(method=tm, url=trial_url, headers=th, body=tb, timeout=timeout)
         time.sleep(delay)
-        # If response materially changes, treat as required for permutation generation.
         if response_differs(baseline, trial):
             required.add(candidate)
 
     optional = set(all_params - required)
     return required, optional
+
+
+def route_group_observed_sets_for_permutations(group: RouteGroup) -> set[frozenset[str]]:
+    """Prefer combined query∪body observations; otherwise union separate query/body observation sets."""
+    if group.observed_combined_sets:
+        return set(group.observed_combined_sets)
+    out: set[frozenset[str]] = set()
+    for s in group.observed_param_sets:
+        out.add(frozenset(s))
+    for s in group.observed_body_param_sets:
+        out.add(frozenset(s))
+    return out
 
 
 def generate_permutations(
@@ -1289,14 +1665,21 @@ def generate_permutations(
 
 
 def infer_required_optional_from_observed(group: RouteGroup) -> tuple[set[str], set[str]]:
-    all_params = set(group.params.keys())
+    all_params = route_group_all_param_names(group)
     if not all_params:
         return set(), set()
-    if group.observed_param_sets:
-        observed_list = list(group.observed_param_sets)
-        required = set(observed_list[0])
-        for values in observed_list[1:]:
-            required &= set(values)
+    obs_sets: list[frozenset[str]] = []
+    if group.observed_combined_sets:
+        obs_sets = list(group.observed_combined_sets)
+    else:
+        for s in group.observed_param_sets:
+            obs_sets.append(frozenset(s))
+        for s in group.observed_body_param_sets:
+            obs_sets.append(frozenset(s))
+    if obs_sets:
+        required = set(obs_sets[0])
+        for s in obs_sets[1:]:
+            required &= set(s)
     else:
         required = set()
     optional = set(all_params - required)
@@ -1345,8 +1728,10 @@ def count_live_requests_for_group_with_allowlist(
     for permutation in permutations:
         if not permutation:
             continue
-        baseline_values = {name: baseline_seed_value_for(group.params[name]) for name in permutation}
-        baseline_url = build_url(group.scheme, group.host, group.path, baseline_values)
+        baseline_values = {
+            name: baseline_seed_value_for(route_group_param_meta(group, name)) for name in permutation
+        }
+        _bm, baseline_url, _bh, baseline_body = build_fuzz_http_request(group, baseline_values)
         baseline_key = make_request_key(
             phase="fuzz_baseline",
             host=group.host,
@@ -1355,6 +1740,8 @@ def count_live_requests_for_group_with_allowlist(
             mutated_parameter=None,
             mutated_value=None,
             url=baseline_url,
+            http_method=_bm,
+            body_fingerprint=_request_body_fingerprint(baseline_body),
         )
         if baseline_key not in allowed_request_keys:
             continue
@@ -1363,7 +1750,7 @@ def count_live_requests_for_group_with_allowlist(
             for fuzz_value in quick_fuzz_values:
                 trial_values = dict(baseline_values)
                 trial_values[name] = fuzz_value
-                trial_url = build_url(group.scheme, group.host, group.path, trial_values)
+                tm, trial_url, _th, trial_body = build_fuzz_http_request(group, trial_values)
                 trial_key = make_request_key(
                     phase="fuzz_mutation",
                     host=group.host,
@@ -1372,6 +1759,8 @@ def count_live_requests_for_group_with_allowlist(
                     mutated_parameter=name,
                     mutated_value=fuzz_value,
                     url=trial_url,
+                    http_method=tm,
+                    body_fingerprint=_request_body_fingerprint(trial_body),
                 )
                 if trial_key in allowed_request_keys:
                     total += 1
@@ -1729,11 +2118,17 @@ def _route_parameter_count(route: dict[str, Any]) -> int:
     params = route.get("parameters")
     if isinstance(params, list):
         pc = max(pc, len(params))
+    qp = route.get("query_parameters")
+    bp = route.get("body_parameters")
+    if isinstance(qp, list) or isinstance(bp, list):
+        nq = len(qp) if isinstance(qp, list) else 0
+        nb = len(bp) if isinstance(bp, list) else 0
+        pc = max(pc, nq + nb)
     return max(0, pc)
 
 
 def aggregate_inventory_route_stats(routes: list[dict[str, Any]]) -> dict[str, Any]:
-    seen_keys: set[tuple[str, str]] = set()
+    seen_keys: set[tuple[str, str, str]] = set()
     routes_with_parameters = 0
     total_parameter_slots = 0
     max_parameters_on_route = 0
@@ -1745,7 +2140,8 @@ def aggregate_inventory_route_stats(routes: list[dict[str, Any]]) -> dict[str, A
         pth = str(r.get("path", "")).strip() or "/"
         if not h:
             continue
-        seen_keys.add((h, pth))
+        method = str(r.get("http_method", "GET") or "GET").strip().upper() or "GET"
+        seen_keys.add((h, pth, method))
         pc = _route_parameter_count(r)
         if pc > 0:
             routes_with_parameters += 1
@@ -1767,14 +2163,15 @@ def aggregate_inventory_route_stats(routes: list[dict[str, Any]]) -> dict[str, A
 
 
 def aggregate_route_groups_stats(groups: list[RouteGroup]) -> dict[str, Any]:
-    seen_keys: set[tuple[str, str]] = set()
+    seen_keys: set[tuple[str, str, str]] = set()
     routes_with_parameters = 0
     total_parameter_slots = 0
     max_parameters_on_route = 0
     hosts: set[str] = set()
     for g in groups:
-        seen_keys.add((g.host.lower(), g.path or "/"))
-        n = len(g.params)
+        method = (g.http_method or "GET").strip().upper() or "GET"
+        seen_keys.add((g.host.lower(), g.path or "/", method))
+        n = len(route_group_all_param_names(g))
         if n > 0:
             routes_with_parameters += 1
         total_parameter_slots += n
@@ -1836,7 +2233,8 @@ def build_master_domain_inventory_tables(
                             "host": g.host,
                             "path": g.path,
                             "scheme": g.scheme,
-                            "parameter_count": len(g.params),
+                            "http_method": (g.http_method or "GET").strip().upper() or "GET",
+                            "parameter_count": len(route_group_all_param_names(g)),
                         }
                         for g in groups
                     ]
@@ -1869,12 +2267,14 @@ def build_master_domain_inventory_tables(
             if not h:
                 continue
             sch = str(r.get("scheme", "") or "https").strip().lower() or "https"
+            method = str(r.get("http_method", "GET") or "GET").strip().upper() or "GET" if isinstance(r, dict) else "GET"
             per_route_rows.append(
                 {
                     "domain_label": domain_label,
                     "host": h,
                     "path": pth,
                     "scheme": sch,
+                    "http_method": method,
                     "parameter_count": _route_parameter_count(r) if isinstance(r, dict) else 0,
                 }
             )
@@ -3719,8 +4119,11 @@ def fuzz_group(
                 break
             if not permutation:
                 continue
-            baseline_values = {name: baseline_seed_value_for(group.params[name]) for name in permutation}
-            baseline_url = build_url(group.scheme, group.host, group.path, baseline_values)
+            baseline_values = {
+                name: baseline_seed_value_for(route_group_param_meta(group, name)) for name in permutation
+            }
+            bm, baseline_url, bh, bb = build_fuzz_http_request(group, baseline_values)
+            baseline_bf = _request_body_fingerprint(bb)
             baseline_request_key = make_request_key(
                 phase="fuzz_baseline",
                 host=group.host,
@@ -3729,6 +4132,8 @@ def fuzz_group(
                 mutated_parameter=None,
                 mutated_value=None,
                 url=baseline_url,
+                http_method=bm,
+                body_fingerprint=baseline_bf,
             )
             baseline_ref = {
                 **empty_expected_response(),
@@ -3747,6 +4152,9 @@ def fuzz_group(
                     mutated_parameter=None,
                     mutated_value=None,
                     expected_baseline_response=baseline_ref,
+                    http_method=bm,
+                    request_headers=bh,
+                    request_body=bb,
                 )
                 summary["baseline_requests"] += 1
                 if live_report_callback:
@@ -3776,7 +4184,9 @@ def fuzz_group(
                                 f"[{group.host}{group.path}] sending request {issued_requests}/{total_requests}"
                             )
                             last_progress_at = now
-                    baseline_response = request_url(baseline_url, timeout=timeout)
+                    baseline_response = perform_fozzy_http_request(
+                        method=bm, url=baseline_url, headers=bh, body=bb, timeout=timeout
+                    )
                     if mark_requested_callback:
                         mark_requested_callback(
                             {
@@ -3788,6 +4198,8 @@ def fuzz_group(
                                 "mutated_parameter": None,
                                 "mutated_value": None,
                                 "url": baseline_url,
+                                "http_method": bm,
+                                "body_fingerprint": baseline_bf,
                                 "response": baseline_response,
                                 "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                             }
@@ -3817,7 +4229,8 @@ def fuzz_group(
                         break
                     trial_values = dict(baseline_values)
                     trial_values[name] = fuzz_value
-                    trial_url = build_url(group.scheme, group.host, group.path, trial_values)
+                    tm, trial_url, th, tb = build_fuzz_http_request(group, trial_values)
+                    trial_bf = _request_body_fingerprint(tb)
                     trial_request_key = make_request_key(
                         phase="fuzz_mutation",
                         host=group.host,
@@ -3826,6 +4239,8 @@ def fuzz_group(
                         mutated_parameter=name,
                         mutated_value=fuzz_value,
                         url=trial_url,
+                        http_method=tm,
+                        body_fingerprint=trial_bf,
                     )
                     if dry_run:
                         queue_dry_run_request(
@@ -3839,6 +4254,9 @@ def fuzz_group(
                             mutated_parameter=name,
                             mutated_value=fuzz_value,
                             expected_baseline_response=baseline_ref,
+                            http_method=tm,
+                            request_headers=th,
+                            request_body=tb,
                         )
                         summary["fuzz_requests"] += 1
                         if live_report_callback:
@@ -3868,7 +4286,9 @@ def fuzz_group(
                                     f"[{group.host}{group.path}] sending request {issued_requests}/{total_requests}"
                                 )
                                 last_progress_at = now
-                        trial_response = request_url(trial_url, timeout=timeout)
+                        trial_response = perform_fozzy_http_request(
+                            method=tm, url=trial_url, headers=th, body=tb, timeout=timeout
+                        )
                         if mark_requested_callback:
                             mark_requested_callback(
                                 {
@@ -3880,6 +4300,8 @@ def fuzz_group(
                                     "mutated_parameter": name,
                                     "mutated_value": fuzz_value,
                                     "url": trial_url,
+                                    "http_method": tm,
+                                    "body_fingerprint": trial_bf,
                                     "response": trial_response,
                                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                                 }
@@ -3924,6 +4346,8 @@ def fuzz_group(
                             "anomaly_note": anomaly_note,
                             "host": group.host,
                             "path": group.path,
+                            "http_method": tm,
+                            "body_fingerprint": trial_bf,
                             "permutation": list(permutation),
                             "mutated_parameter": name,
                             "mutated_value": fuzz_value,
@@ -3977,6 +4401,8 @@ def fuzz_group(
                             "captured_at_utc": datetime.now(timezone.utc).isoformat(),
                             "host": group.host,
                             "path": group.path,
+                            "http_method": tm,
+                            "body_fingerprint": trial_bf,
                             "permutation": list(permutation),
                             "mutated_parameter": name,
                             "mutated_value": fuzz_value,
@@ -4173,11 +4599,21 @@ def run_fozzy_for_parameters(
     ensure_directory(results_dir)
 
     groups = load_route_groups(payload)
+    post_path = parameters_path.parent / f"{root_domain}.post.requests.json"
+    if post_path.is_file():
+        try:
+            post_payload = read_json(post_path)
+            post_groups = load_post_requests_route_groups(post_payload)
+            if post_groups:
+                groups = merge_route_groups_lists(groups, post_groups)
+                print(f"Merged {len(post_groups)} POST route group(s) from: {post_path}", flush=True)
+        except Exception as exc:
+            print(f"Warning: could not load POST requests file {post_path}: {exc}", flush=True)
     if not groups:
         print("No parameterized routes were found in the input file.")
         return {"interrupted": False, "cancelled_by_user": False}
 
-    print(f"Loaded {len(groups)} host/path groups from: {parameters_path}")
+    print(f"Loaded {len(groups)} host/path/method groups from: {parameters_path}")
     print(f"Fozzy config: {cfg_display_path}")
     print(f"Output directory: {output_dir}")
     print(
@@ -4187,15 +4623,17 @@ def run_fozzy_for_parameters(
     )
     print("")
 
-    host_listing: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    host_listing: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
     for group in groups:
-        host_listing[group.host].append((group.path, len(group.params)))
+        method = (group.http_method or "GET").strip().upper() or "GET"
+        n_params = len(route_group_all_param_names(group))
+        host_listing[group.host].append((method, group.path, n_params))
 
-    print("Host -> path parameter counts:")
+    print("Host -> [method] path parameter counts:")
     for host in sorted(host_listing.keys()):
         print(f"- {host}")
-        for path, count in sorted(host_listing[host], key=lambda item: item[0]):
-            print(f"  {path} ({count} parameters)")
+        for method, path, count in sorted(host_listing[host], key=lambda item: (item[0], item[1])):
+            print(f"  [{method}] {path} ({count} parameters)")
     print("")
 
     permutations_lines: list[str] = []
@@ -4213,8 +4651,8 @@ def run_fozzy_for_parameters(
         try:
             required, optional = infer_required_optional_from_observed(group)
             generated_permutations = generate_permutations(
-                observed_sets=group.observed_param_sets,
-                required=set(group.params.keys()),
+                observed_sets=route_group_observed_sets_for_permutations(group),
+                required=route_group_all_param_names(group),
                 optional=set(),
                 max_permutations=int(cfg["max_permutations"]),
             )
@@ -4224,52 +4662,70 @@ def run_fozzy_for_parameters(
                 permutations=permutations,
                 quick_fuzz_values_count=len(quick_fuzz_values),
             )
+            obs_n = len(route_group_observed_sets_for_permutations(group))
             print(
-                f"[{group.host}{group.path}] observed_valid={len(group.observed_param_sets)} "
+                f"[{(group.http_method or 'GET').upper()} {group.host}{group.path}] observed_valid={obs_n} "
                 f"required={len(required)} optional={len(optional)} "
                 f"permutations_generated={len(generated_permutations)} permutations_used={len(permutations)} "
                 f"estimated_requests={estimated_requests}"
             )
 
+            group_baseline_request_lines: list[str] = []
             for permutation in permutations:
                 if not permutation:
                     continue
-                params_meta = [group.params[name] for name in permutation]
-                permutations_lines.append(build_placeholder_url(group.scheme, group.host, group.path, params_meta))
-                baseline_values = {name: baseline_seed_value_for(group.params[name]) for name in permutation}
-                baseline_permutation_urls.append(build_url(group.scheme, group.host, group.path, baseline_values))
+                permutations_lines.append(build_placeholder_request_summary(group, permutation))
+                baseline_values = {
+                    name: baseline_seed_value_for(route_group_param_meta(group, name)) for name in permutation
+                }
+                bm, baseline_u, _bh, baseline_b = build_fuzz_http_request(group, baseline_values)
+                base_line = f"{bm} {baseline_u}"
+                if baseline_b:
+                    base_line += f"  body_sha256_16={_request_body_fingerprint(baseline_b)}"
+                baseline_permutation_urls.append(base_line)
+                group_baseline_request_lines.append(base_line)
 
             route_inventory.append(
                 {
                     "host": group.host,
                     "path": group.path,
                     "scheme": group.scheme,
-                    "parameter_count": len(group.params),
-                    "parameters": [
+                    "http_method": (group.http_method or "GET").strip().upper() or "GET",
+                    "body_content_type": group.body_content_type,
+                    "parameter_count": len(route_group_all_param_names(group)),
+                    "query_parameters": [
                         {"name": name, "data_type": group.params[name].data_type}
                         for name in sorted(group.params.keys())
                     ],
-                    "observed_valid_parameter_sets": [sorted(list(item)) for item in sorted(group.observed_param_sets)],
+                    "body_parameters": [
+                        {"name": name, "data_type": group.body_params[name].data_type}
+                        for name in sorted(group.body_params.keys())
+                    ],
+                    "parameters": [
+                        {"name": name, "data_type": route_group_param_meta(group, name).data_type, "location": "query" if name in group.params else "body"}
+                        for name in sorted(route_group_all_param_names(group))
+                    ],
+                    "observed_valid_query_parameter_sets": [
+                        sorted(list(item)) for item in sorted(group.observed_param_sets)
+                    ],
+                    "observed_valid_body_parameter_sets": [
+                        sorted(list(item)) for item in sorted(group.observed_body_param_sets)
+                    ],
+                    "observed_valid_combined_parameter_sets": [
+                        sorted(list(item)) for item in sorted(group.observed_combined_sets)
+                    ],
+                    "observed_valid_parameter_sets": [
+                        sorted(list(item)) for item in sorted(route_group_observed_sets_for_permutations(group))
+                    ],
                     "inferred_required_parameters": sorted(required),
                     "inferred_optional_parameters": sorted(optional),
                     "permutations_generated_count": len(generated_permutations),
                     "permutations_used_count": len(permutations),
                     "permutations": [list(item) for item in permutations],
-                    "placeholder_urls": [
-                        build_placeholder_url(group.scheme, group.host, group.path, [group.params[name] for name in item])
-                        for item in permutations
-                        if item
+                    "placeholder_request_summaries": [
+                        build_placeholder_request_summary(group, item) for item in permutations if item
                     ],
-                    "baseline_urls": [
-                        build_url(
-                            group.scheme,
-                            group.host,
-                            group.path,
-                            {name: baseline_seed_value_for(group.params[name]) for name in item},
-                        )
-                        for item in permutations
-                        if item
-                    ],
+                    "baseline_requests": group_baseline_request_lines,
                 }
             )
             group_jobs.append(

@@ -27,9 +27,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+from http_client import request_json
 
 from output_cleanup import FLEET_GEN_APPLIED_FILENAME, clear_output_root_children
 
@@ -120,24 +120,16 @@ class CoordinatorClient:
         return out
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        headers = self._headers()
         url = f"{self.base_url}{path}"
-        data = None
-        if payload is not None:
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = Request(url=url, method=method.upper(), data=data, headers=self._headers())
-        try:
-            with urlopen(req, timeout=self.timeout_seconds) as rsp:
-                raw = rsp.read().decode("utf-8", errors="replace")
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HTTP {exc.code} {method} {path}: {body[:400]}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Network error {method} {path}: {exc}") from exc
-        try:
-            parsed = json.loads(raw or "{}")
-        except Exception:
-            parsed = {}
-        return parsed if isinstance(parsed, dict) else {}
+        return request_json(
+            method,
+            url,
+            headers=headers,
+            json_payload=payload,
+            timeout_seconds=self.timeout_seconds,
+            user_agent="nightmare-coordinator/1.0",
+        )
 
     def claim_target(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
         rsp = self._request_json(
@@ -426,11 +418,13 @@ class DistributedCoordinator:
     def _artifact_paths(self, root_domain: str) -> dict[str, Path]:
         domain_dir = _domain_output_dir(root_domain, self.cfg.output_root)
         fozzy_domain_dir = domain_dir / "fozzy-output" / root_domain
+        high_value_dir = self.cfg.output_root / "high_value" / root_domain
         return {
             "nightmare_session_json": domain_dir / f"{root_domain}_crawl_session.json",
             "nightmare_url_inventory_json": domain_dir / f"{root_domain}_url_inventory.json",
             "nightmare_requests_json": domain_dir / "requests.json",
             "nightmare_parameters_json": domain_dir / f"{root_domain}.parameters.json",
+            "nightmare_post_requests_json": domain_dir / f"{root_domain}.post.requests.json",
             "nightmare_parameters_txt": domain_dir / f"{root_domain}.parameters.txt",
             "nightmare_source_of_truth_json": domain_dir / f"{root_domain}_source_of_truth.json",
             "nightmare_report_html": domain_dir / "report.html",
@@ -442,6 +436,7 @@ class DistributedCoordinator:
             "fozzy_results_dir": fozzy_domain_dir / "results",
             "extractor_summary_json": fozzy_domain_dir / "extractor" / "summary.json",
             "extractor_matches_dir": fozzy_domain_dir / "extractor" / "matches",
+            "nightmare_high_value_dir": high_value_dir,
         }
 
     def _upload_file_artifact(self, root_domain: str, artifact_type: str, path: Path, worker_id: str) -> None:
@@ -555,11 +550,19 @@ class DistributedCoordinator:
                     self._upload_file_artifact(root_domain, "nightmare_url_inventory_json", paths["nightmare_url_inventory_json"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_requests_json", paths["nightmare_requests_json"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_parameters_json", paths["nightmare_parameters_json"], worker_id)
+                    self._upload_file_artifact(
+                        root_domain, "nightmare_post_requests_json", paths["nightmare_post_requests_json"], worker_id
+                    )
                     self._upload_file_artifact(root_domain, "nightmare_parameters_txt", paths["nightmare_parameters_txt"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_source_of_truth_json", paths["nightmare_source_of_truth_json"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_report_html", paths["nightmare_report_html"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_log", paths["nightmare_log"], worker_id)
                     self._upload_file_artifact(root_domain, "nightmare_scrapy_log", paths["nightmare_scrapy_log"], worker_id)
+                    hv_dir = paths.get("nightmare_high_value_dir")
+                    if hv_dir is not None and hv_dir.is_dir():
+                        self._upload_zip_artifact(
+                            root_domain, "nightmare_high_value_zip", hv_dir, worker_id
+                        )
                 except Exception as exc:
                     print(f"[coordinator] nightmare artifact upload failed ({root_domain}): {exc}", flush=True)
 
@@ -599,6 +602,12 @@ class DistributedCoordinator:
             if not params_path.is_file():
                 self.client.complete_stage(worker_id, root_domain, "fozzy", 1, "missing parameters artifact")
                 continue
+
+            hv_dir = paths.get("nightmare_high_value_dir")
+            if hv_dir is not None:
+                hv_dir.mkdir(parents=True, exist_ok=True)
+                self._download_zip_artifact(root_domain, "nightmare_high_value_zip", hv_dir)
+            self._download_file_artifact(root_domain, "nightmare_post_requests_json", paths["nightmare_post_requests_json"])
 
             self._begin_job()
             try:

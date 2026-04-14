@@ -1,0 +1,13 @@
+.bak
+.old
+.json
+.yaml
+.env
+.zip
+.sql
+.py
+.cs
+.ps1
+.sh
+.exe
+.dll
