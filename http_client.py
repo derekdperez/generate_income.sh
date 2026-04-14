@@ -58,7 +58,7 @@ def close_shared_clients() -> None:
             pass
 
 
-@dataclass(slots=True)
+@dataclass
 class CappedResponse:
     status_code: int
     url: str

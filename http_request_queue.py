@@ -18,7 +18,7 @@ import httpx
 from http_client import get_shared_client, request_capped
 
 
-@dataclass(slots=True)
+@dataclass
 class QueuedHttpRequest:
     request_id: str
     method: str
