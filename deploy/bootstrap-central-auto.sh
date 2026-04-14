@@ -38,6 +38,7 @@ What it does:
   - generates self-signed TLS cert/key (unless already present)
   - writes deploy/.env
   - writes deploy/worker.env.generated (for worker VMs)
+  - installs Python 3, pip, and pip install -r requirements.txt on this host (for client.py, etc.)
   - rebuilds and starts central docker compose stack
   - optionally launches worker EC2 instances and auto-configures them via cloud-init
 USAGE
@@ -251,6 +252,69 @@ install_deps_if_missing() {
   fi
 }
 
+install_local_python_requirements() {
+  local sudo_cmd=()
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo_cmd=(sudo)
+    fi
+  fi
+
+  local need_pkgs=0
+  command -v python3 >/dev/null 2>&1 || need_pkgs=1
+  if command -v python3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
+    need_pkgs=1
+  fi
+
+  if [[ "$need_pkgs" -eq 1 ]]; then
+    echo "Installing Python 3 and pip (for client.py and other CLI tools on this host)..."
+    if command -v yum >/dev/null 2>&1; then
+      "${sudo_cmd[@]}" yum makecache -y || true
+      "${sudo_cmd[@]}" yum install -y python3 python3-pip || true
+    elif command -v dnf >/dev/null 2>&1; then
+      "${sudo_cmd[@]}" dnf makecache -y || true
+      "${sudo_cmd[@]}" dnf install -y python3 python3-pip || true
+    elif command -v apt-get >/dev/null 2>&1; then
+      "${sudo_cmd[@]}" apt-get update
+      "${sudo_cmd[@]}" apt-get install -y python3 python3-pip python3-venv
+    else
+      echo "No yum/dnf/apt-get; trying ensurepip only." >&2
+    fi
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is not available; install Python 3 manually." >&2
+    return 1
+  fi
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "Bootstrapping pip via ensurepip..."
+    python3 -m ensurepip --upgrade --default-pip 2>/dev/null || "${sudo_cmd[@]}" python3 -m ensurepip --upgrade --default-pip 2>/dev/null || true
+  fi
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "pip is not available for python3; install python3-pip manually." >&2
+    return 1
+  fi
+
+  local req="${ROOT_DIR}/requirements.txt"
+  if [[ ! -f "$req" ]]; then
+    echo "Missing ${req}" >&2
+    return 1
+  fi
+
+  echo "Installing Python packages from ${req}..."
+  local pip_user=()
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    pip_user=(--user)
+  fi
+  python3 -m pip install "${pip_user[@]}" --upgrade pip setuptools wheel
+  python3 -m pip install "${pip_user[@]}" -r "$req"
+  echo "Local Python ready: $(python3 --version 2>&1 | tr -d '\n')"
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "If a command is not found, add ~/.local/bin to PATH (e.g. export PATH=\"\$HOME/.local/bin:\$PATH\")."
+  fi
+}
+
 abs_path() {
   local p="$1"
   cd "$(dirname "$p")"
@@ -343,6 +407,7 @@ generate_cert_if_needed() {
 }
 
 install_deps_if_missing
+install_local_python_requirements
 require_cmd docker
 require_cmd openssl
 require_cmd curl
