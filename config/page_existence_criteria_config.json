@@ -8,6 +8,7 @@
     "<title[^>]*>[^<]*(?:404|not found|page not found|does not exist|cannot be found|no such|Cloudflare)[^<]*</title>"
   ],
   "soft_404_body_phrases": [
+    "The site configured at this address does not contain the requested file.",
     "page not found",
     "does not exist",
     "cannot be found",
