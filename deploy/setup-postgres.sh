@@ -7,7 +7,7 @@
 # Usage:
 #   ./deploy/setup-postgres.sh                 # start postgres service, wait, print connection summary
 #   ./deploy/setup-postgres.sh --init-env      # create deploy/.env from .env.example with generated secrets
-#   ./deploy/setup-postgres.sh --write-config  # merge DATABASE_URL into ../config/server.json (host runs server outside Docker)
+#   ./deploy/setup-postgres.sh --write-config  # set database_url in config/*.json (see below); tokens for server/coordinator
 #
 set -euo pipefail
 
@@ -150,7 +150,7 @@ print_summary() {
   echo "Schema is applied when server.py starts with this DATABASE_URL (CoordinatorStore)."
 }
 
-write_server_json() {
+write_config_json_files() {
   load_env_exports
   export POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-5432}"
   export ROOT_DIR_FOR_SETUP="$ROOT_DIR"
@@ -161,7 +161,8 @@ import urllib.parse
 from pathlib import Path
 
 root = Path(os.environ["ROOT_DIR_FOR_SETUP"])
-cfg_path = root / "config" / "server.json"
+config_dir = root / "config"
+
 password = os.environ.get("POSTGRES_PASSWORD", "")
 user = os.environ.get("POSTGRES_USER", "nightmare")
 db = os.environ.get("POSTGRES_DB", "nightmare")
@@ -170,12 +171,40 @@ token = os.environ.get("COORDINATOR_API_TOKEN", "").strip()
 enc = urllib.parse.quote(password, safe="")
 url = f"postgresql://{user}:{enc}@127.0.0.1:{port}/{db}"
 
-cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-cfg["database_url"] = url
-if token:
-    cfg["coordinator_api_token"] = token
-cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-print(f"Updated {cfg_path} with database_url" + (" and coordinator_api_token." if token else "."))
+# Skip prompt/help/schema JSON; only app configs that carry database_url for ops / server.
+SKIP = frozenset(
+    {
+        "nightmare.prompts.json",
+        "nightmare.help.json",
+        "nightmare.messages.json",
+        "page_existence_criteria_config.json",
+    }
+)
+
+updated = []
+for path in sorted(config_dir.glob("*.json")):
+    if path.name in SKIP:
+        continue
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
+    except Exception as exc:
+        print(f"skip {path.name}: {exc}", flush=True)
+        continue
+    if not isinstance(data, dict):
+        continue
+    data["database_url"] = url
+    if path.name == "server.json":
+        if token:
+            data["coordinator_api_token"] = token
+            if not str(data.get("master_report_regen_token") or "").strip():
+                data["master_report_regen_token"] = token
+    if path.name == "coordinator.json" and token:
+        data["api_token"] = token
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    updated.append(path.name)
+
+print("Updated database_url in:", ", ".join(updated))
 PY
 }
 
@@ -205,7 +234,7 @@ fi
 print_summary
 
 if [[ "$WRITE_CONFIG" -eq 1 ]]; then
-  write_server_json
+  write_config_json_files
 fi
 
 exit 0

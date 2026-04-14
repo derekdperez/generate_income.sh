@@ -1,4 +1,5 @@
 {
+  "database_url": "",
   "server_base_url": "https://coordinator.example.com",
   "api_token": "",
   "output_root": "output",

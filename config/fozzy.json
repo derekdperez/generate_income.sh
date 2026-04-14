@@ -1,7 +1,8 @@
 {
+  "database_url": "",
   "timeout_seconds": 10.0,
   "delay_seconds": 0.5,
-  "max_permutations": 512,
+  "max_permutations": 4096,
   "quick_fuzz_list": "resources/quick_fuzz_list.txt",
   "output_dir": null,
   "log_file": null,

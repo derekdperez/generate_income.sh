@@ -1,4 +1,5 @@
-{
+﻿{
+  "database_url": "",
   "max_pages": 5000,
   "model": "gpt-5.4",
   "openai_timeout": 180.0,

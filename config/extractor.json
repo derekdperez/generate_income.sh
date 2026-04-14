@@ -1,4 +1,5 @@
 {
+  "database_url": "",
   "scan_root": "output",
   "wordlist": "resources/wordlists/extractor_list.txt",
   "javascript_wordlist": "resources/wordlists/javascript_extractor_list.txt",
