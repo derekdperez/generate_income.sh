@@ -39,8 +39,15 @@ if (-not (Test-CommandExists 'docker')) {
 }
 
 function Test-DockerDaemonAvailable {
-    $null = & docker info 2>$null
-    return $LASTEXITCODE -eq 0
+    try {
+        # Redirect all streams so docker stderr does not surface as a PowerShell
+        # NativeCommandError when the daemon is down.
+        $null = & docker info *> $null
+        return $LASTEXITCODE -eq 0
+    }
+    catch {
+        return $false
+    }
 }
 
 if (-not (Test-DockerDaemonAvailable)) {
@@ -101,7 +108,19 @@ Write-Host "Starting local Nightmare cluster (1 central server + 4 workers)..."
 & docker compose -f 'docker-compose.local.yml' --env-file '.env' up -d --build
 
 if ($LASTEXITCODE -ne 0) {
-    throw "docker compose up failed."
+    throw @"
+docker compose up failed.
+
+If you see 'failed to extract layer' / overlayfs / 'input/output error', that is usually Docker Desktop
+disk or cache corruption, or the host disk is full. Try in order:
+  1) Free disk space on the drive that holds Docker data (often C:).
+  2) Docker Desktop -> Troubleshoot -> Clean / Purge data (or Reset to factory defaults) — this removes images/containers.
+  3) Exit Docker, run: wsl --shutdown  then start Docker Desktop again.
+  4) In an elevated prompt:  docker system prune -af --volumes  (only if you can lose unused Docker data)
+  5) If it persists, reinstall Docker Desktop or run Windows disk check (chkdsk) on the volume.
+
+Then re-run: .\run-local.ps1
+"@
 }
 
 Write-Host ""
