@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Worker Control</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #64748b; }
+    .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #e2e8f0; }
+    .online { color: #15803d; font-weight: 600; }
+    .stale { color: #b45309; font-weight: 600; }
+    .muted { color: #64748b; }
+    #configModal { position: fixed; inset: 0; display: none; background: rgba(15, 23, 42, .35); }
+    #configModal .panel { margin: 5vh auto; width: min(940px, 95vw); background: #fff; padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; }
+    textarea { width: 100%; min-height: 340px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Worker Control Center</h1>
+  <div class="meta">Asynchronous auto-refresh every 3s. Use row selection to run bulk start/stop/pause commands. <a href="/dashboard">Back to Dashboard</a></div>
+  <div id="cards" class="cards"></div>
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <button class="primary" onclick="bulkCommand('start')">Start selected</button>
+    <button onclick="bulkCommand('pause')">Pause selected</button>
+    <button onclick="bulkCommand('stop')">Stop selected</button>
+    <span id="msg" class="muted"></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="selectAll"></th>
+        <th>Worker</th>
+        <th>Status</th>
+        <th>Current Targets</th>
+        <th>URLs Scanned (session)</th>
+        <th>Actions</th>
+        <th>Logs</th>
+        <th>Config</th>
+      </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="8">Loading…</td></tr></tbody>
+  </table>
+
+  <div id="configModal">
+    <div class="panel">
+      <h3 id="configTitle">Edit worker config</h3>
+      <textarea id="configText"></textarea>
+      <div class="toolbar">
+        <button class="primary" onclick="saveConfig()">Save config</button>
+        <button onclick="closeConfig()">Close</button>
+        <span id="configMsg" class="muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selectedConfigWorker = "";
+    function esc(v){ return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch])); }
+    function escJs(v){ return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/\\n/g, "\\\\n").replace(/\\r/g, "\\\\r"); }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      return token ? { "Authorization": `Bearer ${token}` } : {};
+    }
+    async function apiGet(path) {
+      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
+      if (!rsp.ok) throw new Error(await rsp.text());
+      return rsp.json();
+    }
+    async function apiPost(path, body) {
+      const rsp = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(body || {}),
+      });
+      if (!rsp.ok) throw new Error(await rsp.text());
+      return rsp.json();
+    }
+    function selectedWorkers() { return [...document.querySelectorAll("input.workerSel:checked")].map((el) => el.value); }
+    async function bulkCommand(command) {
+      const workers = selectedWorkers();
+      if (!workers.length) { document.getElementById("msg").textContent = "Select at least one worker."; return; }
+      try {
+        const data = await apiPost("/api/coord/workers/command", { command, worker_ids: workers });
+        document.getElementById("msg").textContent = `Queued ${data.queued} ${command} command(s).`;
+        refresh();
+      } catch (e) {
+        document.getElementById("msg").textContent = `Command failed: ${e.message}`;
+      }
+    }
+    async function bulkCommandForOne(workerId, command) {
+      document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = (el.value === workerId); });
+      await bulkCommand(command);
+    }
+    async function openConfig(workerId) {
+      selectedConfigWorker = workerId;
+      document.getElementById("configTitle").textContent = `Edit worker config: ${workerId}`;
+      document.getElementById("configMsg").textContent = "";
+      document.getElementById("configModal").style.display = "block";
+      try {
+        const data = await apiGet(`/api/coord/worker-config?worker_id=${encodeURIComponent(workerId)}`);
+        document.getElementById("configText").value = data.content || "";
+      } catch (e) {
+        document.getElementById("configText").value = "";
+        document.getElementById("configMsg").textContent = `Load failed: ${e.message}`;
+      }
+    }
+    function closeConfig() { document.getElementById("configModal").style.display = "none"; selectedConfigWorker = ""; }
+    async function saveConfig() {
+      if (!selectedConfigWorker) return;
+      try {
+        await apiPost("/api/coord/worker-config", { worker_id: selectedConfigWorker, content: document.getElementById("configText").value });
+        document.getElementById("configMsg").textContent = "Saved.";
+      } catch (e) {
+        document.getElementById("configMsg").textContent = `Save failed: ${e.message}`;
+      }
+    }
+    function render(data) {
+      const c = data.counts || {};
+      const cards = [["Workers", c.total_workers || 0],["Online", c.online_workers || 0],["Stale", c.stale_workers || 0]];
+      document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+      const rows = data.workers || [];
+      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; return; }
+      document.getElementById("rows").innerHTML = rows.map((w) => {
+        const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replaceAll("%2F","/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
+        const statusClass = w.status === "online" ? "online" : "stale";
+        const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
+        return `<tr>
+          <td><input class="workerSel" type="checkbox" value="${esc(w.worker_id)}"></td>
+          <td>${esc(w.worker_id)}</td>
+          <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span></td>
+          <td>${targets}</td>
+          <td>${esc(w.urls_scanned_session)}</td>
+          <td><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','start')">Start</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','pause')">Pause</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','stop')">Stop</button></td>
+          <td>${logs}</td>
+          <td><button onclick="openConfig('${escJs(w.worker_id)}')">Edit</button><br><span class="muted">${esc(w.config || "")}</span></td>
+        </tr>`;
+      }).join("");
+    }
+    async function refresh() {
+      try { render(await apiGet("/api/coord/worker-control")); }
+      catch (e) { document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load worker state: ${esc(e.message)}</td></tr>`; }
+    }
+    document.getElementById("selectAll").addEventListener("change", (e) => { document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = e.target.checked; }); });
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

@@ -16,6 +16,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 from http_client import request_json
+from nightmare_shared.config import ClientSettings, load_env_file_into_os, normalize_server_base_url
+from nightmare_shared.logging_utils import configure_logging, get_logger
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -34,12 +36,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 
 def _normalize_server_base_url(raw: str) -> str:
-    s = str(raw or "").strip().rstrip("/")
-    if not s:
-        return ""
-    if "://" not in s:
-        s = f"https://{s}"
-    return s
+    return normalize_server_base_url(raw)
 
 
 def _http_get_json(
@@ -381,9 +378,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
+    load_env_file_into_os(BASE_DIR / "deploy" / ".env", override=False)
+    logger = get_logger("client")
     args = parse_args(argv)
     if args.action not in {"status", "rollout"}:
         raise ValueError(f"unsupported action: {args.action}")
+
+    conn = ClientSettings.model_validate(
+        {
+            "server_base_url": args.server_base_url,
+            "api_token": args.api_token,
+            "insecure_tls": bool(args.insecure_tls),
+        }
+    )
 
     if args.skip_coordinator:
         if args.action == "status" and args.skip_ssm:
@@ -393,17 +401,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         print("[coordinator] skipped (--skip-coordinator)", flush=True)
     else:
-        base_url = _normalize_server_base_url(str(args.server_base_url or ""))
-        if not base_url:
+        if not conn.server_base_url:
             raise ValueError("server base URL is required (use --server-base-url or COORDINATOR_BASE_URL)")
-
-        token = str(args.api_token or "").strip()
+        logger.info("client_fetching_coordinator_status", base_url=conn.server_base_url)
         workers_payload = _http_get_json(
-            base_url=base_url,
+            base_url=conn.server_base_url,
             path="/api/coord/workers",
-            token=token,
+            token=conn.api_token,
             query={"stale_after_seconds": max(15, int(args.stale_after_seconds or 180))},
-            insecure_tls=bool(args.insecure_tls),
+            insecure_tls=bool(conn.insecure_tls),
         )
         _print_coordinator_worker_status(workers_payload)
 
@@ -415,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=max(10, int(args.ssm_timeout_seconds or 60)),
         )
     if args.action == "rollout":
+        logger.info("client_starting_rollout", region=str(args.aws_region or "us-east-1"), branch=str(args.branch or "main"))
         return _run_ssm_rollout(
             region=str(args.aws_region or "us-east-1"),
             target_key=str(args.ssm_target_key or "tag:Name"),

@@ -52,6 +52,10 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     psycopg = None
 
 from output_cleanup import clear_output_root_children
+from nightmare_shared.config import ServerSettings, load_env_file_into_os, merged_value, read_json_dict, resolve_config_path
+from nightmare_shared.logging_utils import configure_logging, get_logger
+from reporting.server_pages import render_dashboard_html, render_workers_html
+from server_app.store import CoordinatorStore
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_ROOT = BASE_DIR / "output"
@@ -347,822 +351,6 @@ def collect_dashboard_data(output_root: Path) -> dict[str, Any]:
         "domains": domains,
     }
 
-
-class CoordinatorStore:
-    def __init__(self, database_url: str):
-        if psycopg is None:
-            raise RuntimeError("psycopg is required for postgres coordinator mode")
-        self.database_url = str(database_url or "").strip()
-        if not self.database_url:
-            raise ValueError("database_url is required for coordinator mode")
-        self._ensure_schema()
-
-    def _connect(self):
-        return psycopg.connect(self.database_url, autocommit=False)
-
-    def _ensure_schema(self) -> None:
-        ddl = """
-CREATE TABLE IF NOT EXISTS coordinator_targets (
-  entry_id TEXT PRIMARY KEY,
-  line_number INTEGER NOT NULL,
-  raw TEXT NOT NULL,
-  start_url TEXT NOT NULL,
-  root_domain TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  error TEXT,
-  exit_code INTEGER,
-  worker_id TEXT,
-  lease_expires_at TIMESTAMPTZ,
-  started_at_utc TIMESTAMPTZ,
-  completed_at_utc TIMESTAMPTZ,
-  heartbeat_at_utc TIMESTAMPTZ,
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_coordinator_targets_status ON coordinator_targets(status);
-CREATE INDEX IF NOT EXISTS idx_coordinator_targets_lease ON coordinator_targets(lease_expires_at);
-
-CREATE TABLE IF NOT EXISTS coordinator_sessions (
-  root_domain TEXT PRIMARY KEY,
-  start_url TEXT NOT NULL,
-  max_pages INTEGER,
-  saved_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  payload JSONB NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
-  root_domain TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  worker_id TEXT,
-  lease_expires_at TIMESTAMPTZ,
-  started_at_utc TIMESTAMPTZ,
-  completed_at_utc TIMESTAMPTZ,
-  heartbeat_at_utc TIMESTAMPTZ,
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  exit_code INTEGER,
-  error TEXT,
-  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY(root_domain, stage)
-);
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(stage, status);
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_lease ON coordinator_stage_tasks(lease_expires_at);
-
-CREATE TABLE IF NOT EXISTS coordinator_artifacts (
-  root_domain TEXT NOT NULL,
-  artifact_type TEXT NOT NULL,
-  source_worker TEXT,
-  content BYTEA NOT NULL,
-  content_encoding TEXT NOT NULL DEFAULT 'identity',
-  content_sha256 TEXT NOT NULL,
-  content_size_bytes BIGINT NOT NULL,
-  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY(root_domain, artifact_type)
-);
-CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);
-
-CREATE TABLE IF NOT EXISTS coordinator_fleet_settings (
-  singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
-  output_clear_generation BIGINT NOT NULL DEFAULT 0,
-  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-INSERT INTO coordinator_fleet_settings(singleton) VALUES (1)
-ON CONFLICT (singleton) DO NOTHING;
-
-CREATE TABLE IF NOT EXISTS coordinator_worker_commands (
-  id BIGSERIAL PRIMARY KEY,
-  worker_id TEXT NOT NULL,
-  command TEXT NOT NULL,
-  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'queued',
-  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_worker_commands_worker_created
-  ON coordinator_worker_commands(worker_id, created_at_utc DESC);
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(ddl)
-            conn.commit()
-
-    def register_targets(self, targets: list[str]) -> dict[str, Any]:
-        inserted = 0
-        skipped = 0
-        rows: list[tuple[str, int, str, str, str]] = []
-        for line_no, raw in enumerate(targets, start=1):
-            text = str(raw or "").strip()
-            if not text or text.startswith("#"):
-                continue
-            try:
-                start_url, root_domain = _normalize_target_url(text)
-            except Exception:
-                skipped += 1
-                continue
-            rows.append((_make_target_entry_id(line_no, text), line_no, text, start_url, root_domain))
-        if not rows:
-            return {"inserted": 0, "skipped": skipped}
-        upsert_sql = """
-INSERT INTO coordinator_targets(entry_id, line_number, raw, start_url, root_domain, status, updated_at_utc)
-VALUES (%s, %s, %s, %s, %s, 'pending', NOW())
-ON CONFLICT (entry_id) DO UPDATE
-SET line_number = EXCLUDED.line_number,
-    raw = EXCLUDED.raw,
-    start_url = EXCLUDED.start_url,
-    root_domain = EXCLUDED.root_domain,
-    updated_at_utc = NOW();
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.executemany(upsert_sql, rows)
-            conn.commit()
-        inserted = len(rows)
-        return {"inserted": inserted, "skipped": skipped}
-
-    def claim_target(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
-        worker = str(worker_id or "").strip()
-        if not worker:
-            raise ValueError("worker_id is required")
-        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        sql = """
-WITH candidate AS (
-    SELECT entry_id
-    FROM coordinator_targets
-    WHERE status = 'pending'
-       OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
-    ORDER BY line_number ASC, created_at_utc ASC
-    FOR UPDATE SKIP LOCKED
-    LIMIT 1
-)
-UPDATE coordinator_targets t
-SET status = 'running',
-    worker_id = %s,
-    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
-    started_at_utc = COALESCE(t.started_at_utc, NOW()),
-    heartbeat_at_utc = NOW(),
-    completed_at_utc = NULL,
-    updated_at_utc = NOW(),
-    attempt_count = t.attempt_count + 1,
-    error = NULL
-FROM candidate
-WHERE t.entry_id = candidate.entry_id
-RETURNING t.entry_id, t.line_number, t.raw, t.start_url, t.root_domain, t.attempt_count, t.status, t.worker_id, t.lease_expires_at;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (worker, lease))
-                row = cur.fetchone()
-            conn.commit()
-        if row is None:
-            return None
-        return {
-            "entry_id": row[0],
-            "line": int(row[1]),
-            "raw": row[2],
-            "start_url": row[3],
-            "root_domain": row[4],
-            "attempt_count": int(row[5] or 0),
-            "status": row[6],
-            "worker_id": row[7],
-            "lease_expires_at": row[8].isoformat() if row[8] else None,
-        }
-
-    def heartbeat(self, entry_id: str, worker_id: str, lease_seconds: int) -> bool:
-        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        sql = """
-UPDATE coordinator_targets
-SET heartbeat_at_utc = NOW(),
-    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
-    updated_at_utc = NOW()
-WHERE entry_id = %s
-  AND worker_id = %s
-  AND status = 'running';
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (lease, str(entry_id), str(worker_id)))
-                updated = int(cur.rowcount or 0)
-            conn.commit()
-        return updated > 0
-
-    def finish(self, entry_id: str, worker_id: str, *, exit_code: int, error: str = "") -> bool:
-        ok = int(exit_code) == 0
-        status = "completed" if ok else "failed"
-        sql = """
-UPDATE coordinator_targets
-SET status = %s,
-    exit_code = %s,
-    error = %s,
-    completed_at_utc = NOW(),
-    lease_expires_at = NULL,
-    heartbeat_at_utc = NOW(),
-    updated_at_utc = NOW()
-WHERE entry_id = %s
-  AND worker_id = %s;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (status, int(exit_code), str(error or "")[:2000], str(entry_id), str(worker_id)))
-                updated = int(cur.rowcount or 0)
-            conn.commit()
-        return updated > 0
-
-    def load_session(self, root_domain: str) -> dict[str, Any] | None:
-        sql = """
-SELECT root_domain, start_url, max_pages, saved_at_utc, payload
-FROM coordinator_sessions
-WHERE root_domain = %s;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (str(root_domain).strip().lower(),))
-                row = cur.fetchone()
-            conn.commit()
-        if row is None:
-            return None
-        payload = row[4] if isinstance(row[4], dict) else {}
-        return {
-            "root_domain": row[0],
-            "start_url": row[1],
-            "max_pages": row[2],
-            "saved_at_utc": row[3].isoformat() if row[3] else None,
-            "state": payload.get("state", {}),
-            "frontier": payload.get("frontier", []),
-            "payload": payload,
-        }
-
-    def save_session(
-        self,
-        *,
-        root_domain: str,
-        start_url: str,
-        max_pages: int,
-        payload: dict[str, Any],
-        saved_at_utc: str | None = None,
-    ) -> bool:
-        rd = str(root_domain or "").strip().lower()
-        if not rd:
-            return False
-        su = str(start_url or "").strip()
-        if not su:
-            return False
-        saved_dt = None
-        if saved_at_utc:
-            try:
-                saved_dt = datetime.fromisoformat(str(saved_at_utc).replace("Z", "+00:00"))
-            except Exception:
-                saved_dt = None
-        sql = """
-INSERT INTO coordinator_sessions(root_domain, start_url, max_pages, saved_at_utc, payload)
-VALUES (%s, %s, %s, COALESCE(%s, NOW()), %s::jsonb)
-ON CONFLICT (root_domain) DO UPDATE
-SET start_url = EXCLUDED.start_url,
-    max_pages = EXCLUDED.max_pages,
-    saved_at_utc = EXCLUDED.saved_at_utc,
-    payload = EXCLUDED.payload;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql,
-                    (
-                        rd,
-                        su,
-                        int(max_pages) if max_pages is not None else None,
-                        saved_dt,
-                        json.dumps(payload, ensure_ascii=False),
-                    ),
-                )
-            conn.commit()
-        return True
-
-    def reset_coordinator_tables(self) -> dict[str, Any]:
-        """Truncate all coordinator tables (targets, sessions, stage tasks, artifacts)."""
-        truncate_sql = """
-TRUNCATE TABLE coordinator_targets, coordinator_sessions, coordinator_stage_tasks, coordinator_artifacts;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(truncate_sql)
-            conn.commit()
-        return {
-            "truncated_tables": [
-                "coordinator_targets",
-                "coordinator_sessions",
-                "coordinator_stage_tasks",
-                "coordinator_artifacts",
-            ],
-            "reset_at_utc": _iso_now(),
-        }
-
-    def get_fleet_settings(self) -> dict[str, Any]:
-        sql = """
-SELECT output_clear_generation, updated_at_utc
-FROM coordinator_fleet_settings
-WHERE singleton = 1;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                row = cur.fetchone()
-            conn.commit()
-        if row is None:
-            return {"output_clear_generation": 0, "updated_at_utc": None}
-        gen, updated = row[0], row[1]
-        return {
-            "output_clear_generation": int(gen or 0),
-            "updated_at_utc": updated.isoformat() if updated else None,
-        }
-
-    def bump_output_clear_generation(self) -> dict[str, Any]:
-        sql = """
-UPDATE coordinator_fleet_settings
-SET output_clear_generation = output_clear_generation + 1,
-    updated_at_utc = NOW()
-WHERE singleton = 1
-RETURNING output_clear_generation, updated_at_utc;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError("coordinator_fleet_settings row missing (schema not initialized?)")
-            conn.commit()
-        gen, updated = row[0], row[1]
-        return {
-            "output_clear_generation": int(gen or 0),
-            "updated_at_utc": updated.isoformat() if updated else None,
-        }
-
-    def status_summary(self) -> dict[str, Any]:
-        counts: dict[str, int] = {}
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT status, COUNT(*) FROM coordinator_targets GROUP BY status;"
-                )
-                rows = cur.fetchall()
-            conn.commit()
-        for status, count in rows:
-            counts[str(status)] = int(count or 0)
-        return {
-            "counts": counts,
-            "generated_at_utc": _iso_now(),
-        }
-
-    def worker_statuses(self, *, stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS) -> dict[str, Any]:
-        stale_after = max(15, int(stale_after_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        sql = """
-WITH target_agg AS (
-    SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_target_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_targets,
-      COUNT(*) FILTER (
-        WHERE status = 'running'
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at > NOW()
-      ) AS active_target_leases
-    FROM coordinator_targets
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
-),
-stage_agg AS (
-    SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_stage_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_stage_tasks,
-      COUNT(*) FILTER (
-        WHERE status = 'running'
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at > NOW()
-      ) AS active_stage_leases,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN status = 'running' THEN stage ELSE NULL END), NULL) AS active_stages
-    FROM coordinator_stage_tasks
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
-)
-SELECT
-  COALESCE(t.worker_id, s.worker_id) AS worker_id,
-  CASE
-    WHEN t.last_target_heartbeat IS NULL THEN s.last_stage_heartbeat
-    WHEN s.last_stage_heartbeat IS NULL THEN t.last_target_heartbeat
-    ELSE GREATEST(t.last_target_heartbeat, s.last_stage_heartbeat)
-  END AS last_heartbeat_at_utc,
-  COALESCE(t.running_targets, 0) AS running_targets,
-  COALESCE(s.running_stage_tasks, 0) AS running_stage_tasks,
-  COALESCE(t.active_target_leases, 0) AS active_target_leases,
-  COALESCE(s.active_stage_leases, 0) AS active_stage_leases,
-  COALESCE(s.active_stages, ARRAY[]::text[]) AS active_stages
-FROM target_agg t
-FULL OUTER JOIN stage_agg s
-  ON s.worker_id = t.worker_id
-ORDER BY worker_id ASC;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-            conn.commit()
-
-        now_utc = datetime.now(timezone.utc)
-        workers: list[dict[str, Any]] = []
-        online_count = 0
-        for row in rows:
-            worker_id = str(row[0] or "").strip()
-            last_heartbeat = row[1]
-            running_targets = int(row[2] or 0)
-            running_stage_tasks = int(row[3] or 0)
-            active_target_leases = int(row[4] or 0)
-            active_stage_leases = int(row[5] or 0)
-            active_stages_raw = row[6] if isinstance(row[6], list) else []
-            active_stages = [str(item) for item in active_stages_raw if str(item or "").strip()]
-
-            seconds_since: int | None = None
-            last_heartbeat_iso: str | None = None
-            if last_heartbeat is not None:
-                last_heartbeat_iso = last_heartbeat.isoformat()
-                delta_seconds = (now_utc - last_heartbeat).total_seconds()
-                seconds_since = max(0, int(delta_seconds))
-            is_online = seconds_since is not None and seconds_since <= stale_after
-            if is_online:
-                online_count += 1
-            workers.append(
-                {
-                    "worker_id": worker_id,
-                    "status": "online" if is_online else "stale",
-                    "last_heartbeat_at_utc": last_heartbeat_iso,
-                    "seconds_since_heartbeat": seconds_since,
-                    "running_targets": running_targets,
-                    "running_stage_tasks": running_stage_tasks,
-                    "active_target_leases": active_target_leases,
-                    "active_stage_leases": active_stage_leases,
-                    "active_stages": active_stages,
-                }
-            )
-
-        total = len(workers)
-        return {
-            "generated_at_utc": now_utc.isoformat(),
-            "stale_after_seconds": stale_after,
-            "counts": {
-                "total_workers": total,
-                "online_workers": online_count,
-                "stale_workers": max(0, total - online_count),
-            },
-            "workers": workers,
-        }
-
-    def worker_control_snapshot(self, *, stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS) -> dict[str, Any]:
-        stale_after = max(15, int(stale_after_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        sql = """
-WITH target_agg AS (
-    SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_target_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_targets,
-      COUNT(*) FILTER (WHERE status IN ('running', 'completed')) AS urls_scanned_session,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN status = 'running' THEN COALESCE(start_url, root_domain) ELSE NULL END), NULL) AS current_targets
-    FROM coordinator_targets
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
-),
-stage_agg AS (
-    SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_stage_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_stage_tasks
-    FROM coordinator_stage_tasks
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
-),
-commands AS (
-    SELECT worker_id, COUNT(*) FILTER (WHERE status = 'queued') AS queued_commands
-    FROM coordinator_worker_commands
-    GROUP BY worker_id
-)
-SELECT
-  COALESCE(t.worker_id, s.worker_id, c.worker_id) AS worker_id,
-  CASE
-    WHEN t.last_target_heartbeat IS NULL THEN s.last_stage_heartbeat
-    WHEN s.last_stage_heartbeat IS NULL THEN t.last_target_heartbeat
-    ELSE GREATEST(t.last_target_heartbeat, s.last_stage_heartbeat)
-  END AS last_heartbeat_at_utc,
-  COALESCE(t.running_targets, 0) AS running_targets,
-  COALESCE(s.running_stage_tasks, 0) AS running_stage_tasks,
-  COALESCE(t.urls_scanned_session, 0) AS urls_scanned_session,
-  COALESCE(t.current_targets, ARRAY[]::text[]) AS current_targets,
-  COALESCE(c.queued_commands, 0) AS queued_commands
-FROM target_agg t
-FULL OUTER JOIN stage_agg s ON s.worker_id = t.worker_id
-FULL OUTER JOIN commands c ON c.worker_id = COALESCE(t.worker_id, s.worker_id)
-ORDER BY worker_id ASC;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-            conn.commit()
-        now_utc = datetime.now(timezone.utc)
-        workers: list[dict[str, Any]] = []
-        online_count = 0
-        for row in rows:
-            worker_id = str(row[0] or "").strip()
-            if not worker_id:
-                continue
-            last_heartbeat = row[1]
-            seconds_since: int | None = None
-            last_heartbeat_iso: str | None = None
-            if last_heartbeat is not None:
-                last_heartbeat_iso = last_heartbeat.isoformat()
-                seconds_since = max(0, int((now_utc - last_heartbeat).total_seconds()))
-            is_online = seconds_since is not None and seconds_since <= stale_after
-            if is_online:
-                online_count += 1
-            current_targets_raw = row[5] if isinstance(row[5], list) else []
-            workers.append(
-                {
-                    "worker_id": worker_id,
-                    "status": "online" if is_online else "stale",
-                    "last_heartbeat_at_utc": last_heartbeat_iso,
-                    "seconds_since_heartbeat": seconds_since,
-                    "running_targets": int(row[2] or 0),
-                    "running_stage_tasks": int(row[3] or 0),
-                    "urls_scanned_session": int(row[4] or 0),
-                    "current_targets": [str(item) for item in current_targets_raw if str(item or "").strip()],
-                    "queued_commands": int(row[6] or 0),
-                }
-            )
-        total = len(workers)
-        return {
-            "generated_at_utc": now_utc.isoformat(),
-            "stale_after_seconds": stale_after,
-            "counts": {
-                "total_workers": total,
-                "online_workers": online_count,
-                "stale_workers": max(0, total - online_count),
-            },
-            "workers": workers,
-        }
-
-    def queue_worker_command(self, worker_id: str, command: str, payload: dict[str, Any] | None = None) -> bool:
-        wid = str(worker_id or "").strip()
-        cmd = str(command or "").strip().lower()
-        if not wid or not cmd:
-            return False
-        safe_payload = payload if isinstance(payload, dict) else {}
-        sql = """
-INSERT INTO coordinator_worker_commands(worker_id, command, payload, status, updated_at_utc)
-VALUES (%s, %s, %s::jsonb, 'queued', NOW());
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (wid, cmd, json.dumps(safe_payload)))
-            conn.commit()
-        return True
-
-    def enqueue_stage(self, root_domain: str, stage: str) -> bool:
-        rd = str(root_domain or "").strip().lower()
-        stg = str(stage or "").strip().lower()
-        if not rd or not stg:
-            return False
-        sql = """
-INSERT INTO coordinator_stage_tasks(root_domain, stage, status, updated_at_utc)
-VALUES (%s, %s, 'pending', NOW())
-ON CONFLICT (root_domain, stage) DO UPDATE
-SET status = CASE
-      WHEN coordinator_stage_tasks.status = 'completed' THEN coordinator_stage_tasks.status
-      ELSE 'pending'
-    END,
-    worker_id = NULL,
-    lease_expires_at = NULL,
-    heartbeat_at_utc = NULL,
-    completed_at_utc = CASE
-      WHEN coordinator_stage_tasks.status = 'completed' THEN coordinator_stage_tasks.completed_at_utc
-      ELSE NULL
-    END,
-    updated_at_utc = NOW();
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (rd, stg))
-            conn.commit()
-        return True
-
-    def claim_stage(self, stage: str, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
-        stg = str(stage or "").strip().lower()
-        wid = str(worker_id or "").strip()
-        if not stg or not wid:
-            raise ValueError("stage and worker_id are required")
-        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        sql = """
-WITH candidate AS (
-    SELECT root_domain
-    FROM coordinator_stage_tasks
-    WHERE stage = %s
-      AND (
-        status = 'pending'
-        OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
-      )
-    ORDER BY created_at_utc ASC
-    FOR UPDATE SKIP LOCKED
-    LIMIT 1
-)
-UPDATE coordinator_stage_tasks t
-SET status = 'running',
-    worker_id = %s,
-    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
-    started_at_utc = COALESCE(t.started_at_utc, NOW()),
-    completed_at_utc = NULL,
-    heartbeat_at_utc = NOW(),
-    attempt_count = t.attempt_count + 1,
-    updated_at_utc = NOW(),
-    error = NULL
-FROM candidate
-WHERE t.root_domain = candidate.root_domain
-  AND t.stage = %s
-RETURNING t.root_domain, t.stage, t.status, t.worker_id, t.attempt_count, t.lease_expires_at;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (stg, wid, lease, stg))
-                row = cur.fetchone()
-            conn.commit()
-        if row is None:
-            return None
-        return {
-            "root_domain": row[0],
-            "stage": row[1],
-            "status": row[2],
-            "worker_id": row[3],
-            "attempt_count": int(row[4] or 0),
-            "lease_expires_at": row[5].isoformat() if row[5] else None,
-        }
-
-    def heartbeat_stage(self, root_domain: str, stage: str, worker_id: str, lease_seconds: int) -> bool:
-        rd = str(root_domain or "").strip().lower()
-        stg = str(stage or "").strip().lower()
-        wid = str(worker_id or "").strip()
-        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
-        if not rd or not stg or not wid:
-            return False
-        sql = """
-UPDATE coordinator_stage_tasks
-SET heartbeat_at_utc = NOW(),
-    lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
-    updated_at_utc = NOW()
-WHERE root_domain = %s
-  AND stage = %s
-  AND worker_id = %s
-  AND status = 'running';
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (lease, rd, stg, wid))
-                updated = int(cur.rowcount or 0)
-            conn.commit()
-        return updated > 0
-
-    def complete_stage(
-        self,
-        root_domain: str,
-        stage: str,
-        worker_id: str,
-        *,
-        exit_code: int,
-        error: str = "",
-    ) -> bool:
-        rd = str(root_domain or "").strip().lower()
-        stg = str(stage or "").strip().lower()
-        wid = str(worker_id or "").strip()
-        if not rd or not stg or not wid:
-            return False
-        ok = int(exit_code) == 0
-        next_status = "completed" if ok else "failed"
-        sql = """
-UPDATE coordinator_stage_tasks
-SET status = %s,
-    exit_code = %s,
-    error = %s,
-    completed_at_utc = NOW(),
-    heartbeat_at_utc = NOW(),
-    lease_expires_at = NULL,
-    updated_at_utc = NOW()
-WHERE root_domain = %s
-  AND stage = %s
-  AND worker_id = %s;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (next_status, int(exit_code), str(error or "")[:2000], rd, stg, wid))
-                updated = int(cur.rowcount or 0)
-            conn.commit()
-        return updated > 0
-
-    def upload_artifact(
-        self,
-        *,
-        root_domain: str,
-        artifact_type: str,
-        content: bytes,
-        source_worker: str = "",
-        content_encoding: str = "identity",
-    ) -> bool:
-        rd = str(root_domain or "").strip().lower()
-        at = str(artifact_type or "").strip().lower()
-        if not rd or not at:
-            return False
-        data = bytes(content or b"")
-        digest = hashlib.sha256(data).hexdigest()
-        sql = """
-INSERT INTO coordinator_artifacts(
-    root_domain, artifact_type, source_worker, content, content_encoding, content_sha256, content_size_bytes, updated_at_utc
-)
-VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-ON CONFLICT (root_domain, artifact_type) DO UPDATE
-SET source_worker = EXCLUDED.source_worker,
-    content = EXCLUDED.content,
-    content_encoding = EXCLUDED.content_encoding,
-    content_sha256 = EXCLUDED.content_sha256,
-    content_size_bytes = EXCLUDED.content_size_bytes,
-    updated_at_utc = NOW();
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql,
-                    (
-                        rd,
-                        at,
-                        str(source_worker or "")[:200],
-                        data,
-                        str(content_encoding or "identity")[:120],
-                        digest,
-                        len(data),
-                    ),
-                )
-            conn.commit()
-        return True
-
-    def get_artifact(self, root_domain: str, artifact_type: str) -> dict[str, Any] | None:
-        rd = str(root_domain or "").strip().lower()
-        at = str(artifact_type or "").strip().lower()
-        if not rd or not at:
-            return None
-        sql = """
-SELECT root_domain, artifact_type, source_worker, content, content_encoding, content_sha256, content_size_bytes, updated_at_utc
-FROM coordinator_artifacts
-WHERE root_domain = %s AND artifact_type = %s;
-"""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (rd, at))
-                row = cur.fetchone()
-            conn.commit()
-        if row is None:
-            return None
-        return {
-            "root_domain": row[0],
-            "artifact_type": row[1],
-            "source_worker": row[2],
-            "content": bytes(row[3] or b""),
-            "content_encoding": row[4],
-            "content_sha256": row[5],
-            "content_size_bytes": int(row[6] or 0),
-            "updated_at_utc": row[7].isoformat() if row[7] else None,
-        }
-
-    def list_artifacts(self, root_domain: str) -> list[dict[str, Any]]:
-        rd = str(root_domain or "").strip().lower()
-        if not rd:
-            return []
-        sql = """
-SELECT artifact_type, source_worker, content_encoding, content_sha256, content_size_bytes, updated_at_utc
-FROM coordinator_artifacts
-WHERE root_domain = %s
-ORDER BY artifact_type ASC;
-"""
-        out: list[dict[str, Any]] = []
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (rd,))
-                rows = cur.fetchall()
-            conn.commit()
-        for row in rows:
-            out.append(
-                {
-                    "artifact_type": row[0],
-                    "source_worker": row[1],
-                    "content_encoding": row[2],
-                    "content_sha256": row[3],
-                    "content_size_bytes": int(row[4] or 0),
-                    "updated_at_utc": row[5].isoformat() if row[5] else None,
-                }
-            )
-        return out
 
 
 def _normalize_and_validate_relative_path(root: Path, raw_relative: str) -> Path | None:
@@ -1803,275 +991,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return out
         return out
 
-    def _render_dashboard_html(self) -> str:
-        return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nightmare Dashboard</title>
-  <style>
-    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f7fafc; color: #0f172a; }
-    h1 { margin: 0 0 10px; }
-    .meta { color: #475569; margin-bottom: 14px; font-size: 13px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
-    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
-    .k { font-size: 12px; color: #475569; }
-    .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
-    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
-    th { background: #e2e8f0; }
-    .log { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin: 0; background: #0b1220; color: #c8d3f5; padding: 8px; border-radius: 6px; }
-    .rowlinks a { margin-right: 8px; }
-    .muted { color: #64748b; }
-    code { background: #e2e8f0; padding: 1px 4px; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <h1>Nightmare Live Dashboard</h1>
-  <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>. <a href="/workers">Open Worker Control</a></div>
-  <div id="cards" class="cards"></div>
-  <h2>Master Reports</h2>
-  <div id="masters" class="muted">Loading…</div>
-  <h2>Domains</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Domain</th>
-        <th>Status</th>
-        <th>URLs</th>
-        <th>Findings</th>
-        <th>Reports</th>
-        <th>Latest Log Tail</th>
-      </tr>
-    </thead>
-    <tbody id="rows"><tr><td colspan="6">Loading…</td></tr></tbody>
-  </table>
-  <script>
-    function esc(v) {
-      return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch]));
-    }
-    function fileLink(relPath, label) {
-      if (!relPath) return "";
-      const encoded = encodeURIComponent(relPath).replaceAll("%2F", "/");
-      return `<a href="/files/${encoded}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
-    }
-    function buildCards(t) {
-      const cards = [
-        ["Domains", t.domains],
-        ["Fozzy Complete", t.fozzy_complete],
-        ["Fozzy Interrupted", t.fozzy_interrupted],
-        ["Parameterized", t.parameterized],
-        ["Discovered Only", t.discovered],
-      ];
-      return cards.map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
-    }
-    function render(data) {
-      document.getElementById("cards").innerHTML = buildCards(data.totals || {});
-      const masters = (data.master_reports || []).map((m) => fileLink(m.relative, m.name)).join(" | ");
-      document.getElementById("masters").innerHTML = masters || "<span class='muted'>No master reports found.</span>";
+def _render_dashboard_html(self) -> str:
+    return render_dashboard_html()
 
-      const rows = data.domains || [];
-      if (!rows.length) {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='6'>No domain output folders found.</td></tr>";
-        return;
-      }
-      document.getElementById("rows").innerHTML = rows.map((d) => {
-        const p = d.paths_rel || {};
-        const links = [
-          fileLink(p.nightmare_report_html, "Nightmare HTML"),
-          fileLink(p.fozzy_results_html, "Fozzy HTML"),
-          fileLink(p.url_inventory, "URL Inventory"),
-          fileLink(p.requests, "Requests JSON"),
-          fileLink(p.fozzy_summary_json, "Fozzy Summary")
-        ].filter(Boolean).join(" ");
-        return `<tr>
-          <td>${esc(d.domain)}</td>
-          <td>${esc(d.status)}</td>
-          <td>unique=${esc(d.unique_urls)}<br>requested=${esc(d.requested_urls)}</td>
-          <td>anomalies=${esc(d.anomalies)}<br>reflections=${esc(d.reflections)}</td>
-          <td class="rowlinks">${links || "<span class='muted'>none</span>"}</td>
-          <td><pre class="log">${esc((d.latest_log_tail || "").slice(-4000))}</pre></td>
-        </tr>`;
-      }).join("");
-    }
-    async function refresh() {
-      try {
-        const rsp = await fetch("/api/summary", { cache: "no-store" });
-        if (!rsp.ok) return;
-        const data = await rsp.json();
-        render(data);
-      } catch (_) {}
-    }
-    refresh();
-    setInterval(refresh, 5000);
-  </script>
-</body>
-</html>
-"""
-
-    def _render_workers_html(self) -> str:
-        return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Worker Control</title>
-  <style>
-    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
-    h1 { margin-bottom: 8px; }
-    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
-    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 14px; }
-    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
-    .k { font-size: 12px; color: #64748b; }
-    .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
-    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
-    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-    button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
-    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
-    th { background: #e2e8f0; }
-    .online { color: #15803d; font-weight: 600; }
-    .stale { color: #b45309; font-weight: 600; }
-    .muted { color: #64748b; }
-    #configModal { position: fixed; inset: 0; display: none; background: rgba(15, 23, 42, .35); }
-    #configModal .panel { margin: 5vh auto; width: min(940px, 95vw); background: #fff; padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; }
-    textarea { width: 100%; min-height: 340px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  </style>
-</head>
-<body>
-  <h1>Worker Control Center</h1>
-  <div class="meta">Asynchronous auto-refresh every 3s. Use row selection to run bulk start/stop/pause commands. <a href="/dashboard">Back to Dashboard</a></div>
-  <div id="cards" class="cards"></div>
-  <div class="toolbar">
-    <input id="token" type="password" placeholder="Coordinator token">
-    <button class="primary" onclick="bulkCommand('start')">Start selected</button>
-    <button onclick="bulkCommand('pause')">Pause selected</button>
-    <button onclick="bulkCommand('stop')">Stop selected</button>
-    <span id="msg" class="muted"></span>
-  </div>
-  <table>
-    <thead>
-      <tr>
-        <th><input type="checkbox" id="selectAll"></th>
-        <th>Worker</th>
-        <th>Status</th>
-        <th>Current Targets</th>
-        <th>URLs Scanned (session)</th>
-        <th>Actions</th>
-        <th>Logs</th>
-        <th>Config</th>
-      </tr>
-    </thead>
-    <tbody id="rows"><tr><td colspan="8">Loading…</td></tr></tbody>
-  </table>
-
-  <div id="configModal">
-    <div class="panel">
-      <h3 id="configTitle">Edit worker config</h3>
-      <textarea id="configText"></textarea>
-      <div class="toolbar">
-        <button class="primary" onclick="saveConfig()">Save config</button>
-        <button onclick="closeConfig()">Close</button>
-        <span id="configMsg" class="muted"></span>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    let selectedConfigWorker = "";
-    function esc(v){ return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch])); }
-    function escJs(v){ return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/\\n/g, "\\\\n").replace(/\\r/g, "\\\\r"); }
-    function authHeaders() {
-      const token = document.getElementById("token").value.trim();
-      return token ? { "Authorization": `Bearer ${token}` } : {};
-    }
-    async function apiGet(path) {
-      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
-      if (!rsp.ok) throw new Error(await rsp.text());
-      return rsp.json();
-    }
-    async function apiPost(path, body) {
-      const rsp = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(body || {}),
-      });
-      if (!rsp.ok) throw new Error(await rsp.text());
-      return rsp.json();
-    }
-    function selectedWorkers() { return [...document.querySelectorAll("input.workerSel:checked")].map((el) => el.value); }
-    async function bulkCommand(command) {
-      const workers = selectedWorkers();
-      if (!workers.length) { document.getElementById("msg").textContent = "Select at least one worker."; return; }
-      try {
-        const data = await apiPost("/api/coord/workers/command", { command, worker_ids: workers });
-        document.getElementById("msg").textContent = `Queued ${data.queued} ${command} command(s).`;
-        refresh();
-      } catch (e) {
-        document.getElementById("msg").textContent = `Command failed: ${e.message}`;
-      }
-    }
-    async function bulkCommandForOne(workerId, command) {
-      document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = (el.value === workerId); });
-      await bulkCommand(command);
-    }
-    async function openConfig(workerId) {
-      selectedConfigWorker = workerId;
-      document.getElementById("configTitle").textContent = `Edit worker config: ${workerId}`;
-      document.getElementById("configMsg").textContent = "";
-      document.getElementById("configModal").style.display = "block";
-      try {
-        const data = await apiGet(`/api/coord/worker-config?worker_id=${encodeURIComponent(workerId)}`);
-        document.getElementById("configText").value = data.content || "";
-      } catch (e) {
-        document.getElementById("configText").value = "";
-        document.getElementById("configMsg").textContent = `Load failed: ${e.message}`;
-      }
-    }
-    function closeConfig() { document.getElementById("configModal").style.display = "none"; selectedConfigWorker = ""; }
-    async function saveConfig() {
-      if (!selectedConfigWorker) return;
-      try {
-        await apiPost("/api/coord/worker-config", { worker_id: selectedConfigWorker, content: document.getElementById("configText").value });
-        document.getElementById("configMsg").textContent = "Saved.";
-      } catch (e) {
-        document.getElementById("configMsg").textContent = `Save failed: ${e.message}`;
-      }
-    }
-    function render(data) {
-      const c = data.counts || {};
-      const cards = [["Workers", c.total_workers || 0],["Online", c.online_workers || 0],["Stale", c.stale_workers || 0]];
-      document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
-      const rows = data.workers || [];
-      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; return; }
-      document.getElementById("rows").innerHTML = rows.map((w) => {
-        const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replaceAll("%2F","/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
-        const statusClass = w.status === "online" ? "online" : "stale";
-        const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
-        return `<tr>
-          <td><input class="workerSel" type="checkbox" value="${esc(w.worker_id)}"></td>
-          <td>${esc(w.worker_id)}</td>
-          <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span></td>
-          <td>${targets}</td>
-          <td>${esc(w.urls_scanned_session)}</td>
-          <td><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','start')">Start</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','pause')">Pause</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','stop')">Stop</button></td>
-          <td>${logs}</td>
-          <td><button onclick="openConfig('${escJs(w.worker_id)}')">Edit</button><br><span class="muted">${esc(w.config || "")}</span></td>
-        </tr>`;
-      }).join("");
-    }
-    async function refresh() {
-      try { render(await apiGet("/api/coord/worker-control")); }
-      catch (e) { document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load worker state: ${esc(e.message)}</td></tr>`; }
-    }
-    document.getElementById("selectAll").addEventListener("change", (e) => { document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = e.target.checked; }); });
-    refresh();
-    setInterval(refresh, 3000);
-  </script>
-</body>
-</html>
-"""
+def _render_workers_html(self) -> str:
+    return render_workers_html()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2118,52 +1042,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
+    load_env_file_into_os(BASE_DIR / "deploy" / ".env", override=False)
+    logger = get_logger("server")
     args = parse_args(argv)
-    config_path = _resolve_config_path(args.config)
-    file_cfg = _read_json_dict(config_path)
-    merged_cfg = {**_default_server_config(), **file_cfg}
-
-    output_root_raw = str(_merged_value(args.output_root, merged_cfg, "output_root", "output"))
-    output_root = Path(output_root_raw).expanduser()
-    if not output_root.is_absolute():
-        output_root = (BASE_DIR / output_root).resolve()
-    host = str(_merged_value(args.host, merged_cfg, "host", DEFAULT_HOST) or DEFAULT_HOST).strip() or DEFAULT_HOST
-    legacy_port = int(_merged_value(args.port, merged_cfg, "port", DEFAULT_PORT) or DEFAULT_PORT)
-    http_port = int(_merged_value(args.http_port, merged_cfg, "http_port", 80) or 80)
-    https_port = int(_merged_value(args.https_port, merged_cfg, "https_port", 443) or 443)
-    cert_file_raw = str(_merged_value(args.cert_file, merged_cfg, "cert_file", "") or "").strip()
-    key_file_raw = str(_merged_value(args.key_file, merged_cfg, "key_file", "") or "").strip()
-    database_url = str(
-        _merged_value(
-            args.database_url,
-            merged_cfg,
-            "database_url",
-            os.getenv("DATABASE_URL", ""),
-        )
-        or ""
-    ).strip()
-    coordinator_token = str(
-        _merged_value(
+    config_path = resolve_config_path(BASE_DIR, args.config, "server.json")
+    file_cfg = read_json_dict(config_path)
+    merged_cfg = {
+        "host": merged_value(args.host, file_cfg, "host", DEFAULT_HOST),
+        "output_root": merged_value(args.output_root, file_cfg, "output_root", "output"),
+        "database_url": merged_value(args.database_url, file_cfg, "database_url", os.getenv("DATABASE_URL", "")),
+        "coordinator_api_token": merged_value(
             args.coordinator_api_token,
-            merged_cfg,
+            file_cfg,
             "coordinator_api_token",
             os.getenv("COORDINATOR_API_TOKEN", ""),
-        )
-        or ""
-    ).strip()
-    master_report_regen_token = str(merged_cfg.get("master_report_regen_token") or "").strip()
-    if not master_report_regen_token:
-        master_report_regen_token = os.getenv("MASTER_REPORT_REGEN_TOKEN", "").strip()
-    if not master_report_regen_token:
-        master_report_regen_token = coordinator_token
-
+        ),
+        "master_report_regen_token": str(file_cfg.get("master_report_regen_token") or os.getenv("MASTER_REPORT_REGEN_TOKEN", "") or ""),
+        "http_port": merged_value(args.http_port, file_cfg, "http_port", 80),
+        "https_port": merged_value(args.https_port, file_cfg, "https_port", 443),
+        "cert_file": merged_value(args.cert_file, file_cfg, "cert_file", ""),
+        "key_file": merged_value(args.key_file, file_cfg, "key_file", ""),
+    }
     if args.http_port is None and args.https_port is None and args.port is not None:
-        http_port = legacy_port
-        https_port = 0
-    if http_port and (http_port < 1 or http_port > 65535):
-        raise ValueError("http_port must be in range 1..65535")
-    if https_port and (https_port < 1 or https_port > 65535):
-        raise ValueError("https_port must be in range 1..65535")
+        merged_cfg["http_port"] = int(args.port)
+        merged_cfg["https_port"] = 0
+    settings = ServerSettings.model_validate(merged_cfg)
+
+    output_root = Path(settings.output_root).expanduser()
+    if not output_root.is_absolute():
+        output_root = (BASE_DIR / output_root).resolve()
+
+    database_url = settings.database_url.strip()
+    coordinator_token = settings.coordinator_api_token.strip()
+    master_report_regen_token = settings.master_report_regen_token.strip() or coordinator_token
+
+    logger.info(
+        "server_starting",
+        config_path=str(config_path),
+        host=settings.host,
+        http_port=settings.http_port,
+        https_port=settings.https_port,
+        output_root=str(output_root),
+        coordinator_enabled=bool(database_url),
+    )
 
     if args.reset_coordinator:
         confirm = str(args.reset_confirm or "").strip()
@@ -2195,7 +1117,7 @@ def main(argv: list[str] | None = None) -> int:
         coordinator_store = CoordinatorStore(database_url)
 
     def _prepare_server(port_value: int) -> ThreadingHTTPServer:
-        srv = ThreadingHTTPServer((host, port_value), DashboardHandler)
+        srv = ThreadingHTTPServer((settings.host, port_value), DashboardHandler)
         srv.app_root = BASE_DIR  # type: ignore[attr-defined]
         srv.output_root = output_root  # type: ignore[attr-defined]
         srv.coordinator_store = coordinator_store  # type: ignore[attr-defined]
@@ -2205,61 +1127,55 @@ def main(argv: list[str] | None = None) -> int:
         return srv
 
     servers: list[tuple[str, ThreadingHTTPServer]] = []
-    if http_port:
-        servers.append(("http", _prepare_server(http_port)))
-    if https_port:
-        cert_file = Path(cert_file_raw).expanduser().resolve() if cert_file_raw else None
-        key_file = Path(key_file_raw).expanduser().resolve() if key_file_raw else None
+    if settings.http_port:
+        servers.append(("http", _prepare_server(settings.http_port)))
+    if settings.https_port:
+        cert_file = Path(settings.cert_file).expanduser().resolve() if settings.cert_file else None
+        key_file = Path(settings.key_file).expanduser().resolve() if settings.key_file else None
         if cert_file is None or key_file is None or not cert_file.is_file() or not key_file.is_file():
             print(
                 "[server] https listener disabled: provide valid cert_file/key_file for port 443",
                 flush=True,
             )
         else:
-            https_server = _prepare_server(https_port)
+            https_server = _prepare_server(settings.https_port)
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(certfile=str(cert_file), keyfile=str(key_file))
             https_server.socket = context.wrap_socket(https_server.socket, server_side=True)
             servers.append(("https", https_server))
 
     if not servers:
-        raise RuntimeError("No active listeners configured. Enable http_port and/or https_port with valid TLS files.")
-
-    print("[server] starting dashboard/coordinator server", flush=True)
-    print(f"[server] config={config_path}", flush=True)
-    print(f"[server] app_root={BASE_DIR}", flush=True)
-    print(f"[server] output_root={output_root}", flush=True)
-    if coordinator_store is not None:
-        print("[server] coordinator mode enabled (Postgres backend)", flush=True)
-    else:
-        print("[server] coordinator mode disabled (database_url not set)", flush=True)
-    all_domains_html = _find_all_domains_report_html(output_root)
-    if all_domains_html is not None:
-        print(f"[server] default route / serving all-domains report: {all_domains_html}", flush=True)
-    else:
-        print("[server] default route / serving dashboard (all_domains.results_summary.html not found)", flush=True)
-    for scheme, srv in servers:
-        bound = srv.server_address[1]
-        print(f"[server] {scheme} listening on {scheme}://{host}:{bound}", flush=True)
-    print(f"[server] dashboard route: http://{host}:{http_port or legacy_port}/dashboard", flush=True)
+        print("[server] no listeners enabled (http_port/https_port both disabled)", file=sys.stderr, flush=True)
+        return 2
 
     threads: list[threading.Thread] = []
-    for _scheme, srv in servers:
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
-        t.start()
-        threads.append(t)
     try:
+        for scheme, srv in servers:
+            thread = threading.Thread(target=srv.serve_forever, name=f"server-{scheme}", daemon=True)
+            thread.start()
+            threads.append(thread)
+            logger.info("server_listener_started", scheme=scheme, host=settings.host, port=srv.server_port)
+            print(f"[server] listening on {scheme}://{settings.host}:{srv.server_port}", flush=True)
         while True:
-            time.sleep(1.0)
+            time.sleep(3600)
     except KeyboardInterrupt:
-        print("\n[server] interrupt received, shutting down.", flush=True)
+        logger.info("server_shutdown_requested")
     finally:
-        for _scheme, srv in servers:
+        for _, srv in servers:
             try:
                 srv.shutdown()
             except Exception:
                 pass
-            srv.server_close()
+            try:
+                srv.server_close()
+            except Exception:
+                pass
+        for thread in threads:
+            try:
+                thread.join(timeout=2.0)
+            except Exception:
+                pass
+        logger.info("server_stopped")
     return 0
 
 

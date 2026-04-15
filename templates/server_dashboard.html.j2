@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nightmare Dashboard</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f7fafc; color: #0f172a; }
+    h1 { margin: 0 0 10px; }
+    .meta { color: #475569; margin-bottom: 14px; font-size: 13px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #475569; }
+    .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #e2e8f0; }
+    .log { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin: 0; background: #0b1220; color: #c8d3f5; padding: 8px; border-radius: 6px; }
+    .rowlinks a { margin-right: 8px; }
+    .muted { color: #64748b; }
+    code { background: #e2e8f0; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Nightmare Live Dashboard</h1>
+  <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>. <a href="/workers">Open Worker Control</a></div>
+  <div id="cards" class="cards"></div>
+  <h2>Master Reports</h2>
+  <div id="masters" class="muted">Loading…</div>
+  <h2>Domains</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Domain</th>
+        <th>Status</th>
+        <th>URLs</th>
+        <th>Findings</th>
+        <th>Reports</th>
+        <th>Latest Log Tail</th>
+      </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="6">Loading…</td></tr></tbody>
+  </table>
+  <script>
+    function esc(v) {
+      return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch]));
+    }
+    function fileLink(relPath, label) {
+      if (!relPath) return "";
+      const encoded = encodeURIComponent(relPath).replaceAll("%2F", "/");
+      return `<a href="/files/${encoded}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+    }
+    function buildCards(t) {
+      const cards = [
+        ["Domains", t.domains],
+        ["Fozzy Complete", t.fozzy_complete],
+        ["Fozzy Interrupted", t.fozzy_interrupted],
+        ["Parameterized", t.parameterized],
+        ["Discovered Only", t.discovered],
+      ];
+      return cards.map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+    }
+    function render(data) {
+      document.getElementById("cards").innerHTML = buildCards(data.totals || {});
+      const masters = (data.master_reports || []).map((m) => fileLink(m.relative, m.name)).join(" | ");
+      document.getElementById("masters").innerHTML = masters || "<span class='muted'>No master reports found.</span>";
+
+      const rows = data.domains || [];
+      if (!rows.length) {
+        document.getElementById("rows").innerHTML = "<tr><td colspan='6'>No domain output folders found.</td></tr>";
+        return;
+      }
+      document.getElementById("rows").innerHTML = rows.map((d) => {
+        const p = d.paths_rel || {};
+        const links = [
+          fileLink(p.nightmare_report_html, "Nightmare HTML"),
+          fileLink(p.fozzy_results_html, "Fozzy HTML"),
+          fileLink(p.url_inventory, "URL Inventory"),
+          fileLink(p.requests, "Requests JSON"),
+          fileLink(p.fozzy_summary_json, "Fozzy Summary")
+        ].filter(Boolean).join(" ");
+        return `<tr>
+          <td>${esc(d.domain)}</td>
+          <td>${esc(d.status)}</td>
+          <td>unique=${esc(d.unique_urls)}<br>requested=${esc(d.requested_urls)}</td>
+          <td>anomalies=${esc(d.anomalies)}<br>reflections=${esc(d.reflections)}</td>
+          <td class="rowlinks">${links || "<span class='muted'>none</span>"}</td>
+          <td><pre class="log">${esc((d.latest_log_tail || "").slice(-4000))}</pre></td>
+        </tr>`;
+      }).join("");
+    }
+    async function refresh() {
+      try {
+        const rsp = await fetch("/api/summary", { cache: "no-store" });
+        if (!rsp.ok) return;
+        const data = await rsp.json();
+        render(data);
+      } catch (_) {}
+    }
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

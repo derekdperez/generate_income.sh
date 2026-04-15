@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{{ title }}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, Segoe UI, Roboto, sans-serif; margin: 1rem 1.25rem; line-height: 1.45; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  .meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+  #globalSearch { width: min(42rem, 100%); padding: 0.45rem 0.6rem; font-size: 1rem; margin-bottom: 0.75rem; }
+  .table-wrap { overflow-x: auto; border: 1px solid #8884; border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { border: 1px solid #8883; padding: 0.35rem 0.5rem; vertical-align: top; text-align: left; }
+  thead th { background: #8882; position: sticky; top: 0; z-index: 2; cursor: pointer; user-select: none; white-space: nowrap; }
+  thead th:hover { background: #8884; }
+  thead tr.filters th { position: sticky; top: 2.2rem; z-index: 2; cursor: default; background: #6661; padding: 0.25rem; }
+  thead tr.filters input { width: 100%; box-sizing: border-box; font: inherit; padding: 0.25rem 0.35rem; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .col-rule { min-width: 9rem; max-width: 14rem; word-break: break-word; }
+  .col-regex { min-width: 12rem; max-width: 28rem; word-break: break-all; font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; }
+  .col-matched { min-width: 14rem; max-width: 36rem; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; }
+  .col-score { width: 5rem; }
+  .muted { color: #666; }
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+<div class="meta">Generated {{ generated_at }}</div>
+<input id="globalSearch" placeholder="Search all fields..."/>
+<div class="table-wrap">
+  <table id="tbl">
+    <thead id="thead"></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+<script>
+const rows = {{ rows_json|safe }};
+const columns = [
+  ["rule_name", "Rule", "col-rule"],
+  ["regex", "Regex", "col-regex"],
+  ["match_text", "Matched text", "col-matched"],
+  ["score", "Score", "col-score"],
+  ["url", "URL", ""],
+  ["source_file", "Source file", ""],
+];
+
+const state = {
+  sortKey: "score",
+  sortDir: "desc",
+  globalSearch: "",
+  colFilters: Object.fromEntries(columns.map(([k]) => [k, ""]))
+};
+
+function esc(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function getCellValue(row, key) {
+  const value = row && row[key] != null ? row[key] : "";
+  return typeof value === "number" ? value : String(value);
+}
+
+function filteredRows() {
+  const q = state.globalSearch.trim().toLowerCase();
+  return rows.filter((row) => {
+    if (q) {
+      const hit = columns.some(([key]) => String(getCellValue(row, key)).toLowerCase().includes(q));
+      if (!hit) return false;
+    }
+    for (const [key, needle] of Object.entries(state.colFilters)) {
+      const n = String(needle || "").trim().toLowerCase();
+      if (!n) continue;
+      if (!String(getCellValue(row, key)).toLowerCase().includes(n)) return false;
+    }
+    return true;
+  });
+}
+
+function sortedRows() {
+  const out = filteredRows().slice();
+  out.sort((a, b) => {
+    const av = getCellValue(a, state.sortKey);
+    const bv = getCellValue(b, state.sortKey);
+    const dir = state.sortDir === "asc" ? 1 : -1;
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * dir;
+  });
+  return out;
+}
+
+function render() {
+  const thead = document.getElementById("thead");
+  const tbody = document.getElementById("tbody");
+
+  thead.innerHTML = "";
+  const hr = document.createElement("tr");
+  columns.forEach(([key, label]) => {
+    const th = document.createElement("th");
+    th.textContent = label + (state.sortKey === key ? (state.sortDir === "asc" ? " ▲" : " ▼") : "");
+    th.onclick = () => {
+      if (state.sortKey === key) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      else { state.sortKey = key; state.sortDir = key === "score" ? "desc" : "asc"; }
+      render();
+    };
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr);
+
+  const fr = document.createElement("tr");
+  fr.className = "filters";
+  columns.forEach(([key]) => {
+    const th = document.createElement("th");
+    const input = document.createElement("input");
+    input.value = state.colFilters[key] || "";
+    input.oninput = () => { state.colFilters[key] = input.value; render(); };
+    th.appendChild(input);
+    fr.appendChild(th);
+  });
+  thead.appendChild(fr);
+
+  const data = sortedRows();
+  tbody.innerHTML = data.map((row) => {
+    return "<tr>" + columns.map(([key, _, cls]) => {
+      const value = getCellValue(row, key);
+      const extra = cls ? ` class="${cls}${typeof value === "number" ? " num" : ""}"` : (typeof value === "number" ? ' class="num"' : "");
+      return `<td${extra}>${esc(value)}</td>`;
+    }).join("") + "</tr>";
+  }).join("");
+}
+
+document.getElementById("globalSearch").addEventListener("input", (e) => {
+  state.globalSearch = e.target.value || "";
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
