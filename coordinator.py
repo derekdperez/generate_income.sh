@@ -26,7 +26,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from http_client import request_json
@@ -532,7 +532,7 @@ class DistributedCoordinator:
             return 0
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Distributed coordinator worker for Nightmare/Fozzy/Extractor")
     p.add_argument("--config", default=str(CONFIG_PATH_DEFAULT), help="Path to coordinator config JSON")
     p.add_argument("--server-base-url", default=None, help="Coordinator server base URL (e.g. https://coord.example.com)")
@@ -542,7 +542,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str] ] = None) -> int:
     configure_logging()
     logger = get_logger("coordinator")
     args = parse_args(argv)

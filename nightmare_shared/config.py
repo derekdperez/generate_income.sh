@@ -7,7 +7,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -76,7 +76,7 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def resolve_config_path(base_dir: Path, raw_path: str | None, default_name: str) -> Path:
+def resolve_config_path(base_dir: Path, raw_path: Optional[str], default_name: str) -> Path:
     value = str(raw_path or "").strip() or default_name
     path = Path(value).expanduser()
     if path.is_absolute():
@@ -100,8 +100,8 @@ class ServerSettings(BaseModel):
     output_root: Path = Path("output")
     http_port: int = 80
     https_port: int = 443
-    cert_file: Path | None = None
-    key_file: Path | None = None
+    cert_file: Optional[Path] = None
+    key_file: Optional[Path] = None
     database_url: str = ""
     coordinator_api_token: str = ""
     master_report_regen_token: str = ""

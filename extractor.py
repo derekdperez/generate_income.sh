@@ -39,7 +39,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html as render_js_extractor_report_html
-from typing import Any
+from typing import Any, Optional
 
 # Repo root (directory containing this file)
 EXTRACTOR_BASE = Path(__file__).resolve().parent
@@ -372,8 +372,8 @@ def rebuild_javascript_extractor_summary_for_domain(
     domain_label: str,
     domain_output: Path,
     *,
-    progress_every: int | None = TRIM_REBUILD_PROGRESS_EVERY,
-) -> Path | None:
+    progress_every: Optional[int] = TRIM_REBUILD_PROGRESS_EVERY,
+) -> Optional[Path]:
     """Rebuild ``collected_data/javascript_extractor/summary.json`` from ``matches/m_*.json``."""
     js_root = javascript_extractor_root(domain_output)
     matches_dir = js_root / "matches"
@@ -479,7 +479,7 @@ def build_javascript_extractor_matches_report_html(domain_label: str, rows: list
     return render_js_extractor_report_html(domain_label, rows)
 
 
-def write_javascript_extractor_matches_report_html(domain_label: str, domain_output: Path) -> Path | None:
+def write_javascript_extractor_matches_report_html(domain_label: str, domain_output: Path) -> Optional[Path]:
     """Write ``collected_data/javascript_extractor/matches_report.html`` for interactive review."""
     js_root = javascript_extractor_root(domain_output)
     ensure_directory(js_root)
@@ -544,7 +544,7 @@ def run_javascript_extractor_for_domain(
     wordlist_path: Path,
     wordlist_fp: str,
     force: bool,
-) -> tuple[int, Path | None]:
+) -> Optional[tuple[int, Path]]:
     """Incremental regex pass over ``collected_data/scripts``; outputs under ``collected_data/javascript_extractor``."""
     scripts_root = collected_scripts_root(domain_output)
     if not scripts_root.is_dir():
@@ -793,7 +793,7 @@ def _merge_trim_stats_counts(merged: dict[str, int], data: dict[str, Any]) -> bo
 def _trim_domain_pairs(
     scan_root: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
 ) -> list[tuple[str, Path]]:
     domain_filter_text = str(domain_filter or "").strip().lower()
     pairs: list[tuple[str, Path]] = []
@@ -829,7 +829,7 @@ def _matches_dir_has_any_m_json(matches_dir: Path) -> bool:
 def _collect_extractor_match_json_paths_for_domain(
     domain_output: Path,
     *,
-    label: str | None = None,
+    label: Optional[str] = None,
 ) -> list[Path]:
     md = domain_output / "extractor" / "matches"
     out: list[Path] = []
@@ -858,7 +858,7 @@ def _merge_rule_counts(target: dict[str, int], part: dict[str, int]) -> None:
 def aggregate_rule_match_counts_hybrid(
     scan_root: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 8,
     force_disk_scan: bool = False,
 ) -> tuple[dict[str, int], list[tuple[str, Path]]]:
@@ -976,7 +976,7 @@ def aggregate_rule_match_counts_hybrid(
 def _collect_extractor_match_json_paths(
     scan_root: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     label: str = "Listing match files",
 ) -> list[Path]:
     out: list[Path] = []
@@ -1005,7 +1005,7 @@ def _collect_extractor_match_json_paths(
     return out
 
 
-def _read_match_detail(path: Path) -> dict[str, Any] | None:
+def _read_match_detail(path: Path) -> Optional[dict[str, Any] ]:
     try:
         raw = path.read_text(encoding="utf-8-sig")
         data = json.loads(raw)
@@ -1029,7 +1029,7 @@ def _count_rules_in_chunk(paths: list[Path]) -> dict[str, int]:
 def aggregate_rule_match_counts_from_disk(
     scan_root: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 8,
 ) -> dict[str, int]:
     """Count extractor match files per ``filter_name`` (rule name) under ``scan_root``."""
@@ -1077,7 +1077,7 @@ def delete_extractor_matches_for_rules(
     scan_root: Path,
     rule_names: set[str],
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 8,
 ) -> int:
     """Remove on-disk ``m_*.json`` match records whose ``filter_name`` is in ``rule_names``."""
@@ -1217,8 +1217,8 @@ def rebuild_extractor_summary_for_domain(
     domain_label: str,
     domain_output: Path,
     *,
-    progress_every: int | None = TRIM_REBUILD_PROGRESS_EVERY,
-) -> Path | None:
+    progress_every: Optional[int] = TRIM_REBUILD_PROGRESS_EVERY,
+) -> Optional[Path]:
     """Rebuild ``extractor/summary.json`` from remaining ``extractor/matches/m_*.json`` files."""
     extractor_root = domain_output / "extractor"
     matches_dir = extractor_root / "matches"
@@ -1260,7 +1260,7 @@ def rebuild_extractor_summary_for_domain(
 def run_rebuild_trim_stats(
     scan_root: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 8,
 ) -> int:
     """Create ``extractor/trim_stats.json`` per domain so ``--trim`` never loads huge ``summary.json``."""
@@ -1334,7 +1334,7 @@ def run_rebuild_trim_stats(
     return 0
 
 
-def rebuild_all_extractor_summaries_after_trim(scan_root: Path, *, domain_filter: str | None = None) -> int:
+def rebuild_all_extractor_summaries_after_trim(scan_root: Path, *, domain_filter: Optional[str] = None) -> int:
     domain_filter_text = str(domain_filter or "").strip().lower()
     to_rebuild: list[tuple[str, Path]] = []
     for domain_label, domain_output in discover_pairs(scan_root):
@@ -1443,7 +1443,7 @@ def apply_trim_effects(
     scan_root: Path,
     remove_names: set[str],
     *,
-    domain_filter: str | None,
+    domain_filter: Optional[str],
     workers: int,
     trim_disk_scan: bool,
     slow_pairs: list[tuple[str, Path]],
@@ -1490,9 +1490,9 @@ def run_trim_mode(
     scan_root: Path,
     wordlist_path: Path,
     *,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 8,
-    trim_remove: str | None = None,
+    trim_remove: Optional[str] = None,
     trim_yes: bool = False,
     no_backup: bool = False,
     trim_disk_scan: bool = False,
@@ -1717,9 +1717,9 @@ def run_extractor_scan(
     wordlist_path: Path,
     *,
     force: bool = False,
-    domain_filter: str | None = None,
+    domain_filter: Optional[str] = None,
     workers: int = 1,
-    javascript_wordlist_path: Path | None = None,
+    javascript_wordlist_path: Optional[Path] = None,
     skip_javascript_extractor: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -1968,7 +1968,7 @@ def run_extractor_scan(
     return 0
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Regex extractor over Fozzy result JSON (incremental by domain).")
     p.add_argument(
         "domain",
@@ -2076,7 +2076,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str] ] = None) -> int:
     args = parse_args(argv)
     config_path = resolve_config_path(str(args.config))
     file_config = read_json_file(config_path)

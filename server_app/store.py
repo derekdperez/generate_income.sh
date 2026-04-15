@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 try:
     import psycopg
@@ -153,7 +153,7 @@ SET line_number = EXCLUDED.line_number,
         inserted = len(rows)
         return {"inserted": inserted, "skipped": skipped}
 
-    def claim_target(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+    def claim_target(self, worker_id: str, lease_seconds: int) -> Optional[dict[str, Any] ]:
         worker = str(worker_id or "").strip()
         if not worker:
             raise ValueError("worker_id is required")
@@ -241,7 +241,7 @@ WHERE entry_id = %s
             conn.commit()
         return updated > 0
 
-    def load_session(self, root_domain: str) -> dict[str, Any] | None:
+    def load_session(self, root_domain: str) -> Optional[dict[str, Any] ]:
         sql = """
 SELECT root_domain, start_url, max_pages, saved_at_utc, payload
 FROM coordinator_sessions
@@ -272,7 +272,7 @@ WHERE root_domain = %s;
         start_url: str,
         max_pages: int,
         payload: dict[str, Any],
-        saved_at_utc: str | None = None,
+        saved_at_utc: Optional[str] = None,
     ) -> bool:
         rd = str(root_domain or "").strip().lower()
         if not rd:
@@ -453,8 +453,8 @@ ORDER BY worker_id ASC;
             active_stages_raw = row[6] if isinstance(row[6], list) else []
             active_stages = [str(item) for item in active_stages_raw if str(item or "").strip()]
 
-            seconds_since: int | None = None
-            last_heartbeat_iso: str | None = None
+            seconds_since: Optional[int] = None
+            last_heartbeat_iso: Optional[str] = None
             if last_heartbeat is not None:
                 last_heartbeat_iso = last_heartbeat.isoformat()
                 delta_seconds = (now_utc - last_heartbeat).total_seconds()
@@ -546,8 +546,8 @@ ORDER BY worker_id ASC;
             if not worker_id:
                 continue
             last_heartbeat = row[1]
-            seconds_since: int | None = None
-            last_heartbeat_iso: str | None = None
+            seconds_since: Optional[int] = None
+            last_heartbeat_iso: Optional[str] = None
             if last_heartbeat is not None:
                 last_heartbeat_iso = last_heartbeat.isoformat()
                 seconds_since = max(0, int((now_utc - last_heartbeat).total_seconds()))
@@ -580,7 +580,7 @@ ORDER BY worker_id ASC;
             "workers": workers,
         }
 
-    def queue_worker_command(self, worker_id: str, command: str, payload: dict[str, Any] | None = None) -> bool:
+    def queue_worker_command(self, worker_id: str, command: str, payload: Optional[dict[str, Any] ] = None) -> bool:
         wid = str(worker_id or "").strip()
         cmd = str(command or "").strip().lower()
         if not wid or not cmd:
@@ -624,7 +624,7 @@ SET status = CASE
             conn.commit()
         return True
 
-    def claim_stage(self, stage: str, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+    def claim_stage(self, stage: str, worker_id: str, lease_seconds: int) -> Optional[dict[str, Any] ]:
         stg = str(stage or "").strip().lower()
         wid = str(worker_id or "").strip()
         if not stg or not wid:
@@ -779,7 +779,7 @@ SET source_worker = EXCLUDED.source_worker,
             conn.commit()
         return True
 
-    def get_artifact(self, root_domain: str, artifact_type: str) -> dict[str, Any] | None:
+    def get_artifact(self, root_domain: str, artifact_type: str) -> Optional[dict[str, Any] ]:
         rd = str(root_domain or "").strip().lower()
         at = str(artifact_type or "").strip().lower()
         if not rd or not at:

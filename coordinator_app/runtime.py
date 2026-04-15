@@ -13,7 +13,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from http_client import request_json
@@ -36,7 +36,7 @@ class CoordinatorClient:
             out["Authorization"] = f"Bearer {self.token}"
         return out
 
-    def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(self, method: str, path: str, payload: Optional[dict[str, Any] ] = None) -> dict[str, Any]:
         headers = self._headers()
         url = f"{self.base_url}{path}"
         return request_json(
@@ -49,7 +49,7 @@ class CoordinatorClient:
             verify=self.verify_ssl,
         )
 
-    def claim_target(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+    def claim_target(self, worker_id: str, lease_seconds: int) -> Optional[dict[str, Any] ]:
         rsp = self._request_json(
             "POST",
             "/api/coord/claim",
@@ -81,7 +81,7 @@ class CoordinatorClient:
         )
         return bool(rsp.get("ok"))
 
-    def claim_stage(self, worker_id: str, stage: str, lease_seconds: int) -> dict[str, Any] | None:
+    def claim_stage(self, worker_id: str, stage: str, lease_seconds: int) -> Optional[dict[str, Any] ]:
         rsp = self._request_json(
             "POST",
             "/api/coord/stage/claim",
@@ -116,7 +116,7 @@ class CoordinatorClient:
         )
         return bool(rsp.get("ok"))
 
-    def load_session(self, root_domain: str) -> dict[str, Any] | None:
+    def load_session(self, root_domain: str) -> Optional[dict[str, Any] ]:
         query = urlencode({"root_domain": root_domain})
         rsp = self._request_json("GET", f"/api/coord/session?{query}")
         if not bool(rsp.get("found")):
@@ -150,7 +150,7 @@ class CoordinatorClient:
         )
         return bool(rsp.get("ok"))
 
-    def download_artifact(self, root_domain: str, artifact_type: str) -> dict[str, Any] | None:
+    def download_artifact(self, root_domain: str, artifact_type: str) -> Optional[dict[str, Any] ]:
         query = urlencode({"root_domain": root_domain, "artifact_type": artifact_type})
         rsp = self._request_json("GET", f"/api/coord/artifact?{query}")
         if not bool(rsp.get("found")):

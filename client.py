@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from http_client import request_json
@@ -43,7 +43,7 @@ def _http_get_json(
     base_url: str,
     path: str,
     token: str = "",
-    query: dict[str, Any] | None = None,
+    query: Optional[dict[str, Any] ] = None,
     *,
     insecure_tls: bool = False,
 ) -> dict[str, Any]:
@@ -354,7 +354,7 @@ def _run_ssm_rollout(
     return 0 if all_ok else 1
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
     env_from_file = _read_env_file(BASE_DIR / "deploy" / ".env")
     p = argparse.ArgumentParser(description="Central operator client for worker and VM status checks")
     p.add_argument("action", nargs="?", default="status", choices=["status", "rollout"], help="Action to run")
@@ -377,7 +377,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str] ] = None) -> int:
     configure_logging()
     load_env_file_into_os(BASE_DIR / "deploy" / ".env", override=False)
     logger = get_logger("client")

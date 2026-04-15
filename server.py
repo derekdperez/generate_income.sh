@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 try:
@@ -79,7 +79,7 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _resolve_config_path(raw_path: str | None) -> Path:
+def _resolve_config_path(raw_path: Optional[str]) -> Path:
     value = str(raw_path or "").strip() or "server.json"
     p = Path(value).expanduser()
     if p.is_absolute():
@@ -110,7 +110,7 @@ def _merged_value(cli_value: Any, cfg: dict[str, Any], key: str, default: Any) -
     return default
 
 
-def _find_all_domains_report_html(output_root: Path) -> Path | None:
+def _find_all_domains_report_html(output_root: Path) -> Optional[Path]:
     candidate = output_root / "all_domains.results_summary.html"
     if candidate.is_file():
         return candidate
@@ -185,14 +185,14 @@ def _collect_master_reports(output_root: Path) -> list[dict[str, Any]]:
     return reports
 
 
-def _to_repo_relative_path(path: Path) -> str | None:
+def _to_repo_relative_path(path: Path) -> Optional[str]:
     try:
         return path.resolve().relative_to(BASE_DIR.resolve()).as_posix()
     except ValueError:
         return None
 
 
-def _discover_fozzy_summary_for_domain(domain_dir: Path, domain: str) -> Path | None:
+def _discover_fozzy_summary_for_domain(domain_dir: Path, domain: str) -> Optional[Path]:
     direct = domain_dir / "fozzy-output" / domain / f"{domain}.fozzy.summary.json"
     if direct.is_file():
         return direct
@@ -202,7 +202,7 @@ def _discover_fozzy_summary_for_domain(domain_dir: Path, domain: str) -> Path | 
     return None
 
 
-def _discover_fozzy_results_html_for_domain(domain_dir: Path, domain: str) -> Path | None:
+def _discover_fozzy_results_html_for_domain(domain_dir: Path, domain: str) -> Optional[Path]:
     direct = domain_dir / "fozzy-output" / domain / "results" / f"{domain}.results_summary.html"
     if direct.is_file():
         return direct
@@ -212,7 +212,7 @@ def _discover_fozzy_results_html_for_domain(domain_dir: Path, domain: str) -> Pa
     return None
 
 
-def _discover_nightmare_report_html(domain_dir: Path) -> Path | None:
+def _discover_nightmare_report_html(domain_dir: Path) -> Optional[Path]:
     report = domain_dir / "report.html"
     return report if report.is_file() else None
 
@@ -353,7 +353,7 @@ def collect_dashboard_data(output_root: Path) -> dict[str, Any]:
 
 
 
-def _normalize_and_validate_relative_path(root: Path, raw_relative: str) -> Path | None:
+def _normalize_and_validate_relative_path(root: Path, raw_relative: str) -> Optional[Path]:
     cleaned = str(raw_relative or "").strip().replace("\\", "/")
     cleaned = cleaned.lstrip("/")
     candidate = (root / cleaned).resolve()
@@ -376,7 +376,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self.server.output_root  # type: ignore[attr-defined]
 
     @property
-    def coordinator_store(self) -> CoordinatorStore | None:
+    def coordinator_store(self) -> Optional[CoordinatorStore]:
         return getattr(self.server, "coordinator_store", None)  # type: ignore[attr-defined]
 
     @property
@@ -947,7 +947,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _is_safe_worker_id(self, worker_id: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9._-]{1,80}", str(worker_id or "").strip()))
 
-    def _resolve_worker_config_path(self, worker_id: str) -> Path | None:
+    def _resolve_worker_config_path(self, worker_id: str) -> Optional[Path]:
         wid = str(worker_id or "").strip()
         if not self._is_safe_worker_id(wid):
             return None
@@ -960,7 +960,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return candidate.resolve()
         return candidates[0].resolve()
 
-    def _resolve_worker_config_rel(self, worker_id: str) -> str | None:
+    def _resolve_worker_config_rel(self, worker_id: str) -> Optional[str]:
         path = self._resolve_worker_config_path(worker_id)
         return _to_repo_relative_path(path) if path is not None else None
 
@@ -998,7 +998,7 @@ def _render_workers_html(self) -> str:
     return render_workers_html()
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Nightmare/Fozzy report web dashboard server.")
     p.add_argument(
         "--config",
@@ -1041,7 +1041,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str] ] = None) -> int:
     configure_logging()
     load_env_file_into_os(BASE_DIR / "deploy" / ".env", override=False)
     logger = get_logger("server")
@@ -1112,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2), flush=True)
         return 0
 
-    coordinator_store: CoordinatorStore | None = None
+    coordinator_store: Optional[CoordinatorStore] = None
     if database_url:
         coordinator_store = CoordinatorStore(database_url)
 

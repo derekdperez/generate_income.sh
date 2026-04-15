@@ -6,12 +6,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 import structlog
 
 
-def configure_logging(level: str | None = None) -> None:
+def configure_logging(level: Optional[str] = None) -> None:
     resolved_level = str(level or os.getenv("NIGHTMARE_LOG_LEVEL", "INFO")).upper()
     logging.basicConfig(
         format="%(message)s",
