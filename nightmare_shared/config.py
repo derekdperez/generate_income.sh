@@ -129,6 +129,7 @@ class ServerSettings(BaseModel):
 class CoordinatorSettings(BaseModel):
     server_base_url: str
     api_token: str = ""
+    insecure_tls: bool = False
     output_root: Path = Path("output")
     heartbeat_interval_seconds: float = 20.0
     lease_seconds: int = 180

@@ -72,6 +72,7 @@ services:
       APP_ROLE: coordinator
       COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
       COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
     volumes:
       - ../output:/app/output
       - ../config:/app/config
@@ -98,6 +99,7 @@ services:
       APP_ROLE: coordinator
       COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
       COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
     volumes:
       - ../output:/app/output
       - ../config:/app/config
@@ -124,6 +126,7 @@ services:
       APP_ROLE: coordinator
       COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
       COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
     volumes:
       - ../output:/app/output
       - ../config:/app/config
@@ -150,6 +153,7 @@ services:
       APP_ROLE: coordinator
       COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
       COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
     volumes:
       - ../output:/app/output
       - ../config:/app/config

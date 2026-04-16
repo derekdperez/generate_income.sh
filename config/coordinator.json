@@ -1,4 +1,5 @@
 {
+  "insecure_tls": false,
   "output_root": "output",
   "lease_seconds": 180,
   "heartbeat_interval_seconds": 20.0,

@@ -91,8 +91,8 @@ def _now_iso() -> str:
 class DistributedCoordinator:
     def __init__(self, cfg: CoordinatorConfig):
         self.cfg = cfg
-        # Disable SSL verification for localhost (self-signed cert in development)
-        verify_ssl = not cfg.server_base_url.startswith("https://localhost")
+        # Allow opt-out for local/self-signed coordinator deployments.
+        verify_ssl = not bool(cfg.insecure_tls)
         self.client = CoordinatorClient(cfg.server_base_url, cfg.api_token, verify_ssl=verify_ssl)
         host = socket.gethostname().strip() or "worker"
         self.worker_prefix = f"{host}-{uuid.uuid4().hex[:8]}"

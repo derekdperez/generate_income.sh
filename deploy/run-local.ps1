@@ -119,6 +119,7 @@ COORDINATOR_API_TOKEN=$CoordinatorApiToken
 TLS_CERT_FILE=$CertFile
 TLS_KEY_FILE=$KeyFile
 COORDINATOR_BASE_URL=https://server:443
+COORDINATOR_INSECURE_TLS=true
 "@
 
 [System.IO.File]::WriteAllText($EnvFile, $envContent, [System.Text.UTF8Encoding]::new($false))

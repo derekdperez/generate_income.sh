@@ -30,6 +30,7 @@ OUTPUT_ROOT_DEFAULT = BASE_DIR / "output"
 class CoordinatorConfig:
     server_base_url: str
     api_token: str
+    insecure_tls: bool
     output_root: Path
     heartbeat_interval_seconds: float
     lease_seconds: int
@@ -315,6 +316,7 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
         {
             "server_base_url": merged_value(args.server_base_url, cfg, "server_base_url", os.getenv("COORDINATOR_BASE_URL", "")),
             "api_token": merged_value(args.api_token, cfg, "api_token", os.getenv("COORDINATOR_API_TOKEN", "")),
+            "insecure_tls": merged_value(None, cfg, "insecure_tls", os.getenv("COORDINATOR_INSECURE_TLS", False)),
             "output_root": merged_value(args.output_root, cfg, "output_root", str(OUTPUT_ROOT_DEFAULT)),
             "heartbeat_interval_seconds": cfg.get("heartbeat_interval_seconds", 20.0),
             "lease_seconds": cfg.get("lease_seconds", 180),
@@ -340,6 +342,7 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
     return CoordinatorConfig(
         server_base_url=settings.server_base_url,
         api_token=settings.api_token,
+        insecure_tls=settings.insecure_tls,
         output_root=output_root,
         heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
         lease_seconds=settings.lease_seconds,

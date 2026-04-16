@@ -22,6 +22,11 @@ def test_coordinator_settings_validation():
     assert settings.lease_seconds == 30
 
 
+def test_coordinator_settings_insecure_tls_parses_string():
+    settings = CoordinatorSettings.model_validate({"server_base_url": "coord.example.com", "insecure_tls": "true"})
+    assert settings.insecure_tls is True
+
+
 def test_client_settings_validation():
     settings = ClientSettings.model_validate({"server_base_url": "coord.example.com", "api_token": " abc "})
     assert settings.server_base_url == "https://coord.example.com"
