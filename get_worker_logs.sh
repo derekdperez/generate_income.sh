@@ -1,0 +1,1 @@
+aws ec2 get-console-output --instance-id i-0a106f97947c75fba --latest --output text

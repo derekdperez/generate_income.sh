@@ -1,0 +1,1 @@
+sudo docker-compose -f docker-compose.central.yml exec postgres psql -U nightmare -d nightmare
