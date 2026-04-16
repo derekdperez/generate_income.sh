@@ -38,3 +38,9 @@
 - Internet-facing central server boundary:
   - Exposed 80/443 listeners will receive continuous opportunistic scanner traffic (random PHP probes, malformed protocol bytes, aborted sockets).
   - These events should be handled as transport noise unless they affect coordinator API health; request-handler disconnect exceptions should be absorbed without noisy traceback output.
+- Server/store boundary:
+  - `server.py` should own HTTP routing/response behavior only.
+  - Postgres coordinator data access now lives in `server_app/store.py` (`CoordinatorStore`) and is imported by `server.py`.
+  - Coordinator store schema/queries and database introspection (`database_status`) should stay in `server_app/store.py` so future API/UI work can evolve without re-growing server-side god classes.
+- Server/UI rendering boundary:
+  - Route handlers in `server.py` should delegate dashboard/worker page markup to `reporting/server_pages.py` (template-backed) instead of embedding long inline HTML methods.

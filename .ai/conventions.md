@@ -79,3 +79,9 @@
 - Pytest execution convention: keep `tests/conftest.py` repo-root path bootstrap so both `pytest` and `python -m pytest` work without manual `PYTHONPATH` setup.
 - Public listener logging convention: in `server.py`, treat client disconnect/abort and malformed TLS-on-HTTP scanner traffic as expected operational noise; suppress traceback-level logs for known disconnect exception classes while preserving real application errors.
 - Compose file convention: omit top-level `version` keys in Compose YAML (modern Compose spec) to avoid obsolete/deprecation warnings in Docker Compose v2.
+- Modularity convention for coordinator server:
+  - Do not define `CoordinatorStore` in `server.py`.
+  - Keep database schema/query logic in `server_app/store.py`; `server.py` should import and call it.
+  - When adding coordinator DB endpoints, extend `server_app/store.py` first, then wire routes in `server.py`.
+- Dashboard/worker page convention:
+  - Keep dashboard and worker-control HTML in `templates/*.j2` rendered through `reporting/server_pages.py`; avoid reintroducing large inline HTML render methods in `server.py`.

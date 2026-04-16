@@ -336,3 +336,12 @@
   - Removed obsolete Compose `version` key from `deploy/docker-compose.central.yml` and `deploy/docker-compose.worker.yml` to remove deprecation warning noise.
   - Added unit tests for disconnect classification helper.
 - Why: AWS-exposed central nodes were producing noisy traceback logs (`BrokenPipeError`) from malformed/scanner traffic despite healthy service behavior.
+
+## 2026-04-16
+
+- Refactored `server.py` to remove embedded coordinator data-access implementation (`CoordinatorStore`) and import it from `server_app/store.py`.
+  - Added `CoordinatorStore.database_status()` to `server_app/store.py` so the `/api/coord/database-status` API remains functional after extraction.
+  - Removed duplicate target-normalization/store helpers from `server.py` that only existed to support the in-file store class.
+  - Switched dashboard/worker page rendering to template helpers in `reporting/server_pages.py` and removed large inline page-render methods from `server.py`.
+  - Added regression coverage in `tests/test_module_decomposition.py` to assert `server.py` uses external store module and no longer defines `class CoordinatorStore`.
+- Why: `server.py` had become a large mixed-responsibility file; this extraction enforces module boundaries and reduces maintenance risk for future decomposition work.

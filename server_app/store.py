@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import base64
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -19,6 +20,35 @@ DEFAULT_COORDINATOR_LEASE_SECONDS = 120
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _json_safe_db_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        return {
+            "_type": "bytes",
+            "size": len(raw),
+            "base64": base64.b64encode(raw).decode("ascii"),
+        }
+    if isinstance(value, dict):
+        return {str(k): _json_safe_db_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_db_value(v) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
 
 
 def _get_root_domain(hostname: str) -> str:
@@ -405,6 +435,69 @@ RETURNING output_clear_generation, updated_at_utc;
         return {
             "output_clear_generation": int(gen or 0),
             "updated_at_utc": updated.isoformat() if updated else None,
+        }
+
+    def database_status(self) -> dict[str, Any]:
+        tables_sql = """
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+ORDER BY table_schema, table_name;
+"""
+        columns_sql = """
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = %s AND table_name = %s
+ORDER BY ordinal_position;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_database(), current_user, version(), NOW();")
+                db_row = cur.fetchone()
+                cur.execute(tables_sql)
+                table_rows = cur.fetchall()
+                tables: list[dict[str, Any]] = []
+                for schema_name, table_name in table_rows:
+                    safe_ident = f'"{str(schema_name).replace('"', '""')}"."{str(table_name).replace('"', '""')}"'
+                    cur.execute(columns_sql, (schema_name, table_name))
+                    column_rows = cur.fetchall()
+                    columns = [
+                        {
+                            "name": col_name,
+                            "data_type": data_type,
+                            "nullable": str(is_nullable).upper() == "YES",
+                        }
+                        for col_name, data_type, is_nullable in column_rows
+                    ]
+                    cur.execute(f"SELECT * FROM {safe_ident};")
+                    rows = cur.fetchall()
+                    colnames = [desc[0] for desc in cur.description]
+                    serialized_rows: list[dict[str, Any]] = []
+                    for row in rows:
+                        serialized_rows.append({
+                            colnames[idx]: _json_safe_db_value(value)
+                            for idx, value in enumerate(row)
+                        })
+                    tables.append(
+                        {
+                            "schema": schema_name,
+                            "name": table_name,
+                            "row_count": len(serialized_rows),
+                            "columns": columns,
+                            "rows": serialized_rows,
+                        }
+                    )
+            conn.commit()
+        return {
+            "database": {
+                "name": db_row[0],
+                "current_user": db_row[1],
+                "version": db_row[2],
+                "server_time_utc": _json_safe_db_value(db_row[3]),
+            },
+            "table_count": len(tables),
+            "tables": tables,
+            "generated_at_utc": _iso_now(),
         }
 
     def status_summary(self) -> dict[str, Any]:
