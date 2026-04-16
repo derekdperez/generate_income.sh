@@ -12,6 +12,44 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+
+
+def _get_root_domain(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+    parts = [p for p in host.split(".") if p]
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return host
+
+
+def _normalize_target_url(raw: str) -> tuple[str, str]:
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("empty target")
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"}:
+        text = f"https://{text.lstrip('/')}"
+        parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("target must be a valid http/https URL or hostname")
+    root_domain = _get_root_domain(parsed.hostname)
+    if not root_domain:
+        raise ValueError("could not derive root domain")
+    normalized_path = parsed.path or "/"
+    normalized = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=normalized_path,
+        fragment="",
+    )
+    return normalized.geturl(), root_domain
+
+
+def _make_target_entry_id(line_no: int, raw: str) -> str:
+    return hashlib.sha1(f"{line_no}:{raw}".encode("utf-8")).hexdigest()[:16]
 
 try:
     import psycopg
