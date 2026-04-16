@@ -29,3 +29,12 @@
 - Coordinator runtime boundary:
   - `coordinator_app/runtime.py` must own all runtime config-model symbols returned by `load_config()` (currently `CoordinatorConfig`) plus helper functions referenced by runtime threads (`_read_json_dict`, `_now_iso`).
   - Keeping these symbols in `coordinator.py` can break worker startup when `coordinator.py` is executed as `__main__`, because runtime module globals cannot resolve classes only defined in another module's script scope.
+- Local deployment trust boundary:
+  - Central server is exposed over HTTPS with a self-signed cert in `deploy/run-local*` flows.
+  - Coordinator workers need explicit TLS verification override (`COORDINATOR_INSECURE_TLS=true`) for this local mode; do not rely on hostname heuristics alone.
+- Test architecture boundary:
+  - Unit tests should validate coordinator/runtime/queue behavior through pure helpers, temp-file state, and mocked HTTP/AWS calls rather than requiring containerized infrastructure.
+  - This keeps regressions detectable in sub-10s local runs and avoids flaky integration-coupled failures for routine refactors.
+- Internet-facing central server boundary:
+  - Exposed 80/443 listeners will receive continuous opportunistic scanner traffic (random PHP probes, malformed protocol bytes, aborted sockets).
+  - These events should be handled as transport noise unless they affect coordinator API health; request-handler disconnect exceptions should be absorbed without noisy traceback output.

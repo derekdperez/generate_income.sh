@@ -312,3 +312,27 @@
 - Fixed local deploy auth mismatch caused by regenerated secrets with persisted Docker volumes.
   - Updated `deploy/run-local.ps1` and `deploy/run-local.sh` to reuse existing `POSTGRES_PASSWORD` and `COORDINATOR_API_TOKEN` from `deploy/.env` when present.
 - Why: repeated local runs were regenerating DB credentials while keeping `postgres_data`, causing server startup failure (`password authentication failed`) and downstream worker `connection refused` loops.
+
+- Fixed local worker TLS failure against self-signed coordinator cert (`CERTIFICATE_VERIFY_FAILED`).
+  - Added coordinator `insecure_tls` setting to runtime config model and loader (`COORDINATOR_INSECURE_TLS` env-supported).
+  - Updated local/worker compose env wiring and local bootstrap scripts so local runs set `COORDINATOR_INSECURE_TLS=true`.
+  - Kept `config/coordinator.json` free of hardcoded `insecure_tls` so deployment-specific env values can control TLS behavior.
+- Why: local Docker workers connect to `https://server:443` with a self-signed certificate; strict verify caused perpetual claim failures while server itself was healthy.
+
+- Expanded project-wide unit test coverage with deterministic, fast tests and no external service dependencies.
+  - Added `tests/conftest.py` to ensure repo-root imports work under both `pytest` and `python -m pytest`.
+  - Added new unit test modules for:
+    - shared config utilities and model validation,
+    - HTTP client behavior (success, HTTP errors, network failures, capped reads),
+    - coordinator runtime helpers (`SessionUploader`, zip/unzip safety, subprocess logging, config loading),
+    - HTTP request queue lifecycle (enqueue/claim/retry/dead-letter/success),
+    - pack/unpack archive utilities,
+    - operator/client + queue CLI helpers + target registration helpers,
+    - report rendering and pure helper functions in `server_app/store.py`.
+- Why: raise confidence for refactors and runtime bug fixes while keeping CI/local test runs short and infrastructure-independent.
+
+- Hardened central server runtime against public internet scanner disconnect noise.
+  - Added `_is_client_disconnect_error(...)` and handler-level suppression for common connection-abort/TLS disconnect exceptions in `server.py` so expected scanner aborts no longer emit full stack traces.
+  - Removed obsolete Compose `version` key from `deploy/docker-compose.central.yml` and `deploy/docker-compose.worker.yml` to remove deprecation warning noise.
+  - Added unit tests for disconnect classification helper.
+- Why: AWS-exposed central nodes were producing noisy traceback logs (`BrokenPipeError`) from malformed/scanner traffic despite healthy service behavior.

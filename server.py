@@ -1270,6 +1270,24 @@ def _normalize_and_validate_relative_path(root: Path, raw_relative: str) -> Path
     return candidate
 
 
+def _is_client_disconnect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+        return True
+    if isinstance(exc, OSError):
+        errno_value = getattr(exc, "errno", None)
+        if errno_value in {32, 54, 104, 110}:
+            return True
+    if isinstance(exc, ssl.SSLError):
+        msg = str(exc).lower()
+        if "eof occurred in violation of protocol" in msg:
+            return True
+        if "wrong version number" in msg:
+            return True
+        if "tlsv1 alert" in msg:
+            return True
+    return False
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "NightmareServer/1.0"
 
@@ -1296,6 +1314,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         # Keep server output concise.
         sys.stdout.write("[server] " + format % args + "\n")
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except Exception as exc:
+            # Public HTTP(S) listeners receive frequent scanner/disconnect traffic;
+            # avoid noisy tracebacks for expected connection aborts.
+            if _is_client_disconnect_error(exc):
+                return
+            raise
 
     def _write_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
