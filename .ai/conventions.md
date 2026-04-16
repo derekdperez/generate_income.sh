@@ -85,6 +85,7 @@
   - When adding coordinator DB endpoints, extend `server_app/store.py` first, then wire routes in `server.py`.
 - Dashboard/worker page convention:
   - Keep dashboard and worker-control HTML in `templates/*.j2` rendered through `reporting/server_pages.py`; avoid reintroducing large inline HTML render methods in `server.py`.
+  - Preserve cross-page operational navigation links (`/dashboard`, `/workers`, `/database`) in template headers/meta bars during UI refactors.
 - AWS distributed bootstrap convention:
   - When central TLS is generated via `bootstrap-central-auto.sh` (self-signed), worker env must include `COORDINATOR_INSECURE_TLS=true` unless trusted CA certs are installed.
   - Ensure generated `worker.env.generated` and cloud-init worker `.env` both carry `COORDINATOR_BASE_URL`, `COORDINATOR_API_TOKEN`, and `COORDINATOR_INSECURE_TLS`.

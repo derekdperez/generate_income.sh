@@ -350,3 +350,8 @@
   - `deploy/bootstrap-central-auto.sh` now persists `COORDINATOR_INSECURE_TLS` into both `deploy/.env` and `deploy/worker.env.generated` (defaulting to `true` for the self-signed bootstrap flow).
   - `deploy/provision-workers-aws.sh` now accepts/loads `COORDINATOR_INSECURE_TLS` and writes it into each worker `deploy/.env` during cloud-init.
 - Why: workers could stay idle with pending targets because coordinator claims failed on certificate verification against bootstrap-generated self-signed certs.
+
+- Restored database page discoverability in server UI after template refactor:
+  - Added `/database` navigation links back into `templates/server_dashboard.html.j2` and `templates/worker_control.html.j2`.
+  - Added template regression tests in `tests/test_refactor_modules.py` to assert database link presence in rendered dashboard/worker pages.
+- Why: `/database` route still existed but link/navigation disappeared from the website UI after page-render modularization.
