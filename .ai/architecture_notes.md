@@ -44,3 +44,6 @@
   - Coordinator store schema/queries and database introspection (`database_status`) should stay in `server_app/store.py` so future API/UI work can evolve without re-growing server-side god classes.
 - Server/UI rendering boundary:
   - Route handlers in `server.py` should delegate dashboard/worker page markup to `reporting/server_pages.py` (template-backed) instead of embedding long inline HTML methods.
+- Central/worker trust boundary:
+  - `bootstrap-central-auto.sh` defaults to self-signed TLS for coordinator HTTPS.
+  - Worker coordinator clients verify TLS by default; deployments using bootstrap self-signed certs must explicitly set `COORDINATOR_INSECURE_TLS=true` on workers or provision trust anchors.

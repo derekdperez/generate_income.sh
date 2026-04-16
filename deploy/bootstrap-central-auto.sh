@@ -471,6 +471,7 @@ POSTGRES_DB="${POSTGRES_DB_DEFAULT}"
 POSTGRES_USER="${POSTGRES_USER_DEFAULT}"
 POSTGRES_PASSWORD=""
 COORDINATOR_API_TOKEN=""
+COORDINATOR_INSECURE_TLS=""
 
 if [[ -f "$ENV_FILE" && "$FORCE_REGEN" -ne 1 ]]; then
   existing_postgres_db="$(read_env_value "$ENV_FILE" POSTGRES_DB)"
@@ -478,6 +479,7 @@ if [[ -f "$ENV_FILE" && "$FORCE_REGEN" -ne 1 ]]; then
   existing_postgres_password="$(read_env_value "$ENV_FILE" POSTGRES_PASSWORD)"
   existing_api_token="$(read_env_value "$ENV_FILE" COORDINATOR_API_TOKEN)"
   existing_base_url="$(read_env_value "$ENV_FILE" COORDINATOR_BASE_URL)"
+  existing_insecure_tls="$(read_env_value "$ENV_FILE" COORDINATOR_INSECURE_TLS)"
 
   if [[ -n "$existing_postgres_db" ]]; then
     POSTGRES_DB="$existing_postgres_db"
@@ -490,6 +492,9 @@ if [[ -f "$ENV_FILE" && "$FORCE_REGEN" -ne 1 ]]; then
   fi
   if [[ -n "$existing_api_token" ]]; then
     COORDINATOR_API_TOKEN="$existing_api_token"
+  fi
+  if [[ -n "$existing_insecure_tls" ]]; then
+    COORDINATOR_INSECURE_TLS="$existing_insecure_tls"
   fi
   if [[ -z "$BASE_URL_OVERRIDE" && -n "$existing_base_url" ]]; then
     COORDINATOR_BASE_URL="$existing_base_url"
@@ -521,6 +526,11 @@ fi
 if [[ -z "$COORDINATOR_API_TOKEN" ]]; then
   COORDINATOR_API_TOKEN="$(gen_token)"
 fi
+if [[ -z "$COORDINATOR_INSECURE_TLS" ]]; then
+  # This bootstrap path generates/uses a self-signed TLS cert for the coordinator server.
+  # Workers must skip CA verification unless you replace certs with a trusted chain.
+  COORDINATOR_INSECURE_TLS="true"
+fi
 
 BASE_HOST="${COORDINATOR_BASE_URL#https://}"
 BASE_HOST="${BASE_HOST#http://}"
@@ -538,6 +548,7 @@ POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 COORDINATOR_API_TOKEN=${COORDINATOR_API_TOKEN}
+COORDINATOR_INSECURE_TLS=${COORDINATOR_INSECURE_TLS}
 TLS_CERT_FILE=${TLS_CERT_FILE}
 TLS_KEY_FILE=${TLS_KEY_FILE}
 COORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}
@@ -547,6 +558,7 @@ chmod 600 "$ENV_FILE"
 cat >"$WORKER_ENV_FILE" <<EOF
 COORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}
 COORDINATOR_API_TOKEN=${COORDINATOR_API_TOKEN}
+COORDINATOR_INSECURE_TLS=${COORDINATOR_INSECURE_TLS}
 EOF
 chmod 600 "$WORKER_ENV_FILE"
 

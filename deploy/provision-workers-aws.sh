@@ -16,6 +16,7 @@ REPO_URL=""
 REPO_BRANCH="main"
 COORDINATOR_BASE_URL=""
 API_TOKEN=""
+COORDINATOR_INSECURE_TLS=""
 INSTANCE_NAME_PREFIX="nightmare-worker"
 WAIT_FOR_RUNNING=1
 
@@ -30,6 +31,7 @@ Usage:
     --repo-url https://github.com/<owner>/<repo>.git \
     --coordinator-base-url https://central-host \
     --api-token <token> \
+    [--coordinator-insecure-tls true] \
     [--instance-type t3.small] [--repo-branch main] [--key-name keypair] [--iam-instance-profile profile] [--region us-east-1]
 
 This script launches worker EC2 instances and bootstraps each VM with cloud-init to:
@@ -140,6 +142,10 @@ while [[ $# -gt 0 ]]; do
       API_TOKEN="${2:-}"
       shift 2
       ;;
+    --coordinator-insecure-tls)
+      COORDINATOR_INSECURE_TLS="${2:-}"
+      shift 2
+      ;;
     --instance-name-prefix)
       INSTANCE_NAME_PREFIX="${2:-nightmare-worker}"
       shift 2
@@ -173,6 +179,24 @@ fi
 if [[ -z "$API_TOKEN" ]]; then
   API_TOKEN="$(load_key_from_env_files "COORDINATOR_API_TOKEN" "$CENTRAL_ENV_FILE" "$WORKER_ENV_FILE")"
 fi
+if [[ -z "$COORDINATOR_INSECURE_TLS" ]]; then
+  COORDINATOR_INSECURE_TLS="$(load_key_from_env_files "COORDINATOR_INSECURE_TLS" "$CENTRAL_ENV_FILE" "$WORKER_ENV_FILE")"
+fi
+if [[ -z "$COORDINATOR_INSECURE_TLS" ]]; then
+  COORDINATOR_INSECURE_TLS="true"
+fi
+case "${COORDINATOR_INSECURE_TLS,,}" in
+  true|1|yes|y|on)
+    COORDINATOR_INSECURE_TLS="true"
+    ;;
+  false|0|no|n|off)
+    COORDINATOR_INSECURE_TLS="false"
+    ;;
+  *)
+    echo "--coordinator-insecure-tls must be a boolean (true/false)" >&2
+    exit 2
+    ;;
+esac
 if [[ -z "$REGION" ]]; then
   REGION="$(load_key_from_env_files "AWS_REGION" "$CENTRAL_ENV_FILE" "$WORKER_ENV_FILE")"
 fi
@@ -213,7 +237,7 @@ runcmd:
   - [bash, -lc, "mkdir -p /opt/nightmare"]
   - [bash, -lc, "if [ ! -d /opt/nightmare/.git ]; then git clone --depth 1 --branch '${REPO_BRANCH}' '${REPO_URL}' /opt/nightmare; fi"]
   - [bash, -lc, "cd /opt/nightmare && git fetch --all --prune && git checkout '${REPO_BRANCH}' && git pull --ff-only || true"]
-  - [bash, -lc, "cat > /opt/nightmare/deploy/.env <<'ENVEOF'\nCOORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}\nCOORDINATOR_API_TOKEN=${API_TOKEN}\nENVEOF"]
+  - [bash, -lc, "cat > /opt/nightmare/deploy/.env <<'ENVEOF'\nCOORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}\nCOORDINATOR_API_TOKEN=${API_TOKEN}\nCOORDINATOR_INSECURE_TLS=${COORDINATOR_INSECURE_TLS}\nENVEOF"]
   - [bash, -lc, "if docker compose version >/dev/null 2>&1; then COMPOSE_CMD='docker compose'; else COMPOSE_CMD='docker-compose'; fi; cd /opt/nightmare && \$COMPOSE_CMD -f deploy/docker-compose.worker.yml --env-file deploy/.env up -d --build"]
 EOF
 

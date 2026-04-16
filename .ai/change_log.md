@@ -345,3 +345,8 @@
   - Switched dashboard/worker page rendering to template helpers in `reporting/server_pages.py` and removed large inline page-render methods from `server.py`.
   - Added regression coverage in `tests/test_module_decomposition.py` to assert `server.py` uses external store module and no longer defines `class CoordinatorStore`.
 - Why: `server.py` had become a large mixed-responsibility file; this extraction enforces module boundaries and reduces maintenance risk for future decomposition work.
+
+- Fixed AWS worker bootstrap/provision TLS wiring for self-signed coordinator certificates:
+  - `deploy/bootstrap-central-auto.sh` now persists `COORDINATOR_INSECURE_TLS` into both `deploy/.env` and `deploy/worker.env.generated` (defaulting to `true` for the self-signed bootstrap flow).
+  - `deploy/provision-workers-aws.sh` now accepts/loads `COORDINATOR_INSECURE_TLS` and writes it into each worker `deploy/.env` during cloud-init.
+- Why: workers could stay idle with pending targets because coordinator claims failed on certificate verification against bootstrap-generated self-signed certs.
