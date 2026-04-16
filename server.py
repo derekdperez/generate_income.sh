@@ -2183,10 +2183,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _render_database_html(self) -> str:
         return """<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Database Status</title>
   <style>
     body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
@@ -2213,19 +2213,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
 </head>
 <body>
   <h1>Database Status</h1>
-  <div class=\"meta\">Shows current PostgreSQL status, all non-system tables, and full contents of each table. <a href=\"/dashboard\">Dashboard</a> · <a href=\"/workers\">Workers</a></div>
-  <div class=\"toolbar\">
-    <input id=\"token\" type=\"password\" placeholder=\"Coordinator token\">
-    <button class=\"primary\" onclick=\"refresh()\">Refresh</button>
-    <span id=\"msg\" class=\"muted\"></span>
+  <div class="meta">Shows current PostgreSQL status, all non-system tables, and full contents of each table. <a href="/dashboard">Dashboard</a> · <a href="/workers">Workers</a></div>
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <button class="primary" onclick="refresh()">Refresh</button>
+    <span id="msg" class="muted"></span>
   </div>
-  <div id=\"cards\" class=\"cards\"></div>
-  <div id=\"tables\"><div class=\"empty\">Loading…</div></div>
+  <div id="cards" class="cards"></div>
+  <div id="tables"><div class="empty">Loading…</div></div>
   <script>
-    function esc(v){ return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'\\"':"&quot;","'":"&#39;" }[ch])); }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[ch]));
+    }
     function authHeaders() {
       const token = document.getElementById("token").value.trim();
-      return token ? { "Authorization": `Bearer ${token}` } : {};
+      return token ? { Authorization: `Bearer ${token}` } : {};
     }
     async function apiGet(path) {
       const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
@@ -2240,34 +2248,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ["Server Time", db.server_time_utc || ""],
         ["Tables", data.table_count || 0],
       ];
-      document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class=\"card\"><div class=\"k\">${esc(k)}</div><div class=\"v\">${esc(v)}</div></div>`).join("");
+      document.getElementById("cards").innerHTML = cards
+        .map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`)
+        .join("");
     }
     function renderValue(v) {
-      if (v === null || v === undefined) return "<span class=\"muted\">null</span>";
+      if (v === null || v === undefined) return '<span class="muted">null</span>';
       if (typeof v === "object") return `<pre>${esc(JSON.stringify(v, null, 2))}</pre>`;
       return esc(v);
     }
     function renderTables(data) {
       const tables = data.tables || [];
       if (!tables.length) {
-        document.getElementById("tables").innerHTML = '<div class=\"empty\">No non-system tables found.</div>';
+        document.getElementById("tables").innerHTML = '<div class="empty">No non-system tables found.</div>';
         return;
       }
       document.getElementById("tables").innerHTML = tables.map((t) => {
-        const columns = (t.columns || []).map((c) => `${esc(c.name)} <span class=\"muted\">(${esc(c.data_type)}${c.nullable ? ", nullable" : ""})</span>`).join("<br>");
+        const columns = (t.columns || [])
+          .map((c) => `${esc(c.name)} <span class="muted">(${esc(c.data_type)}${c.nullable ? ", nullable" : ""})</span>`)
+          .join("<br>");
         const rows = t.rows || [];
         const headerNames = (t.columns || []).map((c) => c.name);
-        const tableHtml = rows.length ? `
+        const tableHtml = rows.length
+          ? `
           <table>
             <thead><tr>${headerNames.map((name) => `<th>${esc(name)}</th>`).join("")}</tr></thead>
             <tbody>
               ${rows.map((row) => `<tr>${headerNames.map((name) => `<td>${renderValue(row[name])}</td>`).join("")}</tr>`).join("")}
             </tbody>
-          </table>` : '<div class=\"empty\">No rows.</div>';
-        return `<section class=\"tableCard\">
-          <div class=\"tableHead\"><strong>${esc(t.schema)}.${esc(t.name)}</strong> · ${esc(t.row_count)} row(s)</div>
-          <div class=\"tableBody\">
-            <div><strong>Columns</strong><br>${columns || "<span class=\"muted\">none</span>"}</div>
+          </table>`
+          : '<div class="empty">No rows.</div>';
+        return `<section class="tableCard">
+          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> · ${esc(t.row_count)} row(s)</div>
+          <div class="tableBody">
+            <div><strong>Columns</strong><br>${columns || '<span class="muted">none</span>'}</div>
             ${tableHtml}
           </div>
         </section>`;
@@ -2282,7 +2296,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         renderTables(data);
         msg.textContent = `Loaded ${data.table_count || 0} table(s).`;
       } catch (e) {
-        document.getElementById("tables").innerHTML = `<div class=\"empty\">Failed to load database status: ${esc(e.message)}</div>`;
+        document.getElementById("tables").innerHTML = `<div class="empty">Failed to load database status: ${esc(e.message)}</div>`;
         msg.textContent = "Load failed.";
       }
     }
