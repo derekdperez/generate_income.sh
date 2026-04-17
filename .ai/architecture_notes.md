@@ -80,4 +80,10 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - `server_app/store.py` now provides extractor-domain metadata (`list_extractor_match_domains`) while `server.py` owns zip extraction orchestration and HTTP responses.
   - Parsed extractor zip rows/files are cached in-process (`_ExtractorMatchesCache`) keyed by `root_domain + content_sha256` with TTL + bounded domain count.
   - UI page `/extractor-matches` consumes these APIs and can query one domain or all domains without requiring pre-expanded filesystem artifacts.
-  - Extractor match query shaping (global search, per-column filters, sort, paging) is handled in `server.py` before serialization so clients can request only one page at a time and avoid transferring full result sets.
+- Extractor match query shaping (global search, per-column filters, sort, paging) is handled in `server.py` before serialization so clients can request only one page at a time and avoid transferring full result sets.
+
+- Fozzy findings observability boundary:
+  - New `/fuzzing` page is template-rendered; findings data is sourced from coordinator DB artifacts (`fozzy_summary_json` and `fozzy_results_zip`).
+  - Domain-level summary metadata comes from `server_app/store.py::list_fozzy_summary_domains`.
+  - Findings row flattening/paging/filtering/sorting is handled in `server.py` before JSON serialization.
+  - Zip file browsing for Fozzy results is handled on-demand from DB artifact bytes (no extraction to disk required), with cached zip file index metadata.

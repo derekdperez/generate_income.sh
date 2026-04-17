@@ -54,6 +54,7 @@ from reporting.server_pages import (
     render_dashboard_html,
     render_database_html,
     render_extractor_matches_html,
+    render_fuzzing_html,
     render_workers_html,
 )
 from server_app.store import CoordinatorStore
@@ -70,6 +71,10 @@ DEFAULT_EXTRACTOR_MATCH_LIMIT = 250
 MAX_EXTRACTOR_MATCH_LIMIT = 2000
 MAX_EXTRACTOR_CACHE_DOMAINS = 64
 EXTRACTOR_CACHE_TTL_SECONDS = 900
+DEFAULT_FUZZING_RESULT_LIMIT = 250
+MAX_FUZZING_RESULT_LIMIT = 2000
+MAX_FUZZING_CACHE_DOMAINS = 64
+FUZZING_CACHE_TTL_SECONDS = 900
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -444,6 +449,101 @@ class _ExtractorMatchesCache:
             return None
 
 
+class _FozzySummaryCache:
+    def __init__(self, *, max_domains: int = MAX_FUZZING_CACHE_DOMAINS, ttl_seconds: int = FUZZING_CACHE_TTL_SECONDS):
+        self._max_domains = max(8, int(max_domains or MAX_FUZZING_CACHE_DOMAINS))
+        self._ttl_seconds = max(60, int(ttl_seconds or FUZZING_CACHE_TTL_SECONDS))
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def get(self, root_domain: str, summary_sha256: str) -> Optional[dict[str, Any]]:
+        key = str(root_domain or "").strip().lower()
+        sha = str(summary_sha256 or "").strip().lower()
+        now = time.time()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if str(entry.get("summary_sha256", "")).strip().lower() != sha:
+                self._entries.pop(key, None)
+                return None
+            loaded_at = float(entry.get("loaded_at_epoch", 0.0) or 0.0)
+            if now - loaded_at > self._ttl_seconds:
+                self._entries.pop(key, None)
+                return None
+            self._entries.move_to_end(key)
+            return entry
+
+    def set(
+        self,
+        root_domain: str,
+        summary_sha256: str,
+        *,
+        updated_at_utc: Optional[str],
+        rows: list[dict[str, Any]],
+        totals: dict[str, int],
+    ) -> None:
+        key = str(root_domain or "").strip().lower()
+        if not key:
+            return
+        entry = {
+            "root_domain": key,
+            "summary_sha256": str(summary_sha256 or "").strip().lower(),
+            "updated_at_utc": str(updated_at_utc or "") or None,
+            "rows": rows,
+            "totals": totals,
+            "loaded_at_epoch": time.time(),
+        }
+        with self._lock:
+            self._entries[key] = entry
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_domains:
+                self._entries.popitem(last=False)
+
+
+class _ZipFileIndexCache:
+    def __init__(self, *, max_domains: int = MAX_FUZZING_CACHE_DOMAINS, ttl_seconds: int = FUZZING_CACHE_TTL_SECONDS):
+        self._max_domains = max(8, int(max_domains or MAX_FUZZING_CACHE_DOMAINS))
+        self._ttl_seconds = max(60, int(ttl_seconds or FUZZING_CACHE_TTL_SECONDS))
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def get(self, root_domain: str, content_sha256: str) -> Optional[dict[str, Any]]:
+        key = str(root_domain or "").strip().lower()
+        sha = str(content_sha256 or "").strip().lower()
+        now = time.time()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if str(entry.get("content_sha256", "")).strip().lower() != sha:
+                self._entries.pop(key, None)
+                return None
+            loaded_at = float(entry.get("loaded_at_epoch", 0.0) or 0.0)
+            if now - loaded_at > self._ttl_seconds:
+                self._entries.pop(key, None)
+                return None
+            self._entries.move_to_end(key)
+            return entry
+
+    def set(self, root_domain: str, content_sha256: str, *, files: list[dict[str, Any]], normalized_names: dict[str, str]) -> None:
+        key = str(root_domain or "").strip().lower()
+        if not key:
+            return
+        entry = {
+            "root_domain": key,
+            "content_sha256": str(content_sha256 or "").strip().lower(),
+            "files": files,
+            "normalized_names": normalized_names,
+            "loaded_at_epoch": time.time(),
+        }
+        with self._lock:
+            self._entries[key] = entry
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_domains:
+                self._entries.popitem(last=False)
+
+
 def _normalize_zip_member_path(raw: str) -> str:
     text = str(raw or "").replace("\\", "/").strip().lstrip("/")
     if not text or text.startswith("../") or "/../" in text:
@@ -474,6 +574,88 @@ def _top_extractor_filters(rows: list[dict[str, Any]], *, top_n: int = 10) -> li
     return out
 
 
+def _decode_json_artifact(content: bytes, content_encoding: str) -> dict[str, Any]:
+    data = bytes(content or b"")
+    if not data:
+        return {}
+    encoding = str(content_encoding or "identity").strip().lower()
+    try:
+        payload = data
+        if encoding == "zip":
+            with zipfile.ZipFile(io.BytesIO(data), mode="r") as zf:
+                names = [name for name in zf.namelist() if name.lower().endswith(".json")]
+                if not names:
+                    return {}
+                payload = zf.read(names[0])
+        parsed = json.loads(payload.decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _flatten_fozzy_summary_rows(root_domain: str, summary: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    rows: list[dict[str, Any]] = []
+    groups = summary.get("groups") if isinstance(summary.get("groups"), list) else []
+    totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        host = str(group.get("host", "") or "")
+        path = str(group.get("path", "") or "")
+        for entry in group.get("anomaly_entries", []) if isinstance(group.get("anomaly_entries"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                {
+                    "root_domain": root_domain,
+                    "result_type": "anomaly",
+                    "anomaly_type": str(entry.get("anomaly_type", "") or ""),
+                    "anomaly_note": str(entry.get("anomaly_note", "") or ""),
+                    "url": str(entry.get("url", "") or ""),
+                    "host": str(entry.get("host", "") or host),
+                    "path": str(entry.get("path", "") or path),
+                    "mutated_parameter": str(entry.get("mutated_parameter", "") or ""),
+                    "mutated_value": str(entry.get("mutated_value", "") or ""),
+                    "baseline_status": _safe_int(entry.get("baseline_status", 0), 0),
+                    "new_status": _safe_int(entry.get("new_status", 0), 0),
+                    "baseline_size": _safe_int(entry.get("baseline_size", 0), 0),
+                    "new_size": _safe_int(entry.get("new_size", 0), 0),
+                    "size_difference": _safe_int(entry.get("size_difference", 0), 0),
+                    "result_file": str(entry.get("result_file", "") or ""),
+                }
+            )
+        for entry in group.get("reflection_entries", []) if isinstance(group.get("reflection_entries"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                {
+                    "root_domain": root_domain,
+                    "result_type": "reflection",
+                    "anomaly_type": "",
+                    "anomaly_note": "reflection_detected",
+                    "url": str(entry.get("url", "") or ""),
+                    "host": str(entry.get("host", "") or host),
+                    "path": str(entry.get("path", "") or path),
+                    "mutated_parameter": str(entry.get("mutated_parameter", "") or ""),
+                    "mutated_value": str(entry.get("mutated_value", "") or ""),
+                    "baseline_status": _safe_int(entry.get("baseline_status", 0), 0),
+                    "new_status": _safe_int(entry.get("new_status", 0), 0),
+                    "baseline_size": _safe_int(entry.get("baseline_size", 0), 0),
+                    "new_size": _safe_int(entry.get("new_size", 0), 0),
+                    "size_difference": _safe_int(entry.get("size_difference", 0), 0),
+                    "result_file": str(entry.get("result_file", "") or ""),
+                }
+            )
+    normalized_totals = {
+        "groups": max(0, _safe_int(totals.get("groups", len(groups)), len(groups))),
+        "baseline_requests": max(0, _safe_int(totals.get("baseline_requests", 0), 0)),
+        "fuzz_requests": max(0, _safe_int(totals.get("fuzz_requests", 0), 0)),
+        "anomalies": max(0, _safe_int(totals.get("anomalies", 0), 0)),
+        "reflections": max(0, _safe_int(totals.get("reflections", 0), 0)),
+    }
+    return rows, normalized_totals
+
+
 EXTRACTOR_MATCH_FILTER_KEYS = {
     "root_domain",
     "filter_name",
@@ -492,6 +674,26 @@ EXTRACTOR_MATCH_FILTER_KEYS = {
 }
 EXTRACTOR_MATCH_NUMERIC_KEYS = {"importance_score", "source_http_status"}
 EXTRACTOR_MATCH_DEFAULT_SORT_KEY = "importance_score"
+
+FUZZING_RESULT_FILTER_KEYS = {
+    "root_domain",
+    "result_type",
+    "anomaly_type",
+    "anomaly_note",
+    "url",
+    "host",
+    "path",
+    "mutated_parameter",
+    "mutated_value",
+    "baseline_status",
+    "new_status",
+    "baseline_size",
+    "new_size",
+    "size_difference",
+    "result_file",
+}
+FUZZING_RESULT_NUMERIC_KEYS = {"baseline_status", "new_status", "baseline_size", "new_size", "size_difference"}
+FUZZING_RESULT_DEFAULT_SORT_KEY = "size_difference"
 
 
 def _extractor_row_search_blob(row: dict[str, Any]) -> str:
@@ -565,6 +767,96 @@ def _apply_extractor_row_query(
     total_rows = len(filtered)
     safe_offset = max(0, int(offset or 0))
     safe_limit = max(1, min(MAX_EXTRACTOR_MATCH_LIMIT, int(limit or DEFAULT_EXTRACTOR_MATCH_LIMIT)))
+    page_rows = filtered[safe_offset : safe_offset + safe_limit]
+    next_offset = safe_offset + safe_limit if (safe_offset + safe_limit) < total_rows else None
+    prev_offset = max(0, safe_offset - safe_limit) if safe_offset > 0 else None
+
+    return {
+        "rows": page_rows,
+        "filtered_rows_for_stats": filtered,
+        "total_rows": total_rows,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "prev_offset": prev_offset,
+        "has_more": next_offset is not None,
+        "sort_key": safe_sort_key,
+        "sort_dir": safe_sort_dir,
+        "column_filters": effective_filters,
+    }
+
+
+def _fuzzing_row_search_blob(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("root_domain"),
+        row.get("result_type"),
+        row.get("anomaly_type"),
+        row.get("anomaly_note"),
+        row.get("url"),
+        row.get("host"),
+        row.get("path"),
+        row.get("mutated_parameter"),
+        row.get("mutated_value"),
+        row.get("result_file"),
+    ]
+    return " ".join(str(item or "") for item in parts).lower()
+
+
+def _apply_fuzzing_row_query(
+    rows: list[dict[str, Any]],
+    *,
+    search_text: str,
+    column_filters: dict[str, str],
+    sort_key: str,
+    sort_dir: str,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    q = str(search_text or "").strip().lower()
+    effective_filters: dict[str, str] = {}
+    for key, value in (column_filters or {}).items():
+        col = str(key or "").strip()
+        if col not in FUZZING_RESULT_FILTER_KEYS:
+            continue
+        text = str(value or "").strip().lower()
+        if text:
+            effective_filters[col] = text
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if q and q not in _fuzzing_row_search_blob(row):
+            continue
+        failed = False
+        for col, needle in effective_filters.items():
+            value = row.get(col)
+            if col in FUZZING_RESULT_NUMERIC_KEYS:
+                hay = str(_safe_int(value, 0))
+            else:
+                hay = str(value or "")
+            if needle not in hay.lower():
+                failed = True
+                break
+        if not failed:
+            filtered.append(row)
+
+    safe_sort_key = str(sort_key or FUZZING_RESULT_DEFAULT_SORT_KEY).strip()
+    if safe_sort_key not in FUZZING_RESULT_FILTER_KEYS:
+        safe_sort_key = FUZZING_RESULT_DEFAULT_SORT_KEY
+    safe_sort_dir = "asc" if str(sort_dir or "").strip().lower() == "asc" else "desc"
+    reverse = safe_sort_dir == "desc"
+
+    def _sort_tuple(item: dict[str, Any]) -> tuple[int, Any]:
+        value = item.get(safe_sort_key)
+        if safe_sort_key in FUZZING_RESULT_NUMERIC_KEYS:
+            return (0, _safe_int(value, 0))
+        return (1, str(value or "").lower())
+
+    filtered.sort(key=_sort_tuple, reverse=reverse)
+    total_rows = len(filtered)
+    safe_offset = max(0, int(offset or 0))
+    safe_limit = max(1, min(MAX_FUZZING_RESULT_LIMIT, int(limit or DEFAULT_FUZZING_RESULT_LIMIT)))
     page_rows = filtered[safe_offset : safe_offset + safe_limit]
     next_offset = safe_offset + safe_limit if (safe_offset + safe_limit) < total_rows else None
     prev_offset = max(0, safe_offset - safe_limit) if safe_offset > 0 else None
@@ -694,6 +986,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     @property
     def extractor_matches_cache(self) -> _ExtractorMatchesCache:
         return getattr(self.server, "extractor_matches_cache")  # type: ignore[attr-defined]
+
+    @property
+    def fuzzing_summary_cache(self) -> _FozzySummaryCache:
+        return getattr(self.server, "fuzzing_summary_cache")  # type: ignore[attr-defined]
+
+    @property
+    def fuzzing_zip_index_cache(self) -> _ZipFileIndexCache:
+        return getattr(self.server, "fuzzing_zip_index_cache")  # type: ignore[attr-defined]
 
     @property
     def coordinator_token(self) -> str:
@@ -945,6 +1245,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/extractor-matches":
             self._write_text(render_extractor_matches_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/fuzzing":
+            self._write_text(render_fuzzing_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/summary":
             payload = collect_dashboard_data(self.output_root, self.coordinator_store)
@@ -1255,6 +1558,230 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 content_type=content_type,
                 download_name=(Path(member_path).name if as_download else None),
             )
+            return
+        if path == "/api/coord/fuzzing/domains":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            try:
+                rows = self.coordinator_store.list_fozzy_summary_domains(limit=limit)
+            except Exception as exc:
+                self.log_message("list_fozzy_summary_domains failed: %r", exc)
+                self._write_json({"error": "fuzzing domain list failed", "detail": str(exc)}, status=500)
+                return
+            out: list[dict[str, Any]] = []
+            for item in rows:
+                root_domain = str(item.get("root_domain", "") or "").strip().lower()
+                if not root_domain:
+                    continue
+                if search_text and search_text not in root_domain:
+                    continue
+                totals = item.get("totals") if isinstance(item.get("totals"), dict) else {}
+                anomalies = _safe_int(totals.get("anomalies", 0), 0)
+                reflections = _safe_int(totals.get("reflections", 0), 0)
+                out.append(
+                    {
+                        "root_domain": root_domain,
+                        "anomalies": anomalies,
+                        "reflections": reflections,
+                        "findings": anomalies + reflections,
+                        "groups": _safe_int(totals.get("groups", 0), 0),
+                        "baseline_requests": _safe_int(totals.get("baseline_requests", 0), 0),
+                        "fuzz_requests": _safe_int(totals.get("fuzz_requests", 0), 0),
+                        "summary_updated_at_utc": item.get("summary_updated_at_utc"),
+                        "has_results_zip": bool(item.get("has_results_zip", False)),
+                    }
+                )
+            self._write_json(
+                {
+                    "generated_at_utc": _iso_now(),
+                    "total_domains": len(out),
+                    "domains": out,
+                }
+            )
+            return
+        if path == "/api/coord/fuzzing":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            limit = max(
+                1,
+                min(
+                    MAX_FUZZING_RESULT_LIMIT,
+                    _safe_int((query.get("limit") or [DEFAULT_FUZZING_RESULT_LIMIT])[0], DEFAULT_FUZZING_RESULT_LIMIT),
+                ),
+            )
+            offset = max(0, _safe_int((query.get("offset") or [0])[0], 0))
+            sort_key = str((query.get("sort_key") or [FUZZING_RESULT_DEFAULT_SORT_KEY])[0] or FUZZING_RESULT_DEFAULT_SORT_KEY).strip()
+            sort_dir = str((query.get("sort_dir") or ["desc"])[0] or "desc").strip().lower()
+            column_filters: dict[str, str] = {}
+            for key in sorted(FUZZING_RESULT_FILTER_KEYS):
+                raw = str((query.get(f"f_{key}") or [""])[0] or "").strip()
+                if raw:
+                    column_filters[key] = raw
+
+            domains_to_load: list[str] = []
+            if root_domain and root_domain != "__all__":
+                domains_to_load = [root_domain]
+            else:
+                domain_rows = self.coordinator_store.list_fozzy_summary_domains(limit=20000)
+                domains_to_load = [str(item.get("root_domain", "")).strip().lower() for item in domain_rows if str(item.get("root_domain", "")).strip()]
+
+            all_rows: list[dict[str, Any]] = []
+            cache_stats = {"hits": 0, "misses": 0}
+            domain_totals: dict[str, dict[str, int]] = {}
+            for domain in domains_to_load:
+                try:
+                    loaded = self._load_fuzzing_domain_summary(domain)
+                except Exception as exc:
+                    self.log_message("fuzzing summary load failed for %s: %r", domain, exc)
+                    continue
+                if loaded is None:
+                    continue
+                if loaded.get("cached"):
+                    cache_stats["hits"] += 1
+                else:
+                    cache_stats["misses"] += 1
+                rows = loaded.get("rows", [])
+                if isinstance(rows, list):
+                    all_rows.extend(rows)
+                totals = loaded.get("totals") if isinstance(loaded.get("totals"), dict) else {}
+                domain_totals[domain] = {
+                    "anomalies": _safe_int(totals.get("anomalies", 0), 0),
+                    "reflections": _safe_int(totals.get("reflections", 0), 0),
+                    "groups": _safe_int(totals.get("groups", 0), 0),
+                    "baseline_requests": _safe_int(totals.get("baseline_requests", 0), 0),
+                    "fuzz_requests": _safe_int(totals.get("fuzz_requests", 0), 0),
+                }
+
+            query_result = _apply_fuzzing_row_query(
+                all_rows,
+                search_text=search_text,
+                column_filters=column_filters,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
+                offset=offset,
+                limit=limit,
+            )
+            page_rows = query_result.get("rows", [])
+            filtered_rows_for_stats = query_result.get("filtered_rows_for_stats", [])
+            filtered_rows_list = filtered_rows_for_stats if isinstance(filtered_rows_for_stats, list) else page_rows
+            total_rows = int(query_result.get("total_rows", 0) or 0)
+            filtered_anomalies = sum(1 for row in filtered_rows_list if str((row or {}).get("result_type", "")) == "anomaly")
+            filtered_reflections = sum(1 for row in filtered_rows_list if str((row or {}).get("result_type", "")) == "reflection")
+
+            files: list[dict[str, Any]] = []
+            if root_domain and root_domain != "__all__":
+                zip_index = self._load_fuzzing_zip_index(root_domain)
+                if zip_index is not None:
+                    files = zip_index.get("files", []) if isinstance(zip_index.get("files"), list) else []
+
+            self._write_json(
+                {
+                    "generated_at_utc": _iso_now(),
+                    "root_domain": root_domain or "__all__",
+                    "search": search_text,
+                    "total_rows": total_rows,
+                    "rows_returned": len(page_rows),
+                    "rows_limited": total_rows > len(page_rows),
+                    "offset": int(query_result.get("offset", 0) or 0),
+                    "limit": int(query_result.get("limit", limit) or limit),
+                    "next_offset": query_result.get("next_offset"),
+                    "prev_offset": query_result.get("prev_offset"),
+                    "has_more": bool(query_result.get("has_more", False)),
+                    "sort_key": str(query_result.get("sort_key", FUZZING_RESULT_DEFAULT_SORT_KEY) or FUZZING_RESULT_DEFAULT_SORT_KEY),
+                    "sort_dir": str(query_result.get("sort_dir", "desc") or "desc"),
+                    "column_filters": query_result.get("column_filters", {}),
+                    "cache": cache_stats,
+                    "counts": {
+                        "filtered_anomalies": filtered_anomalies,
+                        "filtered_reflections": filtered_reflections,
+                        "filtered_findings": filtered_anomalies + filtered_reflections,
+                    },
+                    "domain_totals": domain_totals,
+                    "rows": page_rows,
+                    "files": files if root_domain and root_domain != "__all__" else [],
+                }
+            )
+            return
+        if path == "/api/coord/fuzzing/download":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            artifact_type = str((query.get("artifact_type") or ["fozzy_results_zip"])[0] or "fozzy_results_zip").strip().lower()
+            if not root_domain:
+                self._write_json({"error": "root_domain is required"}, status=400)
+                return
+            if artifact_type not in {"fozzy_results_zip", "fozzy_summary_json"}:
+                self._write_json({"error": "artifact_type must be fozzy_results_zip or fozzy_summary_json"}, status=400)
+                return
+            artifact = self.coordinator_store.get_artifact(root_domain, artifact_type)
+            if artifact is None:
+                self._write_json({"error": f"{artifact_type} not found"}, status=404)
+                return
+            if artifact_type == "fozzy_results_zip":
+                content_type = "application/zip"
+                download_name = f"{root_domain}.fozzy.results.zip"
+            else:
+                content_type = "application/json; charset=utf-8"
+                download_name = f"{root_domain}.fozzy.summary.json"
+            self._write_bytes(bytes(artifact.get("content", b"") or b""), content_type=content_type, download_name=download_name)
+            return
+        if path == "/api/coord/fuzzing/file":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            member_path = _normalize_zip_member_path(str((query.get("path") or [""])[0] or ""))
+            as_download = str((query.get("download") or ["0"])[0] or "0").strip().lower() in {"1", "true", "yes"}
+            if not root_domain or not member_path:
+                self._write_json({"error": "root_domain and path are required"}, status=400)
+                return
+            zip_index = self._load_fuzzing_zip_index(root_domain)
+            if zip_index is None:
+                self._write_json({"error": "fozzy_results_zip not found"}, status=404)
+                return
+            real_name = str((zip_index.get("normalized_names") or {}).get(member_path, "") or "")
+            if not real_name:
+                self._write_json({"error": "file not found in zip"}, status=404)
+                return
+            artifact = self.coordinator_store.get_artifact(root_domain, "fozzy_results_zip")
+            if artifact is None:
+                self._write_json({"error": "fozzy_results_zip not found"}, status=404)
+                return
+            payload = b""
+            try:
+                with zipfile.ZipFile(io.BytesIO(bytes(artifact.get("content", b"") or b"")), mode="r") as zf:
+                    payload = zf.read(real_name)
+            except Exception as exc:
+                self._write_json({"error": "failed to read zip file", "detail": str(exc)}, status=500)
+                return
+            content_type = "application/octet-stream"
+            lowered = member_path.lower()
+            if lowered.endswith(".json"):
+                content_type = "application/json; charset=utf-8"
+            elif lowered.endswith(".txt") or lowered.endswith(".log"):
+                content_type = "text/plain; charset=utf-8"
+            elif lowered.endswith(".html") or lowered.endswith(".htm"):
+                content_type = "text/html; charset=utf-8"
+            self._write_bytes(payload, content_type=content_type, download_name=(Path(member_path).name if as_download else None))
             return
         if path == "/api/coord/worker-config":
             if self.coordinator_store is None:
@@ -1693,6 +2220,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "cached": False,
         }
 
+    def _load_fuzzing_domain_summary(self, root_domain: str) -> Optional[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        if not rd or self.coordinator_store is None:
+            return None
+        artifact = self.coordinator_store.get_artifact(rd, "fozzy_summary_json")
+        if artifact is None:
+            return None
+        summary_sha256 = str(artifact.get("content_sha256", "") or "")
+        cached = self.fuzzing_summary_cache.get(rd, summary_sha256)
+        if cached is not None:
+            return {
+                **cached,
+                "cached": True,
+                "updated_at_utc": artifact.get("updated_at_utc"),
+                "summary_content_size_bytes": int(artifact.get("content_size_bytes", 0) or 0),
+            }
+        summary = _decode_json_artifact(
+            bytes(artifact.get("content", b"") or b""),
+            str(artifact.get("content_encoding", "identity") or "identity"),
+        )
+        rows, totals = _flatten_fozzy_summary_rows(rd, summary)
+        self.fuzzing_summary_cache.set(
+            rd,
+            summary_sha256,
+            updated_at_utc=str(artifact.get("updated_at_utc", "") or "") or None,
+            rows=rows,
+            totals=totals,
+        )
+        return {
+            "root_domain": rd,
+            "summary_sha256": summary_sha256,
+            "updated_at_utc": artifact.get("updated_at_utc"),
+            "summary_content_size_bytes": int(artifact.get("content_size_bytes", 0) or 0),
+            "rows": rows,
+            "totals": totals,
+            "cached": False,
+        }
+
+    def _load_fuzzing_zip_index(self, root_domain: str) -> Optional[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        if not rd or self.coordinator_store is None:
+            return None
+        artifact = self.coordinator_store.get_artifact(rd, "fozzy_results_zip")
+        if artifact is None:
+            return None
+        content_sha256 = str(artifact.get("content_sha256", "") or "")
+        cached = self.fuzzing_zip_index_cache.get(rd, content_sha256)
+        if cached is not None:
+            return cached
+        files: list[dict[str, Any]] = []
+        normalized_names: dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(io.BytesIO(bytes(artifact.get("content", b"") or b"")), mode="r") as zf:
+                infos = sorted(zf.infolist(), key=lambda item: item.filename.lower())
+                for info in infos:
+                    if info.is_dir():
+                        continue
+                    member_path = _normalize_zip_member_path(info.filename)
+                    if not member_path:
+                        continue
+                    files.append(
+                        {
+                            "path": member_path,
+                            "size": int(info.file_size or 0),
+                            "compressed_size": int(info.compress_size or 0),
+                        }
+                    )
+                    normalized_names[member_path] = info.filename
+        except Exception:
+            files = []
+            normalized_names = {}
+        self.fuzzing_zip_index_cache.set(rd, content_sha256, files=files, normalized_names=normalized_names)
+        return self.fuzzing_zip_index_cache.get(rd, content_sha256)
+
     @staticmethod
     def _matches_row_search_text(row: dict[str, Any]) -> str:
         parts = [
@@ -1838,6 +2439,8 @@ def main(argv: list[str] | None = None) -> int:
         srv.master_report_regen_token = master_report_regen_token  # type: ignore[attr-defined]
         srv._master_regen_lock = threading.Lock()  # type: ignore[attr-defined]
         srv.extractor_matches_cache = _ExtractorMatchesCache()  # type: ignore[attr-defined]
+        srv.fuzzing_summary_cache = _FozzySummaryCache()  # type: ignore[attr-defined]
+        srv.fuzzing_zip_index_cache = _ZipFileIndexCache()  # type: ignore[attr-defined]
         return srv
 
     servers: list[tuple[str, ThreadingHTTPServer]] = []

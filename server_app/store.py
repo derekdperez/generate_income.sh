@@ -129,6 +129,49 @@ def _parse_summary_match_count(content: bytes, content_encoding: str) -> Optiona
     return None
 
 
+def _parse_fozzy_summary_totals(content: bytes, content_encoding: str) -> dict[str, int]:
+    data = bytes(content or b"")
+    if not data:
+        return {
+            "groups": 0,
+            "baseline_requests": 0,
+            "fuzz_requests": 0,
+            "anomalies": 0,
+            "reflections": 0,
+        }
+    encoding = str(content_encoding or "identity").strip().lower()
+    parsed: dict[str, Any] = {}
+    try:
+        payload = data
+        if encoding == "zip":
+            with zipfile.ZipFile(io.BytesIO(data), mode="r") as zf:
+                names = [name for name in zf.namelist() if name.lower().endswith(".json")]
+                if not names:
+                    return {
+                        "groups": 0,
+                        "baseline_requests": 0,
+                        "fuzz_requests": 0,
+                        "anomalies": 0,
+                        "reflections": 0,
+                    }
+                payload = zf.read(names[0])
+        decoded = json.loads(payload.decode("utf-8", errors="replace"))
+        if isinstance(decoded, dict):
+            parsed = decoded
+    except Exception:
+        parsed = {}
+    totals = parsed.get("totals") if isinstance(parsed.get("totals"), dict) else {}
+    groups = parsed.get("groups") if isinstance(parsed.get("groups"), list) else []
+    out = {
+        "groups": max(0, int(totals.get("groups", len(groups)) or len(groups))),
+        "baseline_requests": max(0, int(totals.get("baseline_requests", 0) or 0)),
+        "fuzz_requests": max(0, int(totals.get("fuzz_requests", 0) or 0)),
+        "anomalies": max(0, int(totals.get("anomalies", 0) or 0)),
+        "reflections": max(0, int(totals.get("reflections", 0) or 0)),
+    }
+    return out
+
+
 def _get_root_domain(hostname: str) -> str:
     host = str(hostname or "").strip().lower().strip(".")
     if not host:
@@ -1626,6 +1669,52 @@ LIMIT %s;
                     "updated_at_utc": row[4].isoformat() if row[4] else None,
                     "summary_match_count": _parse_summary_match_count(summary_bytes, summary_encoding),
                     "summary_updated_at_utc": row[7].isoformat() if row[7] else None,
+                }
+            )
+        return out
+
+    def list_fozzy_summary_domains(self, *, limit: int = 5000) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(20000, int(limit or 5000)))
+        sql = """
+SELECT
+  s.root_domain,
+  s.source_worker,
+  s.content_sha256,
+  s.content_size_bytes,
+  s.updated_at_utc,
+  s.content,
+  s.content_encoding,
+  z.content_sha256,
+  z.content_size_bytes,
+  z.updated_at_utc
+FROM coordinator_artifacts s
+LEFT JOIN coordinator_artifacts z
+  ON z.root_domain = s.root_domain
+ AND z.artifact_type = 'fozzy_results_zip'
+WHERE s.artifact_type = 'fozzy_summary_json'
+ORDER BY s.updated_at_utc DESC NULLS LAST, s.root_domain ASC
+LIMIT %s;
+"""
+        out: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (safe_limit,))
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            totals = _parse_fozzy_summary_totals(bytes(row[5] or b""), str(row[6] or "identity"))
+            out.append(
+                {
+                    "root_domain": str(row[0] or "").strip().lower(),
+                    "source_worker": str(row[1] or ""),
+                    "summary_content_sha256": str(row[2] or ""),
+                    "summary_content_size_bytes": int(row[3] or 0),
+                    "summary_updated_at_utc": row[4].isoformat() if row[4] else None,
+                    "totals": totals,
+                    "results_zip_content_sha256": str(row[7] or ""),
+                    "results_zip_content_size_bytes": int(row[8] or 0),
+                    "results_zip_updated_at_utc": row[9].isoformat() if row[9] else None,
+                    "has_results_zip": bool(row[7]),
                 }
             )
         return out

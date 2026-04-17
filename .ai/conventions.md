@@ -153,3 +153,9 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Aggregated filter insights should be computed server-side and returned by API payload (`top_filters`) so UI can render consistent rankings independent of client-side row sorting.
   - For high-row extractor datasets, use server-side paging/filter/sort (`limit`, `offset`, `sort_key`, `sort_dir`, `f_<column>`) with small defaults (250/page) and bounded max page size to keep API responses fast.
   - Extractor UI tables should use fixed-height scrollable containers so the page layout stays stable as row counts grow.
+
+- Fuzzing findings UI/API convention:
+  - Fozzy findings should be served from coordinator artifacts (`fozzy_summary_json`) with server-side row flattening for anomaly/reflection entries.
+  - Use server-side paging/filter/sort for findings endpoints (`limit`, `offset`, `sort_key`, `sort_dir`, `f_<column>`, global `q`) with default 250 rows/page.
+  - File-level detail browsing should read from `fozzy_results_zip` artifact bytes on demand and use in-memory zip index caching for repeated listing/lookups.
+  - Keep findings/file tables in fixed-height scroll containers and provide both global and column-specific search/filter controls.

@@ -7,8 +7,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html
-from reporting.server_pages import render_crawl_progress_html, render_dashboard_html, render_extractor_matches_html, render_workers_html
-from server import _apply_extractor_row_query, _top_extractor_filters, collect_dashboard_data
+from reporting.server_pages import (
+    render_crawl_progress_html,
+    render_dashboard_html,
+    render_extractor_matches_html,
+    render_fuzzing_html,
+    render_workers_html,
+)
+from server import _apply_extractor_row_query, _apply_fuzzing_row_query, _top_extractor_filters, collect_dashboard_data
 from server_app.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
 
 
@@ -31,6 +37,13 @@ def test_render_extractor_matches_html_contains_expected_heading():
     html = render_extractor_matches_html()
     assert "Extractor Matches" in html
     assert "Top Filters (Top 10)" in html
+
+
+def test_render_fuzzing_html_contains_expected_heading():
+    html = render_fuzzing_html()
+    assert "Fuzzing" in html
+    assert "/api/coord/fuzzing/domains" in html
+    assert "/api/coord/fuzzing?" in html
 
 
 def test_extractor_report_html_escapes_script_content():
@@ -470,6 +483,68 @@ def test_list_extractor_match_domains_uses_summary_count():
     assert row["content_sha256"] == "sha123"
 
 
+def test_list_fozzy_summary_domains_uses_summary_totals():
+    now = datetime(2026, 4, 17, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchall = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM coordinator_artifacts s LEFT JOIN coordinator_artifacts z" in compact:
+                assert params == (5000,)
+                self._fetchall = [
+                    (
+                        "example.com",
+                        "worker-1",
+                        "sha-summary",
+                        300,
+                        now,
+                        b'{"totals": {"groups": 2, "anomalies": 9, "reflections": 4, "baseline_requests": 10, "fuzz_requests": 99}}',
+                        "identity",
+                        "sha-zip",
+                        1234,
+                        now,
+                    )
+                ]
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchall(self):
+            return self._fetchall
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    data = CoordinatorStore.list_fozzy_summary_domains(store, limit=5000)
+    assert len(data) == 1
+    row = data[0]
+    assert row["root_domain"] == "example.com"
+    assert row["totals"]["anomalies"] == 9
+    assert row["totals"]["reflections"] == 4
+    assert row["has_results_zip"] is True
+
+
 def test_top_extractor_filters_ranks_descending_and_limits_top_10():
     rows = []
     for idx in range(12):
@@ -512,3 +587,25 @@ def test_apply_extractor_row_query_filters_sorts_and_pages():
     assert result["has_more"] is True
     assert result["next_offset"] == 1
     assert result["prev_offset"] is None
+
+
+def test_apply_fuzzing_row_query_filters_sorts_and_pages():
+    rows = [
+        {"root_domain": "a.com", "result_type": "anomaly", "anomaly_type": "header_change", "size_difference": 10, "url": "https://a.com/x"},
+        {"root_domain": "a.com", "result_type": "reflection", "anomaly_type": "", "size_difference": 2, "url": "https://a.com/y"},
+        {"root_domain": "b.com", "result_type": "anomaly", "anomaly_type": "status_or_size_change", "size_difference": 99, "url": "https://b.com/z"},
+    ]
+    result = _apply_fuzzing_row_query(
+        rows,
+        search_text="a.com",
+        column_filters={"result_type": "anomaly"},
+        sort_key="size_difference",
+        sort_dir="desc",
+        offset=0,
+        limit=1,
+    )
+    assert result["total_rows"] == 1
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["root_domain"] == "a.com"
+    assert result["rows"][0]["result_type"] == "anomaly"
+    assert result["has_more"] is False

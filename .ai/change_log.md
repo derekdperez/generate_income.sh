@@ -497,3 +497,20 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
     - artifact files (client-side global + column filter + sort).
   - Kept top-filter aggregation server-side and based on full filtered set (pre-pagination).
 - Validation: `pytest -q` -> 93 passed.
+
+- Added new coordinator web app page: `/fuzzing` (Fozzy findings explorer).
+  - New template: `templates/fuzzing.html.j2`.
+  - New renderer: `reporting/server_pages.py::render_fuzzing_html`.
+  - New route in `server.py`: `GET /fuzzing`.
+  - New APIs:
+    - `GET /api/coord/fuzzing/domains`
+    - `GET /api/coord/fuzzing`
+    - `GET /api/coord/fuzzing/download`
+    - `GET /api/coord/fuzzing/file`
+  - Implemented server-side paging/filter/sort for fuzzing findings (`limit`, `offset`, `sort_key`, `sort_dir`, `f_<column>`, global `q`) with default 250 rows/page and max 2000.
+  - Added cache-backed loading/parsing for `fozzy_summary_json` artifacts and zip-file index caching for `fozzy_results_zip` file browsing.
+  - Added coordinator store method `CoordinatorStore.list_fozzy_summary_domains(...)` with parsed totals (`anomalies`, `reflections`, requests, groups) and zip availability metadata.
+  - Added fixed-height, scrollable tables and search/filter/sort controls in the UI for findings and zipped result files.
+  - Added navigation links to Fuzzing from dashboard/workers/database/crawl-progress/extractor pages.
+  - Added tests for new renderer, server module wiring, store domain query parsing, and fuzzing row query behavior.
+- Validation: `pytest -q` -> 97 passed.

@@ -24,3 +24,7 @@ def render_crawl_progress_html() -> str:
 
 def render_extractor_matches_html() -> str:
     return render_template("extractor_matches.html.j2")
+
+
+def render_fuzzing_html() -> str:
+    return render_template("fuzzing.html.j2")

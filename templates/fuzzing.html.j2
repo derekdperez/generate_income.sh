@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuzzing</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 14px; flex-wrap: wrap; }
+    input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #64748b; }
+    .v { font-size: 20px; font-weight: 700; margin-top: 4px; word-break: break-word; }
+    .muted { color: #64748b; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 14px; }
+    .table-wrap { max-height: 520px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    .table-wrap.files { max-height: 360px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
+    th { background: #e2e8f0; cursor: pointer; user-select: none; }
+    td pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+    .filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .pager { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .sort-ind { color: #0f172a; font-weight: 700; margin-left: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Fuzzing</h1>
+  <div class="meta">Fozzy run findings from coordinator artifacts (anomalies + reflections). <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/extractor-matches">Extractor Matches</a></div>
+
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <select id="domainSelect" style="min-width: 320px;"></select>
+    <input id="searchText" type="text" placeholder="Global search (all fields)">
+    <input id="limit" type="number" min="1" max="2000" value="250" title="Rows per page">
+    <button class="primary" onclick="refreshDomainsAndRows()">Refresh</button>
+    <a id="downloadZip" href="#" target="_blank" rel="noopener noreferrer"><button type="button">Download Results Zip</button></a>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <div id="cards" class="cards"></div>
+
+  <div class="panel">
+    <strong>Findings</strong>
+    <div class="filters-grid">
+      <input id="colRootDomain" type="text" placeholder="Domain contains">
+      <input id="colResultType" type="text" placeholder="Type contains">
+      <input id="colAnomalyType" type="text" placeholder="Anomaly type contains">
+      <input id="colAnomalyNote" type="text" placeholder="Anomaly/reflection note contains">
+      <input id="colUrl" type="text" placeholder="URL contains">
+      <input id="colHost" type="text" placeholder="Host contains">
+      <input id="colPath" type="text" placeholder="Path contains">
+      <input id="colMutatedParam" type="text" placeholder="Mutated parameter contains">
+      <input id="colMutatedValue" type="text" placeholder="Mutated value contains">
+      <input id="colBaselineStatus" type="text" placeholder="Baseline status contains">
+      <input id="colNewStatus" type="text" placeholder="New status contains">
+      <input id="colSizeDiff" type="text" placeholder="Size diff contains">
+      <input id="colResultFile" type="text" placeholder="Result file contains">
+    </div>
+    <div class="pager">
+      <button id="prevPageBtn" type="button">Prev</button>
+      <button id="nextPageBtn" type="button">Next</button>
+      <span class="muted" id="pageInfo">Page 1</span>
+      <span class="muted" id="pagingTotals"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-key="root_domain">Domain <span class="sort-ind" id="sort_root_domain"></span></th>
+            <th data-key="result_type">Type <span class="sort-ind" id="sort_result_type"></span></th>
+            <th data-key="anomaly_type">Anomaly Type <span class="sort-ind" id="sort_anomaly_type"></span></th>
+            <th data-key="anomaly_note">Note <span class="sort-ind" id="sort_anomaly_note"></span></th>
+            <th data-key="url">URL <span class="sort-ind" id="sort_url"></span></th>
+            <th data-key="host">Host <span class="sort-ind" id="sort_host"></span></th>
+            <th data-key="path">Path <span class="sort-ind" id="sort_path"></span></th>
+            <th data-key="mutated_parameter">Param <span class="sort-ind" id="sort_mutated_parameter"></span></th>
+            <th data-key="mutated_value">Value <span class="sort-ind" id="sort_mutated_value"></span></th>
+            <th data-key="baseline_status">Base Status <span class="sort-ind" id="sort_baseline_status"></span></th>
+            <th data-key="new_status">New Status <span class="sort-ind" id="sort_new_status"></span></th>
+            <th data-key="size_difference">Size Diff <span class="sort-ind" id="sort_size_difference"></span></th>
+            <th data-key="result_file">Result File <span class="sort-ind" id="sort_result_file"></span></th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="13">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <strong>Fozzy Result Files (Selected Domain)</strong>
+    <div class="filters-grid">
+      <input id="fileSearch" type="text" placeholder="Global file search">
+      <input id="filePathFilter" type="text" placeholder="Path contains">
+      <input id="fileSizeFilter" type="text" placeholder="Size contains">
+    </div>
+    <div class="table-wrap files">
+      <table>
+        <thead>
+          <tr>
+            <th data-files-key="path">Path <span class="sort-ind" id="files_sort_path"></span></th>
+            <th data-files-key="size">Size <span class="sort-ind" id="files_sort_size"></span></th>
+            <th>View</th>
+            <th>Download</th>
+          </tr>
+        </thead>
+        <tbody id="fileRows"><tr><td colspan="4">Select a single domain to view files.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    const DEFAULT_LIMIT = 250;
+    let currentOffset = 0;
+    let currentRows = [];
+    let currentFiles = [];
+    let sortKey = "size_difference";
+    let sortDir = "desc";
+    let filesSortKey = "path";
+    let filesSortDir = "asc";
+    let debounceHandle = null;
+
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+      }[ch]));
+    }
+    function persistTokenCookie() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+    }
+    function hydrateTokenFromCookie() {
+      const token = readCookie(TOKEN_COOKIE_NAME);
+      if (token) document.getElementById("token").value = token;
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    async function apiGet(path) {
+      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
+      if (!rsp.ok) throw new Error(await rsp.text());
+      const ct = String(rsp.headers.get("content-type") || "");
+      if (ct.includes("application/json")) return rsp.json();
+      return rsp.text();
+    }
+    function selectedDomain() {
+      return String(document.getElementById("domainSelect").value || "__all__");
+    }
+    function updateDownloadLink() {
+      const domain = selectedDomain();
+      const link = document.getElementById("downloadZip");
+      if (!domain || domain === "__all__") {
+        link.style.pointerEvents = "none";
+        link.style.opacity = "0.5";
+        link.href = "#";
+        return;
+      }
+      link.href = `/api/coord/fuzzing/download?artifact_type=fozzy_results_zip&root_domain=${encodeURIComponent(domain)}`;
+      link.style.pointerEvents = "auto";
+      link.style.opacity = "1";
+    }
+    function setSortIndicators() {
+      document.querySelectorAll("[id^='sort_']").forEach((el) => { el.textContent = ""; });
+      const node = document.getElementById(`sort_${sortKey}`);
+      if (node) node.textContent = sortDir === "asc" ? "▲" : "▼";
+      document.getElementById("files_sort_path").textContent = filesSortKey === "path" ? (filesSortDir === "asc" ? "▲" : "▼") : "";
+      document.getElementById("files_sort_size").textContent = filesSortKey === "size" ? (filesSortDir === "asc" ? "▲" : "▼") : "";
+    }
+    function renderCards(payload) {
+      const counts = payload.counts || {};
+      const page = Math.floor((Number(payload.offset || 0)) / Math.max(1, Number(payload.limit || DEFAULT_LIMIT))) + 1;
+      const cards = [
+        ["Domain", payload.root_domain || "__all__"],
+        ["Page", page],
+        ["Page Size", payload.limit || DEFAULT_LIMIT],
+        ["Rows (Page)", payload.rows_returned || 0],
+        ["Rows (Filtered)", payload.total_rows || 0],
+        ["Anomalies", counts.filtered_anomalies || 0],
+        ["Reflections", counts.filtered_reflections || 0],
+      ];
+      document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+    }
+    function updatePager(payload) {
+      const offset = Number(payload.offset || 0);
+      const limit = Math.max(1, Number(payload.limit || DEFAULT_LIMIT));
+      const total = Number(payload.total_rows || 0);
+      const page = Math.floor(offset / limit) + 1;
+      const pageCount = Math.max(1, Math.ceil(total / limit));
+      document.getElementById("pageInfo").textContent = `Page ${page} of ${pageCount}`;
+      document.getElementById("pagingTotals").textContent = `${payload.rows_returned || 0} shown / ${total} total`;
+      document.getElementById("prevPageBtn").disabled = !(offset > 0);
+      document.getElementById("nextPageBtn").disabled = !Boolean(payload.has_more);
+    }
+    function getColumnFilters() {
+      return {
+        root_domain: String(document.getElementById("colRootDomain").value || "").trim(),
+        result_type: String(document.getElementById("colResultType").value || "").trim(),
+        anomaly_type: String(document.getElementById("colAnomalyType").value || "").trim(),
+        anomaly_note: String(document.getElementById("colAnomalyNote").value || "").trim(),
+        url: String(document.getElementById("colUrl").value || "").trim(),
+        host: String(document.getElementById("colHost").value || "").trim(),
+        path: String(document.getElementById("colPath").value || "").trim(),
+        mutated_parameter: String(document.getElementById("colMutatedParam").value || "").trim(),
+        mutated_value: String(document.getElementById("colMutatedValue").value || "").trim(),
+        baseline_status: String(document.getElementById("colBaselineStatus").value || "").trim(),
+        new_status: String(document.getElementById("colNewStatus").value || "").trim(),
+        size_difference: String(document.getElementById("colSizeDiff").value || "").trim(),
+        result_file: String(document.getElementById("colResultFile").value || "").trim(),
+      };
+    }
+    function scheduleLoad(resetOffset = true) {
+      if (debounceHandle) clearTimeout(debounceHandle);
+      debounceHandle = setTimeout(() => {
+        debounceHandle = null;
+        if (resetOffset) currentOffset = 0;
+        loadRows();
+      }, 250);
+    }
+    function renderRows(rows) {
+      if (!rows.length) {
+        document.getElementById("rows").innerHTML = "<tr><td colspan='13'>No findings found.</td></tr>";
+        return;
+      }
+      document.getElementById("rows").innerHTML = rows.map((r) => {
+        return `<tr>
+          <td>${esc(r.root_domain || "")}</td>
+          <td>${esc(r.result_type || "")}</td>
+          <td>${esc(r.anomaly_type || "")}</td>
+          <td><pre>${esc(r.anomaly_note || "")}</pre></td>
+          <td>${esc(r.url || "")}</td>
+          <td>${esc(r.host || "")}</td>
+          <td>${esc(r.path || "")}</td>
+          <td>${esc(r.mutated_parameter || "")}</td>
+          <td><pre>${esc(r.mutated_value || "")}</pre></td>
+          <td>${esc(r.baseline_status || 0)}</td>
+          <td>${esc(r.new_status || 0)}</td>
+          <td>${esc(r.size_difference || 0)}</td>
+          <td>${esc(r.result_file || "")}</td>
+        </tr>`;
+      }).join("");
+    }
+    function renderFiles() {
+      const domain = selectedDomain();
+      if (!domain || domain === "__all__") {
+        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>Select a single domain to view files.</td></tr>";
+        return;
+      }
+      const qAll = String(document.getElementById("fileSearch").value || "").trim().toLowerCase();
+      const qPath = String(document.getElementById("filePathFilter").value || "").trim().toLowerCase();
+      const qSize = String(document.getElementById("fileSizeFilter").value || "").trim().toLowerCase();
+      const filtered = currentFiles.filter((f) => {
+        const p = String(f.path || "");
+        const size = String(f.size || 0);
+        const blob = `${p} ${size}`.toLowerCase();
+        if (qAll && !blob.includes(qAll)) return false;
+        if (qPath && !p.toLowerCase().includes(qPath)) return false;
+        if (qSize && !size.toLowerCase().includes(qSize)) return false;
+        return true;
+      });
+      filtered.sort((a, b) => {
+        if (filesSortKey === "size") {
+          const diff = Number(a.size || 0) - Number(b.size || 0);
+          return filesSortDir === "asc" ? diff : -diff;
+        }
+        const diff = String(a.path || "").localeCompare(String(b.path || ""));
+        return filesSortDir === "asc" ? diff : -diff;
+      });
+      if (!filtered.length) {
+        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>No files found for current filters.</td></tr>";
+        return;
+      }
+      document.getElementById("fileRows").innerHTML = filtered.map((f) => {
+        const p = String(f.path || "");
+        const viewHref = `/api/coord/fuzzing/file?root_domain=${encodeURIComponent(domain)}&path=${encodeURIComponent(p)}`;
+        const dlHref = `${viewHref}&download=1`;
+        return `<tr>
+          <td>${esc(p)}</td>
+          <td>${esc(f.size || 0)}</td>
+          <td><a href="${viewHref}" target="_blank" rel="noopener noreferrer">View</a></td>
+          <td><a href="${dlHref}" target="_blank" rel="noopener noreferrer">Download</a></td>
+        </tr>`;
+      }).join("");
+    }
+    async function loadDomains() {
+      const payload = await apiGet("/api/coord/fuzzing/domains?limit=20000");
+      const domains = Array.isArray(payload.domains) ? payload.domains : [];
+      const select = document.getElementById("domainSelect");
+      const current = String(select.value || "__all__");
+      select.innerHTML = `<option value="__all__">All domains (${esc(domains.length)} domains)</option>` +
+        domains.map((d) => `<option value="${esc(d.root_domain)}">${esc(d.root_domain)} (A:${esc(d.anomalies || 0)} R:${esc(d.reflections || 0)})</option>`).join("");
+      if ([...select.options].some((o) => o.value === current)) select.value = current;
+      updateDownloadLink();
+    }
+    async function loadRows() {
+      const msg = document.getElementById("msg");
+      msg.textContent = "Loading...";
+      const domain = selectedDomain();
+      const q = String(document.getElementById("searchText").value || "").trim();
+      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      params.set("offset", String(Math.max(0, currentOffset)));
+      params.set("sort_key", sortKey);
+      params.set("sort_dir", sortDir);
+      if (domain && domain !== "__all__") params.set("root_domain", domain);
+      if (q) params.set("q", q);
+      const filters = getColumnFilters();
+      Object.entries(filters).forEach(([k, v]) => { if (v) params.set(`f_${k}`, v); });
+      const path = `/api/coord/fuzzing?${params.toString()}`;
+      try {
+        const payload = await apiGet(path);
+        currentRows = Array.isArray(payload.rows) ? payload.rows : [];
+        currentFiles = Array.isArray(payload.files) ? payload.files : [];
+        currentOffset = Number(payload.offset || 0);
+        renderCards(payload);
+        renderRows(currentRows);
+        renderFiles();
+        updatePager(payload);
+        setSortIndicators();
+        msg.textContent = `Loaded ${payload.rows_returned || 0} row(s) from offset ${payload.offset || 0}.`;
+      } catch (e) {
+        document.getElementById("rows").innerHTML = `<tr><td colspan='13'>Failed to load fuzzing results: ${esc(e.message)}</td></tr>`;
+        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>Load failed.</td></tr>";
+        msg.textContent = "Load failed.";
+      }
+    }
+    async function refreshDomainsAndRows() {
+      try { await loadDomains(); } catch (_) {}
+      currentOffset = 0;
+      await loadRows();
+    }
+
+    hydrateTokenFromCookie();
+    document.getElementById("token").addEventListener("change", persistTokenCookie);
+    document.getElementById("token").addEventListener("blur", persistTokenCookie);
+    document.getElementById("domainSelect").addEventListener("change", () => { updateDownloadLink(); scheduleLoad(true); });
+    document.getElementById("searchText").addEventListener("input", () => scheduleLoad(true));
+    document.getElementById("limit").addEventListener("change", () => scheduleLoad(true));
+    [
+      "colRootDomain", "colResultType", "colAnomalyType", "colAnomalyNote", "colUrl",
+      "colHost", "colPath", "colMutatedParam", "colMutatedValue", "colBaselineStatus",
+      "colNewStatus", "colSizeDiff", "colResultFile",
+    ].forEach((id) => {
+      document.getElementById(id).addEventListener("input", () => scheduleLoad(true));
+    });
+    document.getElementById("prevPageBtn").addEventListener("click", () => {
+      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
+      currentOffset = Math.max(0, currentOffset - limit);
+      loadRows();
+    });
+    document.getElementById("nextPageBtn").addEventListener("click", () => {
+      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
+      currentOffset = currentOffset + limit;
+      loadRows();
+    });
+    document.querySelectorAll("th[data-key]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = String(th.getAttribute("data-key") || "");
+        if (!key) return;
+        if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+        else {
+          sortKey = key;
+          sortDir = (key === "size_difference" || key === "baseline_status" || key === "new_status") ? "desc" : "asc";
+        }
+        scheduleLoad(true);
+      });
+    });
+    document.querySelectorAll("th[data-files-key]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = String(th.getAttribute("data-files-key") || "");
+        if (!key) return;
+        if (filesSortKey === key) filesSortDir = filesSortDir === "asc" ? "desc" : "asc";
+        else {
+          filesSortKey = key;
+          filesSortDir = key === "size" ? "desc" : "asc";
+        }
+        setSortIndicators();
+        renderFiles();
+      });
+    });
+    document.getElementById("fileSearch").addEventListener("input", renderFiles);
+    document.getElementById("filePathFilter").addEventListener("input", renderFiles);
+    document.getElementById("fileSizeFilter").addEventListener("input", renderFiles);
+    setSortIndicators();
+    refreshDomainsAndRows();
+  </script>
+</body>
+</html>
