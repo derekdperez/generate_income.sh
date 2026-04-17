@@ -8,6 +8,7 @@ import json
 import base64
 import io
 import zipfile
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -17,8 +18,60 @@ try:
 except Exception:  # pragma: no cover - optional dependency at runtime
     psycopg = None
 
+from nightmare_shared.page_classification import (
+    PAGE_CLASS_API_ERROR,
+    PAGE_CLASS_BLOCKED,
+    PAGE_CLASS_EXISTS,
+    PAGE_CLASS_LIKELY_SOFT_404,
+    PAGE_CLASS_REDIRECT_PLACEHOLDER,
+    PAGE_CLASS_UNKNOWN,
+    PageFingerprint,
+    classify_page as classify_page_fingerprint,
+)
+
 DEFAULT_COORDINATOR_LEASE_SECONDS = 120
 DEFAULT_WORKER_RETENTION_SECONDS = 3600
+MAX_AUDIT_TEXT_LEN = 4000
+
+SUPPORTED_PAGE_CLASSIFICATIONS = {
+    PAGE_CLASS_EXISTS,
+    PAGE_CLASS_LIKELY_SOFT_404,
+    PAGE_CLASS_UNKNOWN,
+    PAGE_CLASS_REDIRECT_PLACEHOLDER,
+    PAGE_CLASS_API_ERROR,
+    PAGE_CLASS_BLOCKED,
+}
+
+SUPPORTED_SUPPRESSION_SCOPE_TYPES = {
+    "single_finding",
+    "exact_url",
+    "url_pattern",
+    "page_fingerprint",
+    "rule_only",
+    "rule_and_fingerprint",
+    "host_prefix",
+}
+
+SUPPORTED_SUPPRESSION_REASON_TYPES = {
+    "soft_404",
+    "catch_all_router",
+    "generic_login_redirect",
+    "bad_regex",
+    "overbroad_regex",
+    "duplicate_finding",
+    "irrelevant_path_pattern",
+    "environment_specific_noise",
+    "parser_error",
+    "manual_other",
+}
+
+SUPPORTED_PRUNE_MODES = {"archive_then_delete", "soft_delete", "hard_delete"}
+SUPPORTED_REPROCESS_MODES = {
+    "future_only",
+    "apply_to_existing_findings",
+    "apply_to_existing_pages_and_findings",
+    "apply_and_prune_existing_data",
+}
 
 
 def _iso_now() -> str:
