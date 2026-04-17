@@ -97,3 +97,5 @@
 
 - Coordinator UI auth UX convention: pages that call /api/coord/* from browser templates should share token persistence via 
 ightmare_coord_token cookie (30-day TTL, SameSite=Strict, Path=/, Secure on HTTPS) and auto-hydrate the token input on page load.
+
+- Database-status endpoint convention: avoid full-table/full-cell payloads in operator APIs. Use small preview-select projections, never inline full ytea values, cap row count per table (20), and prefer catalog-estimated row counts for responsiveness on live coordinator databases.

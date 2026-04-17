@@ -131,8 +131,9 @@
         const limitedLabel = t.rows_limited
           ? ` | showing first ${esc(returned)} row(s)`
           : "";
+        const estimateLabel = t.row_count_is_estimate ? " (estimated)" : "";
         return `<section class="tableCard">
-          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> | ${esc(t.row_count)} row(s)${limitedLabel}</div>
+          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> | ${esc(t.row_count)} row(s)${estimateLabel}${limitedLabel}</div>
           <div class="tableBody">
             <div><strong>Columns</strong><br>${columns || '<span class="muted">none</span>'}</div>
             ${tableHtml}

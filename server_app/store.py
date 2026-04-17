@@ -51,6 +51,26 @@ def _json_safe_db_value(value: Any) -> Any:
         return str(value)
 
 
+def _quote_ident(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _build_database_preview_expr(column_name: str, data_type: str, text_limit: int) -> str:
+    ident = _quote_ident(column_name)
+    dtype = str(data_type or "").strip().lower()
+    if dtype == "bytea":
+        # Never inline raw binary payload in status API responses.
+        return f"CASE WHEN {ident} IS NULL THEN NULL ELSE format('<bytea %s bytes>', octet_length({ident})) END AS {ident}"
+    if dtype in {"text", "character varying", "character", "json", "jsonb"}:
+        safe_limit = max(64, int(text_limit or 4096))
+        return (
+            f"CASE WHEN {ident} IS NULL THEN NULL "
+            f"WHEN length({ident}::text) <= {safe_limit} THEN {ident}::text "
+            f"ELSE left({ident}::text, {safe_limit}) || ' ...[truncated]' END AS {ident}"
+        )
+    return ident
+
+
 def _get_root_domain(hostname: str) -> str:
     host = str(hostname or "").strip().lower().strip(".")
     if not host:
@@ -439,11 +459,17 @@ RETURNING output_clear_generation, updated_at_utc;
 
     def database_status(self) -> dict[str, Any]:
         max_rows_per_table = 20
+        max_text_preview_chars = 4096
         tables_sql = """
-SELECT table_schema, table_name
-FROM information_schema.tables
-WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-ORDER BY table_schema, table_name;
+SELECT
+  n.nspname AS table_schema,
+  c.relname AS table_name,
+  GREATEST(c.reltuples::bigint, 0)::bigint AS estimated_row_count
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname;
 """
         columns_sql = """
 SELECT column_name, data_type, is_nullable
@@ -458,7 +484,7 @@ ORDER BY ordinal_position;
                 cur.execute(tables_sql)
                 table_rows = cur.fetchall()
                 tables: list[dict[str, Any]] = []
-                for schema_name, table_name in table_rows:
+                for schema_name, table_name, estimated_row_count in table_rows:
                     safe_ident = f'"{str(schema_name).replace('"', '""')}"."{str(table_name).replace('"', '""')}"'
                     cur.execute(columns_sql, (schema_name, table_name))
                     column_rows = cur.fetchall()
@@ -470,10 +496,12 @@ ORDER BY ordinal_position;
                         }
                         for col_name, data_type, is_nullable in column_rows
                     ]
-                    cur.execute(f"SELECT COUNT(*) FROM {safe_ident};")
-                    row_count_value = cur.fetchone()
-                    total_rows = int((row_count_value[0] if row_count_value else 0) or 0)
-                    cur.execute(f"SELECT * FROM {safe_ident} LIMIT %s;", (max_rows_per_table,))
+                    select_exprs = [
+                        _build_database_preview_expr(str(col_name), str(data_type), max_text_preview_chars)
+                        for col_name, data_type, _is_nullable in column_rows
+                    ]
+                    select_list = ", ".join(select_exprs) if select_exprs else "NULL"
+                    cur.execute(f"SELECT {select_list} FROM {safe_ident} LIMIT %s;", (max_rows_per_table,))
                     rows = cur.fetchall()
                     colnames = [desc[0] for desc in cur.description]
                     serialized_rows: list[dict[str, Any]] = []
@@ -486,9 +514,10 @@ ORDER BY ordinal_position;
                         {
                             "schema": schema_name,
                             "name": table_name,
-                            "row_count": total_rows,
+                            "row_count": int(estimated_row_count or 0),
+                            "row_count_is_estimate": True,
                             "rows_returned": len(serialized_rows),
-                            "rows_limited": total_rows > len(serialized_rows),
+                            "rows_limited": len(serialized_rows) >= max_rows_per_table,
                             "columns": columns,
                             "rows": serialized_rows,
                         }
@@ -503,6 +532,7 @@ ORDER BY ordinal_position;
             },
             "table_count": len(tables),
             "max_rows_per_table": max_rows_per_table,
+            "max_text_preview_chars": max_text_preview_chars,
             "tables": tables,
             "generated_at_utc": _iso_now(),
         }

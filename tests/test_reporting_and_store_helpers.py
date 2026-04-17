@@ -84,8 +84,8 @@ def test_database_status_limits_rows_per_table():
             if "SELECT current_database(), current_user, version(), NOW();" in compact:
                 self._fetchone = ("nightmare", "nightmare", "PostgreSQL 16", now)
                 return
-            if "FROM information_schema.tables" in compact:
-                self._fetchall = [("public", "coordinator_targets")]
+            if "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" in compact:
+                self._fetchall = [("public", "coordinator_targets", 50)]
                 return
             if "FROM information_schema.columns" in compact:
                 self._fetchall = [
@@ -93,10 +93,7 @@ def test_database_status_limits_rows_per_table():
                     ("raw", "text", "YES"),
                 ]
                 return
-            if compact.startswith('SELECT COUNT(*) FROM "public"."coordinator_targets";'):
-                self._fetchone = (50,)
-                return
-            if compact.startswith('SELECT * FROM "public"."coordinator_targets" LIMIT %s;'):
+            if 'FROM "public"."coordinator_targets" LIMIT %s;' in compact:
                 assert params == (20,)
                 self.description = [("entry_id",), ("raw",)]
                 self._fetchall = [(f"id-{idx}", f"raw-{idx}") for idx in range(20)]
@@ -127,9 +124,11 @@ def test_database_status_limits_rows_per_table():
 
     data = CoordinatorStore.database_status(store)
     assert data["max_rows_per_table"] == 20
+    assert data["max_text_preview_chars"] == 4096
     assert data["table_count"] == 1
     table = data["tables"][0]
     assert table["row_count"] == 50
+    assert table["row_count_is_estimate"] is True
     assert table["rows_returned"] == 20
     assert table["rows_limited"] is True
     assert len(table["rows"]) == 20

@@ -380,3 +380,9 @@ ightmare_coord_token and auto-populates token input on load.
   - 	emplates/worker_control.html.j2 now uses the same cookie behavior for shared auth UX across coordinator pages.
   - Cookie attributes: Path=/, SameSite=Strict, Max-Age (30 days), and Secure when served over HTTPS.
   - Added template regression assertions in 	ests/test_refactor_modules.py for cookie helper presence.
+
+- Hardened /api/coord/database-status to prevent UI hangs on large tables/artifacts:
+  - Switched per-table row count from expensive COUNT(*) scans to Postgres catalog estimate (pg_class.reltuples).
+  - Kept row cap at 20 and replaced raw SELECT * payloads with preview-safe projections (no full ytea transfer; text/json fields truncated for display).
+  - Added response metadata (ow_count_is_estimate, max_text_preview_chars) and UI label for estimated row counts.
+  - Updated DB-status unit test fixture to assert new query/model behavior.
