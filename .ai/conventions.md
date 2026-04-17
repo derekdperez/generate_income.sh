@@ -122,3 +122,8 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - `/api/coord/database-status` must never hard-fail the HTTP connection on query/introspection exceptions.
   - Server route should catch `database_status()` exceptions and return structured JSON error (`500`) so UI receives a normal response body.
   - Store-level table introspection should continue on per-table failure and annotate `table_error` on affected table rows.
+
+- Coordinator worker visibility convention:
+  - Worker UI discovery should include idle workers via presence heartbeats, not only workers with running/completed target/stage rows.
+  - `server_app/store.py` should keep `coordinator_worker_presence` updated during claim/heartbeat/complete code paths.
+  - `/api/coord/workers` and `/api/coord/worker-control` routes should catch store exceptions and return JSON error responses instead of breaking the fetch channel.

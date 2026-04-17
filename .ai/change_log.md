@@ -422,3 +422,13 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Updated `templates/database_status.html.j2` to render per-table query errors in the page.
   - Added regression test `test_database_status_tolerates_single_table_query_failure` in `tests/test_reporting_and_store_helpers.py`.
 - Why: browser-side `Failed to fetch` on the Database page can result from unhandled DB introspection errors; endpoint now degrades gracefully and exposes actionable error details.
+
+- Fixed worker visibility on `/workers` when workers are alive but idle:
+  - Added `coordinator_worker_presence` table in `server_app/store.py` schema.
+  - Added presence heartbeats (`_touch_worker_presence`) on target/stage claim, heartbeat, and completion paths.
+  - Updated `worker_statuses()` and `worker_control_snapshot()` SQL to union worker IDs from target/stage aggregates, queued commands, and worker presence.
+  - Added API exception guards in `server.py` for `/api/coord/workers` and `/api/coord/worker-control` to return structured JSON errors instead of connection-reset style failures.
+  - Added tests:
+    - `test_worker_control_snapshot_includes_presence_only_worker`
+    - `test_worker_statuses_includes_presence_only_worker`
+- Why: previous worker pages only discovered workers that had target/stage rows or queued commands, so idle polling workers could appear as “no workers discovered”.

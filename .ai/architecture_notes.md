@@ -61,3 +61,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 - Database-status fault isolation boundary:
   - `server.py` owns API-level failure translation (exceptions -> HTTP JSON errors).
   - `server_app/store.py` owns table-by-table fault isolation during DB introspection (`table_error` per table) so one problematic relation/type does not break the entire `/api/coord/database-status` payload.
+
+- Worker presence boundary:
+  - Worker liveness in UI is no longer inferred only from target/stage leases; `server_app/store.py` now persists lightweight worker presence heartbeats in `coordinator_worker_presence`.
+  - Polling claims/heartbeats/completions update this presence table, allowing idle-but-running workers to appear in `/api/coord/workers` and `/api/coord/worker-control`.
