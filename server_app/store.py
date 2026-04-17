@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     psycopg = None
 
 DEFAULT_COORDINATOR_LEASE_SECONDS = 120
+DEFAULT_WORKER_RETENTION_SECONDS = 3600
 
 
 def _iso_now() -> str:
@@ -60,7 +61,10 @@ def _build_database_preview_expr(column_name: str, data_type: str, text_limit: i
     dtype = str(data_type or "").strip().lower()
     if dtype == "bytea":
         # Never inline raw binary payload in status API responses.
-        return f"CASE WHEN {ident} IS NULL THEN NULL ELSE format('<bytea %s bytes>', octet_length({ident})) END AS {ident}"
+        return (
+            f"CASE WHEN {ident} IS NULL THEN NULL "
+            f"ELSE '<bytea ' || octet_length({ident})::text || ' bytes>' END AS {ident}"
+        )
     if dtype in {"text", "character varying", "character", "json", "jsonb"}:
         safe_limit = max(64, int(text_limit or 4096))
         return (
@@ -69,6 +73,28 @@ def _build_database_preview_expr(column_name: str, data_type: str, text_limit: i
             f"ELSE left({ident}::text, {safe_limit}) || ' ...[truncated]' END AS {ident}"
         )
     return ident
+
+
+def _pick_recent_order_column(columns: list[tuple[str, str, str]]) -> Optional[str]:
+    if not columns:
+        return None
+    names = [str(row[0] or "") for row in columns]
+    preferred = [
+        "updated_at_utc",
+        "completed_at_utc",
+        "heartbeat_at_utc",
+        "started_at_utc",
+        "created_at_utc",
+        "updated_at",
+        "created_at",
+        "id",
+        "line_number",
+    ]
+    lowered = {name.lower(): name for name in names}
+    for candidate in preferred:
+        if candidate in lowered:
+            return lowered[candidate]
+    return None
 
 
 def _get_root_domain(hostname: str) -> str:
@@ -197,11 +223,15 @@ CREATE TABLE IF NOT EXISTS coordinator_worker_commands (
   command TEXT NOT NULL,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   status TEXT NOT NULL DEFAULT 'queued',
+  result_error TEXT,
+  completed_at_utc TIMESTAMPTZ,
   created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_worker_commands_worker_created
   ON coordinator_worker_commands(worker_id, created_at_utc DESC);
+ALTER TABLE coordinator_worker_commands ADD COLUMN IF NOT EXISTS result_error TEXT;
+ALTER TABLE coordinator_worker_commands ADD COLUMN IF NOT EXISTS completed_at_utc TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS coordinator_worker_presence (
   worker_id TEXT PRIMARY KEY,
@@ -491,8 +521,7 @@ RETURNING output_clear_generation, updated_at_utc;
         tables_sql = """
 SELECT
   n.nspname AS table_schema,
-  c.relname AS table_name,
-  GREATEST(c.reltuples::bigint, 0)::bigint AS estimated_row_count
+  c.relname AS table_name
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind = 'r'
@@ -512,7 +541,7 @@ ORDER BY ordinal_position;
                 cur.execute(tables_sql)
                 table_rows = cur.fetchall()
                 tables: list[dict[str, Any]] = []
-                for schema_name, table_name, estimated_row_count in table_rows:
+                for schema_name, table_name in table_rows:
                     safe_ident = f'"{str(schema_name).replace('"', '""')}"."{str(table_name).replace('"', '""')}"'
                     try:
                         cur.execute(columns_sql, (schema_name, table_name))
@@ -530,7 +559,14 @@ ORDER BY ordinal_position;
                             for col_name, data_type, _is_nullable in column_rows
                         ]
                         select_list = ", ".join(select_exprs) if select_exprs else "NULL"
-                        cur.execute(f"SELECT {select_list} FROM {safe_ident} LIMIT %s;", (max_rows_per_table,))
+                        order_col = _pick_recent_order_column(column_rows)
+                        order_clause = f" ORDER BY {_quote_ident(order_col)} DESC" if order_col else ""
+                        cur.execute(f"SELECT COUNT(*) FROM {safe_ident};")
+                        row_count_value = int((cur.fetchone() or [0])[0] or 0)
+                        cur.execute(
+                            f"SELECT {select_list} FROM {safe_ident}{order_clause} LIMIT %s;",
+                            (max_rows_per_table,),
+                        )
                         rows = cur.fetchall()
                         colnames = [desc[0] for desc in cur.description]
                         serialized_rows: list[dict[str, Any]] = []
@@ -543,10 +579,10 @@ ORDER BY ordinal_position;
                             {
                                 "schema": schema_name,
                                 "name": table_name,
-                                "row_count": int(estimated_row_count or 0),
-                                "row_count_is_estimate": True,
+                                "row_count": row_count_value,
+                                "row_count_is_estimate": False,
                                 "rows_returned": len(serialized_rows),
-                                "rows_limited": len(serialized_rows) >= max_rows_per_table,
+                                "rows_limited": row_count_value > len(serialized_rows),
                                 "columns": columns,
                                 "rows": serialized_rows,
                             }
@@ -556,8 +592,8 @@ ORDER BY ordinal_position;
                             {
                                 "schema": schema_name,
                                 "name": table_name,
-                                "row_count": int(estimated_row_count or 0),
-                                "row_count_is_estimate": True,
+                                "row_count": 0,
+                                "row_count_is_estimate": False,
                                 "rows_returned": 0,
                                 "rows_limited": False,
                                 "columns": [],
@@ -594,8 +630,8 @@ ORDER BY ordinal_position;
             "generated_at_utc": _iso_now(),
         }
 
-    def crawl_progress_snapshot(self, *, limit: int = 200) -> dict[str, Any]:
-        safe_limit = max(1, min(2000, int(limit or 200)))
+    def crawl_progress_snapshot(self, *, limit: int = 2000) -> dict[str, Any]:
+        safe_limit = max(1, min(2000, int(limit or 2000)))
         sql = """
 WITH domain_set AS (
     SELECT DISTINCT root_domain FROM coordinator_targets
@@ -794,52 +830,105 @@ LIMIT %s;
             "domains": domains,
         }
 
-    def worker_statuses(self, *, stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_worker_state(state: str) -> str:
+        text = str(state or "").strip().lower()
+        return text if text in {"running", "paused", "stopped", "errored", "idle"} else "idle"
+
+    @staticmethod
+    def _derive_worker_status(
+        *,
+        running_targets: int,
+        running_stage_tasks: int,
+        last_activity: str,
+        is_online: bool,
+    ) -> str:
+        if int(running_targets or 0) > 0 or int(running_stage_tasks or 0) > 0:
+            return "running"
+        activity = str(last_activity or "").strip().lower()
+        if activity.startswith("state_"):
+            state = CoordinatorStore._normalize_worker_state(activity[6:])
+            if state != "idle":
+                return state
+            return "idle" if is_online else "stale"
+        if activity.startswith("command_") and "error" in activity:
+            return "errored"
+        if is_online:
+            return "idle"
+        return "stale"
+
+    def worker_statuses(
+        self,
+        *,
+        stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS,
+        retention_seconds: int = DEFAULT_WORKER_RETENTION_SECONDS,
+    ) -> dict[str, Any]:
         stale_after = max(15, int(stale_after_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        retention = max(int(retention_seconds or DEFAULT_WORKER_RETENTION_SECONDS), stale_after * 3, 300)
         sql = """
-WITH target_agg AS (
+WITH limits AS (
+    SELECT NOW() - ((%s)::text || ' seconds')::interval AS recent_cutoff
+),
+target_agg AS (
     SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_target_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_targets,
+      t.worker_id,
+      MAX(t.heartbeat_at_utc) AS last_target_heartbeat,
+      COUNT(*) FILTER (WHERE t.status = 'running') AS running_targets,
       COUNT(*) FILTER (
-        WHERE status = 'running'
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at > NOW()
+        WHERE t.status = 'running'
+          AND t.lease_expires_at IS NOT NULL
+          AND t.lease_expires_at > NOW()
       ) AS active_target_leases
-    FROM coordinator_targets
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+    FROM coordinator_targets t
+    CROSS JOIN limits l
+    WHERE t.worker_id IS NOT NULL
+      AND t.worker_id <> ''
+      AND (
+        t.status = 'running'
+        OR (t.heartbeat_at_utc IS NOT NULL AND t.heartbeat_at_utc >= l.recent_cutoff)
+        OR (t.completed_at_utc IS NOT NULL AND t.completed_at_utc >= l.recent_cutoff)
+      )
+    GROUP BY t.worker_id
 ),
 stage_agg AS (
     SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_stage_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_stage_tasks,
+      s.worker_id,
+      MAX(s.heartbeat_at_utc) AS last_stage_heartbeat,
+      COUNT(*) FILTER (WHERE s.status = 'running') AS running_stage_tasks,
       COUNT(*) FILTER (
-        WHERE status = 'running'
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at > NOW()
+        WHERE s.status = 'running'
+          AND s.lease_expires_at IS NOT NULL
+          AND s.lease_expires_at > NOW()
       ) AS active_stage_leases,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN status = 'running' THEN stage ELSE NULL END), NULL) AS active_stages
-    FROM coordinator_stage_tasks
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN s.status = 'running' THEN s.stage ELSE NULL END), NULL) AS active_stages
+    FROM coordinator_stage_tasks s
+    CROSS JOIN limits l
+    WHERE s.worker_id IS NOT NULL
+      AND s.worker_id <> ''
+      AND (
+        s.status = 'running'
+        OR (s.heartbeat_at_utc IS NOT NULL AND s.heartbeat_at_utc >= l.recent_cutoff)
+        OR (s.completed_at_utc IS NOT NULL AND s.completed_at_utc >= l.recent_cutoff)
+      )
+    GROUP BY s.worker_id
 ),
-presence_agg AS (
+presence_recent AS (
     SELECT
-      worker_id,
-      MAX(last_seen_at_utc) AS last_presence_heartbeat
-    FROM coordinator_worker_presence
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+      p.worker_id,
+      p.last_seen_at_utc AS last_presence_heartbeat,
+      p.last_activity AS last_activity
+    FROM coordinator_worker_presence p
+    CROSS JOIN limits l
+    WHERE p.worker_id IS NOT NULL
+      AND p.worker_id <> ''
+      AND p.last_seen_at_utc >= l.recent_cutoff
 ),
 worker_ids AS (
     SELECT worker_id FROM target_agg
     UNION
     SELECT worker_id FROM stage_agg
     UNION
-    SELECT worker_id FROM presence_agg
+    SELECT worker_id FROM presence_recent
 )
 SELECT
   w.worker_id AS worker_id,
@@ -856,24 +945,28 @@ SELECT
   COALESCE(s.running_stage_tasks, 0) AS running_stage_tasks,
   COALESCE(t.active_target_leases, 0) AS active_target_leases,
   COALESCE(s.active_stage_leases, 0) AS active_stage_leases,
-  COALESCE(s.active_stages, ARRAY[]::text[]) AS active_stages
+  COALESCE(s.active_stages, ARRAY[]::text[]) AS active_stages,
+  COALESCE(p.last_activity, 'unknown') AS last_activity
 FROM worker_ids w
 LEFT JOIN target_agg t ON t.worker_id = w.worker_id
 LEFT JOIN stage_agg s ON s.worker_id = w.worker_id
-LEFT JOIN presence_agg p ON p.worker_id = w.worker_id
+LEFT JOIN presence_recent p ON p.worker_id = w.worker_id
 ORDER BY w.worker_id ASC;
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, (retention,))
                 rows = cur.fetchall()
             conn.commit()
 
         now_utc = datetime.now(timezone.utc)
         workers: list[dict[str, Any]] = []
         online_count = 0
+        status_counts = {"running": 0, "paused": 0, "stopped": 0, "errored": 0, "idle": 0}
         for row in rows:
             worker_id = str(row[0] or "").strip()
+            if not worker_id:
+                continue
             last_heartbeat = row[1]
             running_targets = int(row[2] or 0)
             running_stage_tasks = int(row[3] or 0)
@@ -881,6 +974,7 @@ ORDER BY w.worker_id ASC;
             active_stage_leases = int(row[5] or 0)
             active_stages_raw = row[6] if isinstance(row[6], list) else []
             active_stages = [str(item) for item in active_stages_raw if str(item or "").strip()]
+            last_activity = str(row[7] or "unknown")
 
             seconds_since: Optional[int] = None
             last_heartbeat_iso: Optional[str] = None
@@ -891,10 +985,21 @@ ORDER BY w.worker_id ASC;
             is_online = seconds_since is not None and seconds_since <= stale_after
             if is_online:
                 online_count += 1
+            status = self._derive_worker_status(
+                running_targets=running_targets,
+                running_stage_tasks=running_stage_tasks,
+                last_activity=last_activity,
+                is_online=is_online,
+            )
+            if status == "stale":
+                continue
+            if status in status_counts:
+                status_counts[status] += 1
             workers.append(
                 {
                     "worker_id": worker_id,
-                    "status": "online" if is_online else "stale",
+                    "status": status,
+                    "last_activity": last_activity,
                     "last_heartbeat_at_utc": last_heartbeat_iso,
                     "seconds_since_heartbeat": seconds_since,
                     "running_targets": running_targets,
@@ -909,49 +1014,96 @@ ORDER BY w.worker_id ASC;
         return {
             "generated_at_utc": now_utc.isoformat(),
             "stale_after_seconds": stale_after,
+            "retention_seconds": retention,
             "counts": {
                 "total_workers": total,
                 "online_workers": online_count,
-                "stale_workers": max(0, total - online_count),
+                "stale_workers": 0,
+                "running_workers": status_counts["running"],
+                "paused_workers": status_counts["paused"],
+                "stopped_workers": status_counts["stopped"],
+                "errored_workers": status_counts["errored"],
+                "idle_workers": status_counts["idle"],
             },
             "workers": workers,
         }
 
-    def worker_control_snapshot(self, *, stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS) -> dict[str, Any]:
+    def worker_control_snapshot(
+        self,
+        *,
+        stale_after_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS,
+        retention_seconds: int = DEFAULT_WORKER_RETENTION_SECONDS,
+    ) -> dict[str, Any]:
         stale_after = max(15, int(stale_after_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        retention = max(int(retention_seconds or DEFAULT_WORKER_RETENTION_SECONDS), stale_after * 3, 300)
         sql = """
-WITH target_agg AS (
+WITH limits AS (
+    SELECT NOW() - ((%s)::text || ' seconds')::interval AS recent_cutoff
+),
+target_agg AS (
     SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_target_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_targets,
-      COUNT(*) FILTER (WHERE status IN ('running', 'completed')) AS urls_scanned_session,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN status = 'running' THEN COALESCE(start_url, root_domain) ELSE NULL END), NULL) AS current_targets
-    FROM coordinator_targets
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+      t.worker_id,
+      MAX(t.heartbeat_at_utc) AS last_target_heartbeat,
+      COUNT(*) FILTER (WHERE t.status = 'running') AS running_targets,
+      COUNT(*) FILTER (
+        WHERE t.status IN ('running', 'completed')
+          AND (
+            t.heartbeat_at_utc IS NULL
+            OR t.heartbeat_at_utc >= (SELECT recent_cutoff FROM limits)
+          )
+      ) AS urls_scanned_session,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN t.status = 'running' THEN COALESCE(t.start_url, t.root_domain) ELSE NULL END), NULL) AS current_targets
+    FROM coordinator_targets t
+    CROSS JOIN limits l
+    WHERE t.worker_id IS NOT NULL
+      AND t.worker_id <> ''
+      AND (
+        t.status = 'running'
+        OR (t.heartbeat_at_utc IS NOT NULL AND t.heartbeat_at_utc >= l.recent_cutoff)
+        OR (t.completed_at_utc IS NOT NULL AND t.completed_at_utc >= l.recent_cutoff)
+      )
+    GROUP BY t.worker_id
 ),
 stage_agg AS (
     SELECT
-      worker_id,
-      MAX(heartbeat_at_utc) AS last_stage_heartbeat,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_stage_tasks
-    FROM coordinator_stage_tasks
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+      s.worker_id,
+      MAX(s.heartbeat_at_utc) AS last_stage_heartbeat,
+      COUNT(*) FILTER (WHERE s.status = 'running') AS running_stage_tasks
+    FROM coordinator_stage_tasks s
+    CROSS JOIN limits l
+    WHERE s.worker_id IS NOT NULL
+      AND s.worker_id <> ''
+      AND (
+        s.status = 'running'
+        OR (s.heartbeat_at_utc IS NOT NULL AND s.heartbeat_at_utc >= l.recent_cutoff)
+        OR (s.completed_at_utc IS NOT NULL AND s.completed_at_utc >= l.recent_cutoff)
+      )
+    GROUP BY s.worker_id
 ),
 commands AS (
-    SELECT worker_id, COUNT(*) FILTER (WHERE status = 'queued') AS queued_commands
-    FROM coordinator_worker_commands
-    GROUP BY worker_id
-),
-presence_agg AS (
     SELECT
-      worker_id,
-      MAX(last_seen_at_utc) AS last_presence_heartbeat
-    FROM coordinator_worker_presence
-    WHERE worker_id IS NOT NULL AND worker_id <> ''
-    GROUP BY worker_id
+      c.worker_id,
+      COUNT(*) FILTER (WHERE c.status IN ('queued', 'in_progress')) AS queued_commands
+    FROM coordinator_worker_commands c
+    CROSS JOIN limits l
+    WHERE c.worker_id IS NOT NULL
+      AND c.worker_id <> ''
+      AND (
+        c.status IN ('queued', 'in_progress')
+        OR c.updated_at_utc >= l.recent_cutoff
+      )
+    GROUP BY c.worker_id
+),
+presence_recent AS (
+    SELECT
+      p.worker_id,
+      p.last_seen_at_utc AS last_presence_heartbeat,
+      p.last_activity AS last_activity
+    FROM coordinator_worker_presence p
+    CROSS JOIN limits l
+    WHERE p.worker_id IS NOT NULL
+      AND p.worker_id <> ''
+      AND p.last_seen_at_utc >= l.recent_cutoff
 ),
 worker_ids AS (
     SELECT worker_id FROM target_agg
@@ -960,7 +1112,7 @@ worker_ids AS (
     UNION
     SELECT worker_id FROM commands
     UNION
-    SELECT worker_id FROM presence_agg
+    SELECT worker_id FROM presence_recent
 )
 SELECT
   w.worker_id AS worker_id,
@@ -977,22 +1129,24 @@ SELECT
   COALESCE(s.running_stage_tasks, 0) AS running_stage_tasks,
   COALESCE(t.urls_scanned_session, 0) AS urls_scanned_session,
   COALESCE(t.current_targets, ARRAY[]::text[]) AS current_targets,
-  COALESCE(c.queued_commands, 0) AS queued_commands
+  COALESCE(c.queued_commands, 0) AS queued_commands,
+  COALESCE(p.last_activity, 'unknown') AS last_activity
 FROM worker_ids w
 LEFT JOIN target_agg t ON t.worker_id = w.worker_id
 LEFT JOIN stage_agg s ON s.worker_id = w.worker_id
 LEFT JOIN commands c ON c.worker_id = w.worker_id
-LEFT JOIN presence_agg p ON p.worker_id = w.worker_id
+LEFT JOIN presence_recent p ON p.worker_id = w.worker_id
 ORDER BY w.worker_id ASC;
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, (retention,))
                 rows = cur.fetchall()
             conn.commit()
         now_utc = datetime.now(timezone.utc)
         workers: list[dict[str, Any]] = []
         online_count = 0
+        status_counts = {"running": 0, "paused": 0, "stopped": 0, "errored": 0, "idle": 0}
         for row in rows:
             worker_id = str(row[0] or "").strip()
             if not worker_id:
@@ -1007,10 +1161,22 @@ ORDER BY w.worker_id ASC;
             if is_online:
                 online_count += 1
             current_targets_raw = row[5] if isinstance(row[5], list) else []
+            last_activity = str(row[7] or "unknown")
+            status = self._derive_worker_status(
+                running_targets=int(row[2] or 0),
+                running_stage_tasks=int(row[3] or 0),
+                last_activity=last_activity,
+                is_online=is_online,
+            )
+            if status == "stale":
+                continue
+            if status in status_counts:
+                status_counts[status] += 1
             workers.append(
                 {
                     "worker_id": worker_id,
-                    "status": "online" if is_online else "stale",
+                    "status": status,
+                    "last_activity": last_activity,
                     "last_heartbeat_at_utc": last_heartbeat_iso,
                     "seconds_since_heartbeat": seconds_since,
                     "running_targets": int(row[2] or 0),
@@ -1024,10 +1190,16 @@ ORDER BY w.worker_id ASC;
         return {
             "generated_at_utc": now_utc.isoformat(),
             "stale_after_seconds": stale_after,
+            "retention_seconds": retention,
             "counts": {
                 "total_workers": total,
                 "online_workers": online_count,
-                "stale_workers": max(0, total - online_count),
+                "stale_workers": 0,
+                "running_workers": status_counts["running"],
+                "paused_workers": status_counts["paused"],
+                "stopped_workers": status_counts["stopped"],
+                "errored_workers": status_counts["errored"],
+                "idle_workers": status_counts["idle"],
             },
             "workers": workers,
         }
@@ -1035,18 +1207,111 @@ ORDER BY w.worker_id ASC;
     def queue_worker_command(self, worker_id: str, command: str, payload: Optional[dict[str, Any]] = None) -> bool:
         wid = str(worker_id or "").strip()
         cmd = str(command or "").strip().lower()
-        if not wid or not cmd:
+        if not wid or cmd not in {"start", "pause", "stop"}:
             return False
         safe_payload = payload if isinstance(payload, dict) else {}
-        sql = """
+        cancel_sql = """
+UPDATE coordinator_worker_commands
+SET status = 'cancelled',
+    result_error = 'superseded by newer command',
+    completed_at_utc = NOW(),
+    updated_at_utc = NOW()
+WHERE worker_id = %s
+  AND status = 'queued';
+"""
+        insert_sql = """
 INSERT INTO coordinator_worker_commands(worker_id, command, payload, status, updated_at_utc)
 VALUES (%s, %s, %s::jsonb, 'queued', NOW());
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (wid, cmd, json.dumps(safe_payload)))
+                cur.execute(cancel_sql, (wid,))
+                cur.execute(insert_sql, (wid, cmd, json.dumps(safe_payload)))
+                self._touch_worker_presence(cur, wid, f"command_queued_{cmd}")
             conn.commit()
         return True
+
+    def claim_worker_command(self, worker_id: str, *, worker_state: str = "idle") -> Optional[dict[str, Any]]:
+        wid = str(worker_id or "").strip()
+        if not wid:
+            return None
+        state = self._normalize_worker_state(worker_state)
+        sql = """
+WITH candidate AS (
+    SELECT id
+    FROM coordinator_worker_commands
+    WHERE worker_id = %s
+      AND status = 'queued'
+    ORDER BY created_at_utc ASC, id ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE coordinator_worker_commands c
+SET status = 'in_progress',
+    updated_at_utc = NOW()
+FROM candidate
+WHERE c.id = candidate.id
+RETURNING c.id, c.command, c.payload;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                self._touch_worker_presence(cur, wid, f"state_{state}")
+                cur.execute(sql, (wid,))
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        payload = row[2] if isinstance(row[2], dict) else {}
+        return {
+            "id": int(row[0]),
+            "command": str(row[1] or "").strip().lower(),
+            "payload": payload,
+        }
+
+    def complete_worker_command(
+        self,
+        worker_id: str,
+        command_id: int,
+        *,
+        success: bool,
+        error: str = "",
+    ) -> bool:
+        wid = str(worker_id or "").strip()
+        if not wid:
+            return False
+        cid = int(command_id or 0)
+        if cid <= 0:
+            return False
+        next_status = "completed" if bool(success) else "failed"
+        sql = """
+UPDATE coordinator_worker_commands
+SET status = %s,
+    result_error = %s,
+    completed_at_utc = NOW(),
+    updated_at_utc = NOW()
+WHERE id = %s
+  AND worker_id = %s
+  AND status IN ('queued', 'in_progress')
+RETURNING command;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (next_status, str(error or "")[:2000], cid, wid))
+                row = cur.fetchone()
+                if row is not None:
+                    command = str(row[0] or "").strip().lower()
+                    if next_status == "completed":
+                        mapped_state = {
+                            "start": "running",
+                            "pause": "paused",
+                            "stop": "stopped",
+                        }.get(command, "idle")
+                        self._touch_worker_presence(cur, wid, f"state_{mapped_state}")
+                    else:
+                        self._touch_worker_presence(cur, wid, f"command_{command}_error")
+                updated = int(cur.rowcount or 0)
+            conn.commit()
+        return updated > 0
 
     def enqueue_stage(self, root_domain: str, stage: str) -> bool:
         rd = str(root_domain or "").strip().lower()

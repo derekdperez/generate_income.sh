@@ -396,7 +396,7 @@ def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
         help="Do not verify HTTPS certificates (use for bootstrap self-signed certs on the central host)",
     )
     p.add_argument("--stale-after-seconds", type=int, default=180, help="Heartbeat freshness window for online/stale worker status")
-    p.add_argument("--progress-limit", type=int, default=200, help="Max domains to include in crawl progress snapshots")
+    p.add_argument("--progress-limit", type=int, default=2000, help="Max domains to include in crawl progress snapshots")
     p.add_argument("--skip-coordinator", action="store_true", help="Do not call coordinator HTTP APIs (use when this host cannot reach COORDINATOR_BASE_URL)")
     p.add_argument("--skip-ssm", action="store_true", help="Skip AWS SSM per-VM docker status checks")
     p.add_argument("--aws-region", default=os.getenv("AWS_REGION", env_from_file.get("AWS_REGION", "us-east-1")), help="AWS region for SSM checks")
@@ -451,7 +451,7 @@ def main(argv: Optional[list[str] ] = None) -> int:
                 base_url=conn.server_base_url,
                 path="/api/coord/crawl-progress",
                 token=conn.api_token,
-                query={"limit": max(1, int(args.progress_limit or 200))},
+                query={"limit": max(1, int(args.progress_limit or 2000))},
                 insecure_tls=bool(conn.insecure_tls),
             )
             _print_crawl_progress(crawl_progress_payload)

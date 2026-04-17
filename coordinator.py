@@ -100,6 +100,8 @@ class DistributedCoordinator:
         self._job_lock = threading.Lock()
         self._active_jobs = 0
         self._fleet_lock = threading.Lock()
+        self._worker_state_lock = threading.Lock()
+        self._worker_states: dict[str, str] = {}
 
     def _begin_job(self) -> None:
         with self._job_lock:
@@ -108,6 +110,51 @@ class DistributedCoordinator:
     def _end_job(self) -> None:
         with self._job_lock:
             self._active_jobs = max(0, self._active_jobs - 1)
+
+    def _set_worker_state(self, worker_id: str, state: str) -> None:
+        safe_state = str(state or "").strip().lower()
+        if safe_state not in {"running", "paused", "stopped", "errored", "idle"}:
+            safe_state = "idle"
+        with self._worker_state_lock:
+            self._worker_states[str(worker_id)] = safe_state
+
+    def _get_worker_state(self, worker_id: str) -> str:
+        with self._worker_state_lock:
+            return str(self._worker_states.get(str(worker_id), "running") or "running")
+
+    def _poll_worker_commands(self, worker_id: str) -> str:
+        state = self._get_worker_state(worker_id)
+        while not self.stop_event.is_set():
+            try:
+                command_entry = self.client.claim_worker_command(worker_id, worker_state=state)
+            except Exception as exc:
+                print(f"[coordinator] worker command poll failed ({worker_id}): {exc}", flush=True)
+                return state
+            if not command_entry:
+                return state
+
+            command_id = _safe_int(command_entry.get("id", 0), 0)
+            command = str(command_entry.get("command", "") or "").strip().lower()
+            ok = True
+            err = ""
+            if command == "pause":
+                state = "paused"
+            elif command == "stop":
+                state = "stopped"
+            elif command == "start":
+                state = "running"
+            else:
+                ok = False
+                err = f"unsupported command: {command!r}"
+                state = "errored"
+            self._set_worker_state(worker_id, state)
+            if command_id > 0:
+                try:
+                    self.client.complete_worker_command(worker_id, command_id, success=ok, error=err)
+                except Exception as exc:
+                    print(f"[coordinator] worker command complete failed ({worker_id}): {exc}", flush=True)
+            if not ok:
+                return state
 
     def _read_local_fleet_generation(self) -> int:
         path = self.cfg.output_root / FLEET_GEN_APPLIED_FILENAME
@@ -209,7 +256,12 @@ class DistributedCoordinator:
 
     def _nightmare_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-nightmare-{idx}"
+        self._set_worker_state(worker_id, "running")
         while not self.stop_event.is_set():
+            state = self._poll_worker_commands(worker_id)
+            if state in {"paused", "stopped", "errored"}:
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
             self._maybe_apply_fleet_output_clear()
             try:
                 entry = self.client.claim_target(worker_id, self.cfg.lease_seconds)
@@ -316,7 +368,12 @@ class DistributedCoordinator:
 
     def _fozzy_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-fozzy-{idx}"
+        self._set_worker_state(worker_id, "running")
         while not self.stop_event.is_set():
+            state = self._poll_worker_commands(worker_id)
+            if state in {"paused", "stopped", "errored"}:
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
             self._maybe_apply_fleet_output_clear()
             try:
                 entry = self.client.claim_stage(worker_id, "fozzy", self.cfg.lease_seconds)
@@ -400,7 +457,12 @@ class DistributedCoordinator:
 
     def _extractor_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-extractor-{idx}"
+        self._set_worker_state(worker_id, "running")
         while not self.stop_event.is_set():
+            state = self._poll_worker_commands(worker_id)
+            if state in {"paused", "stopped", "errored"}:
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
             self._maybe_apply_fleet_output_clear()
             try:
                 entry = self.client.claim_stage(worker_id, "extractor", self.cfg.lease_seconds)

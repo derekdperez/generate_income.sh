@@ -112,6 +112,29 @@ def test_coordinator_client_upload_and_download_artifact(monkeypatch):
     assert calls
 
 
+def test_coordinator_client_worker_command_claim_and_complete(monkeypatch):
+    client = runtime.CoordinatorClient("https://coord.example.com", "token")
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fake_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/api/coord/worker-command/claim":
+            return {"ok": True, "command": {"id": 7, "command": "pause", "payload": {}}}
+        if path == "/api/coord/worker-command/complete":
+            return {"ok": True}
+        return {"ok": False}
+
+    monkeypatch.setattr(client, "_request_json", fake_request)
+
+    command = client.claim_worker_command("worker-a", worker_state="running")
+    assert command is not None
+    assert command["id"] == 7
+    assert command["command"] == "pause"
+    assert client.complete_worker_command("worker-a", 7, success=True)
+    assert calls[0][1] == "/api/coord/worker-command/claim"
+    assert calls[1][1] == "/api/coord/worker-command/complete"
+
+
 def test_load_config_uses_env_for_insecure_tls_and_applies_minimums(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "coordinator.json"
     config_path.write_text(

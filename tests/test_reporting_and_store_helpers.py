@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html
 from reporting.server_pages import render_crawl_progress_html, render_dashboard_html, render_workers_html
+from server import collect_dashboard_data
 from server_app.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
 
 
@@ -90,13 +92,16 @@ def test_database_status_limits_rows_per_table():
                 self._fetchone = ("nightmare", "nightmare", "PostgreSQL 16", now)
                 return
             if "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" in compact:
-                self._fetchall = [("public", "coordinator_targets", 50)]
+                self._fetchall = [("public", "coordinator_targets")]
                 return
             if "FROM information_schema.columns" in compact:
                 self._fetchall = [
                     ("entry_id", "text", "NO"),
                     ("raw", "text", "YES"),
                 ]
+                return
+            if 'SELECT COUNT(*) FROM "public"."coordinator_targets";' in compact:
+                self._fetchone = (50,)
                 return
             if 'FROM "public"."coordinator_targets" LIMIT %s;' in compact:
                 assert params == (20,)
@@ -133,7 +138,7 @@ def test_database_status_limits_rows_per_table():
     assert data["table_count"] == 1
     table = data["tables"][0]
     assert table["row_count"] == 50
-    assert table["row_count_is_estimate"] is True
+    assert table["row_count_is_estimate"] is False
     assert table["rows_returned"] == 20
     assert table["rows_limited"] is True
     assert len(table["rows"]) == 20
@@ -160,10 +165,13 @@ def test_database_status_tolerates_single_table_query_failure():
                 self._fetchone = ("nightmare", "nightmare", "PostgreSQL 16", now)
                 return
             if "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" in compact:
-                self._fetchall = [("public", "problem_table", 7)]
+                self._fetchall = [("public", "problem_table")]
                 return
             if "FROM information_schema.columns" in compact:
                 self._fetchall = [("raw", "text", "YES")]
+                return
+            if 'SELECT COUNT(*) FROM "public"."problem_table";' in compact:
+                self._fetchone = (7,)
                 return
             if 'FROM "public"."problem_table" LIMIT %s;' in compact:
                 raise RuntimeError("simulated table read failure")
@@ -217,7 +225,7 @@ def test_worker_control_snapshot_includes_presence_only_worker():
         def execute(self, sql, params=None):
             compact = " ".join(str(sql).split())
             if "FROM worker_ids w" in compact and "queued_commands" in compact:
-                self._fetchall = [("presence-worker-1", now, 0, 0, 0, [], 0)]
+                self._fetchall = [("presence-worker-1", now, 0, 0, 0, [], 0, "state_running")]
                 return
             raise AssertionError(f"Unexpected SQL in test: {compact}")
 
@@ -244,7 +252,7 @@ def test_worker_control_snapshot_includes_presence_only_worker():
     assert data["counts"]["total_workers"] == 1
     worker = data["workers"][0]
     assert worker["worker_id"] == "presence-worker-1"
-    assert worker["status"] == "online"
+    assert worker["status"] == "running"
     assert worker["running_targets"] == 0
     assert worker["running_stage_tasks"] == 0
     assert worker["urls_scanned_session"] == 0
@@ -266,7 +274,7 @@ def test_worker_statuses_includes_presence_only_worker():
         def execute(self, sql, params=None):
             compact = " ".join(str(sql).split())
             if "FROM worker_ids w" in compact and "active_target_leases" in compact:
-                self._fetchall = [("presence-worker-2", now, 0, 0, 0, 0, [])]
+                self._fetchall = [("presence-worker-2", now, 0, 0, 0, 0, [], "state_running")]
                 return
             raise AssertionError(f"Unexpected SQL in test: {compact}")
 
@@ -293,7 +301,7 @@ def test_worker_statuses_includes_presence_only_worker():
     assert data["counts"]["total_workers"] == 1
     worker = data["workers"][0]
     assert worker["worker_id"] == "presence-worker-2"
-    assert worker["status"] == "online"
+    assert worker["status"] == "running"
     assert worker["running_targets"] == 0
     assert worker["running_stage_tasks"] == 0
 
@@ -369,3 +377,29 @@ def test_crawl_progress_snapshot_reports_domain_counts():
     assert domain["visited_urls_count"] == 5
     assert domain["frontier_count"] == 7
     assert domain["active_workers"] == ["worker-1"]
+
+
+def test_collect_dashboard_data_uses_coordinator_progress_when_output_empty(tmp_path: Path):
+    class DummyStore:
+        def crawl_progress_snapshot(self, *, limit: int = 2000):
+            assert limit == 2000
+            return {
+                "counts": {"total_domains": 1, "running_domains": 1},
+                "domains": [
+                    {
+                        "root_domain": "example.com",
+                        "phase": "nightmare_running",
+                        "discovered_urls_count": 42,
+                        "visited_urls_count": 11,
+                    }
+                ],
+            }
+
+    data = collect_dashboard_data(tmp_path, DummyStore())
+    assert data["totals"]["domains"] == 1
+    assert data["totals"]["running"] == 1
+    domain = data["domains"][0]
+    assert domain["domain"] == "example.com"
+    assert domain["status"] == "nightmare_running"
+    assert domain["unique_urls"] == 42
+    assert domain["requested_urls"] == 11

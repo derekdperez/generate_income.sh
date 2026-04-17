@@ -58,9 +58,10 @@
     function buildCards(t) {
       const cards = [
         ["Domains", t.domains],
-        ["Fozzy Complete", t.fozzy_complete],
-        ["Fozzy Interrupted", t.fozzy_interrupted],
-        ["Parameterized", t.parameterized],
+        ["Running", t.running],
+        ["Pending", t.pending],
+        ["Completed", t.completed],
+        ["Failed", t.failed],
         ["Discovered Only", t.discovered],
       ];
       return cards.map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");

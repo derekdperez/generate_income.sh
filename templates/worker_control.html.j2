@@ -161,18 +161,26 @@
     }
     function render(data) {
       const c = data.counts || {};
-      const cards = [["Workers", c.total_workers || 0],["Online", c.online_workers || 0],["Stale", c.stale_workers || 0]];
+      const cards = [
+        ["Workers", c.total_workers || 0],
+        ["Running", c.running_workers || 0],
+        ["Paused", c.paused_workers || 0],
+        ["Stopped", c.stopped_workers || 0],
+        ["Errored", c.errored_workers || 0],
+        ["Idle", c.idle_workers || 0]
+      ];
       document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
       const rows = data.workers || [];
       if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; return; }
       document.getElementById("rows").innerHTML = rows.map((w) => {
         const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replace(/%2F/g, "/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
-        const statusClass = w.status === "online" ? "online" : "stale";
+        const runningLike = new Set(["running", "idle"]);
+        const statusClass = runningLike.has(String(w.status || "")) ? "online" : "stale";
         const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
         return `<tr>
           <td><input class="workerSel" type="checkbox" value="${esc(w.worker_id)}"></td>
           <td>${esc(w.worker_id)}</td>
-          <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span></td>
+          <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span><br><span class="muted">${esc(w.last_activity || "")}</span></td>
           <td>${targets}</td>
           <td>${esc(w.urls_scanned_session)}</td>
           <td><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','start')">Start</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','pause')">Pause</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','stop')">Stop</button></td>

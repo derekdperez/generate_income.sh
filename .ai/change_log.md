@@ -450,3 +450,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Added cross-page navigation link to Crawl Progress from dashboard/workers/database templates.
 - Added/updated tests for template render and server decomposition imports.
 - Validation: full suite passes (`python -m pytest -q` => 86 passed).
+- Fixed coordinator DB-status table preview regression and tightened DB table introspection behavior:
+  - Resolved placeholder mismatch bug caused by `format('<bytea %s bytes>', ...)` by switching to SQL string concatenation for bytea preview.
+  - Removed `reltuples` row estimate usage; `database_status()` now executes exact `COUNT(*)` per table.
+  - Table row preview now returns only top 20 rows (ordered by most recent timestamp/id-style columns when available) and reports truncation against exact count.
+- Worker control hardening and stale-worker cleanup:
+  - Worker status/control queries now use recency retention windows so historical worker IDs age out of API responses.
+  - Added richer worker status derivation (`running`, `paused`, `stopped`, `errored`, `idle`) and hid stale-only records from worker control snapshots.
+  - Added worker command lifecycle APIs in store/server (`claim_worker_command`, `complete_worker_command`) and connected distributed coordinator loops to consume `start/pause/stop` commands.
+  - Queue behavior now supersedes older queued commands for a worker.
+- Dashboard/crawl progress UX:
+  - Dashboard `/api/summary` now merges coordinator crawl-progress data, so domains/URL counts still populate even when local output folders are empty on central nodes.
+  - Crawl progress defaults increased to 2000 in API/page/client.
+- Validation: `python -m pytest -q` -> 88 passed.

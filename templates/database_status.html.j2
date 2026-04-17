@@ -29,7 +29,7 @@
 </head>
 <body>
   <h1>Database Status</h1>
-  <div class="meta">Shows current PostgreSQL status, all non-system tables, and full contents of each table. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/crawl-progress">Crawl Progress</a></div>
+  <div class="meta">Shows current PostgreSQL status, all non-system tables, exact row counts, and up to the 20 most recent rows per table. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/crawl-progress">Crawl Progress</a></div>
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <button class="primary" onclick="refresh()">Refresh</button>
@@ -135,9 +135,8 @@
         const limitedLabel = t.rows_limited
           ? ` | showing first ${esc(returned)} row(s)`
           : "";
-        const estimateLabel = t.row_count_is_estimate ? " (estimated)" : "";
         return `<section class="tableCard">
-          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> | ${esc(t.row_count)} row(s)${estimateLabel}${limitedLabel}</div>
+          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> | ${esc(t.row_count)} row(s)${limitedLabel}</div>
           <div class="tableBody">
             <div><strong>Columns</strong><br>${columns || '<span class="muted">none</span>'}</div>
             ${tableHtml}

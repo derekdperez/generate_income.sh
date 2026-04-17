@@ -218,7 +218,7 @@ def _read_tail_text(path: Path, max_bytes: int = MAX_LOG_TAIL_BYTES) -> str:
         return ""
 
 
-def collect_dashboard_data(output_root: Path) -> dict[str, Any]:
+def collect_dashboard_data(output_root: Path, coordinator_store: CoordinatorStore | None = None) -> dict[str, Any]:
     output_root = output_root.resolve()
     domains: list[dict[str, Any]] = []
 
@@ -284,6 +284,62 @@ def collect_dashboard_data(output_root: Path) -> dict[str, Any]:
             }
         )
 
+    coordinator_counts: dict[str, Any] = {}
+    if coordinator_store is not None:
+        try:
+            progress = coordinator_store.crawl_progress_snapshot(limit=2000)
+            coordinator_counts = progress.get("counts", {}) if isinstance(progress.get("counts"), dict) else {}
+            existing = {str(item.get("domain", "")).strip().lower(): item for item in domains}
+            for item in progress.get("domains", []):
+                if not isinstance(item, dict):
+                    continue
+                domain = str(item.get("root_domain", "")).strip().lower()
+                if not domain:
+                    continue
+                discovered = _safe_int(item.get("discovered_urls_count", 0))
+                visited = _safe_int(item.get("visited_urls_count", 0))
+                phase = str(item.get("phase", "") or "").strip().lower() or "discovered"
+                if domain in existing:
+                    row = existing[domain]
+                    row["status"] = phase
+                    row["unique_urls"] = max(_safe_int(row.get("unique_urls", 0)), discovered)
+                    row["requested_urls"] = max(_safe_int(row.get("requested_urls", 0)), visited)
+                    continue
+                domains.append(
+                    {
+                        "domain": domain,
+                        "status": phase,
+                        "unique_urls": discovered,
+                        "requested_urls": visited,
+                        "anomalies": 0,
+                        "reflections": 0,
+                        "paths": {
+                            "domain_dir": None,
+                            "url_inventory": None,
+                            "requests": None,
+                            "parameters": None,
+                            "nightmare_report_html": None,
+                            "fozzy_summary_json": None,
+                            "fozzy_results_html": None,
+                        },
+                        "paths_rel": {
+                            "domain_dir": None,
+                            "url_inventory": None,
+                            "requests": None,
+                            "parameters": None,
+                            "nightmare_report_html": None,
+                            "fozzy_summary_json": None,
+                            "fozzy_results_html": None,
+                        },
+                        "logs": [],
+                        "latest_log_tail": "",
+                    }
+                )
+        except Exception:
+            coordinator_counts = {}
+
+    domains = sorted(domains, key=lambda item: str(item.get("domain", "")).lower())
+
     batch_state = _read_json_dict(output_root / "batch_state" / "batch_run_state.json")
     batch_counts: dict[str, int] = {}
     entries = batch_state.get("entries", [])
@@ -300,7 +356,12 @@ def collect_dashboard_data(output_root: Path) -> dict[str, Any]:
         "fozzy_interrupted": sum(1 for d in domains if d["status"] == "fozzy_interrupted"),
         "parameterized": sum(1 for d in domains if d["status"] == "parameterized"),
         "discovered": sum(1 for d in domains if d["status"] == "discovered"),
+        "running": sum(1 for d in domains if str(d.get("status", "")).endswith("_running") or d.get("status") == "running"),
+        "pending": sum(1 for d in domains if str(d.get("status", "")).endswith("_pending") or d.get("status") == "pending"),
+        "completed": sum(1 for d in domains if d.get("status") in {"completed", "fozzy_complete"}),
+        "failed": sum(1 for d in domains if d.get("status") in {"failed", "fozzy_interrupted", "errored"}),
         "batch_counts": batch_counts,
+        "coordinator_counts": coordinator_counts,
     }
 
     return {
@@ -572,7 +633,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/summary":
-            payload = collect_dashboard_data(self.output_root)
+            payload = collect_dashboard_data(self.output_root, self.coordinator_store)
             self._write_json(payload)
             return
         if path == "/api/log-tail":
@@ -663,7 +724,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            limit = _safe_int((query.get("limit") or [200])[0], 200)
+            limit = _safe_int((query.get("limit") or [2000])[0], 2000)
             try:
                 payload = self.coordinator_store.crawl_progress_snapshot(limit=limit)
             except Exception as exc:
@@ -968,6 +1029,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if self.coordinator_store.queue_worker_command(worker_id, command, payload={"source": "worker-control-ui"}):
                     queued += 1
             self._write_json({"ok": True, "queued": queued, "command": command, "worker_ids": worker_ids})
+            return
+
+        if path == "/api/coord/worker-command/claim":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            worker_state = str(body.get("worker_state", "idle") or "idle").strip().lower()
+            if not worker_id:
+                self._write_json({"error": "worker_id is required"}, status=400)
+                return
+            command = self.coordinator_store.claim_worker_command(worker_id, worker_state=worker_state)
+            self._write_json({"ok": True, "command": command})
+            return
+
+        if path == "/api/coord/worker-command/complete":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            command_id = _safe_int(body.get("command_id", 0), 0)
+            success = bool(body.get("success", False))
+            error = str(body.get("error", "") or "")
+            if not worker_id or command_id <= 0:
+                self._write_json({"error": "worker_id and command_id are required"}, status=400)
+                return
+            ok = self.coordinator_store.complete_worker_command(
+                worker_id,
+                command_id,
+                success=success,
+                error=error,
+            )
+            self._write_json({"ok": bool(ok)})
             return
 
         if path == "/api/coord/worker-config":

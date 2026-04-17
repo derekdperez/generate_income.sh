@@ -134,3 +134,13 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Operator UI convention: new operational pages should be template-backed under `templates/*.j2`, exposed via `reporting/server_pages.py`, and routed in `server.py` (no inline HTML in route handlers).
 - Crawl monitoring UX convention: use `/api/coord/crawl-progress` as source-of-truth and render per-domain `discovered_urls_count`/`visited_urls_count`/`frontier_count` with lightweight auto-refresh.
 - Cross-page ops navigation should keep `/dashboard`, `/workers`, `/database`, and `/crawl-progress` linked in page headers/meta bars.
+- Database status convention:
+  - Avoid approximate row counts; use exact `COUNT(*)` per table.
+  - Preview responses must be bounded to 20 rows/table and should attempt a deterministic recent-first sort (updated/completed/created/id-style columns) when available.
+  - Do not embed `%s` tokens in SQL string literals passed through psycopg execute; they are interpreted as placeholders.
+- Worker control convention:
+  - Worker discovery APIs should be recency-scoped to avoid long-tail stale worker accumulation from historical task rows.
+  - Worker status should communicate operational state (`running|paused|stopped|errored|idle`) rather than only online/stale.
+  - Worker start/pause/stop commands should be consumed through explicit claim/complete command endpoints and should supersede stale queued commands per worker.
+- Dashboard convention:
+  - On central coordinator deployments, dashboard domain lists should merge coordinator DB progress data instead of relying only on local output folder discovery.

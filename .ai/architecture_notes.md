@@ -70,3 +70,8 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Route dispatch remains in `server.py`.
   - HTML rendering remains delegated to `reporting/server_pages.py` templates.
   - Data for crawl page is supplied by existing coordinator API `/api/coord/crawl-progress` (store/query logic remains in `server_app/store.py`).
+- Worker-control boundary update:
+  - UI command queueing (`/api/coord/workers/command`) now pairs with worker-side command claim/complete APIs (`/api/coord/worker-command/*`) consumed by coordinator worker loops.
+  - Presence heartbeats now carry state hints from worker command polling, enabling status reporting beyond lease-derived running tasks.
+- Dashboard data boundary update:
+  - `collect_dashboard_data()` now supports coordinator-store-backed domain enrichment so operator dashboard remains informative on central-only hosts with sparse local artifacts.

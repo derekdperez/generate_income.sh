@@ -33,7 +33,7 @@
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <input id="filter" type="text" placeholder="Filter domain...">
-    <input id="limit" type="number" min="1" max="2000" value="200" style="max-width: 120px;" title="Max domains">
+    <input id="limit" type="number" min="1" max="2000" value="2000" style="max-width: 120px;" title="Max domains">
     <button class="primary" onclick="refresh()">Refresh</button>
     <span id="msg" class="muted"></span>
   </div>
@@ -158,7 +158,7 @@
       msg.textContent = "Loading...";
       try {
         const limitInput = document.getElementById("limit");
-        const limitValue = Math.max(1, Number(limitInput.value || 200));
+        const limitValue = Math.max(1, Number(limitInput.value || 2000));
         const payload = await apiGet(`/api/coord/crawl-progress?limit=${encodeURIComponent(limitValue)}`);
         renderCards(payload);
         renderRows(payload);

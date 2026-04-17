@@ -211,6 +211,35 @@ class CoordinatorClient:
     def get_fleet_settings(self) -> dict[str, Any]:
         return self._request_json("GET", "/api/coord/fleet-settings")
 
+    def claim_worker_command(self, worker_id: str, *, worker_state: str = "idle") -> Optional[dict[str, Any]]:
+        rsp = self._request_json(
+            "POST",
+            "/api/coord/worker-command/claim",
+            {"worker_id": worker_id, "worker_state": worker_state},
+        )
+        command = rsp.get("command")
+        return command if isinstance(command, dict) else None
+
+    def complete_worker_command(
+        self,
+        worker_id: str,
+        command_id: int,
+        *,
+        success: bool,
+        error: str = "",
+    ) -> bool:
+        rsp = self._request_json(
+            "POST",
+            "/api/coord/worker-command/complete",
+            {
+                "worker_id": worker_id,
+                "command_id": int(command_id),
+                "success": bool(success),
+                "error": str(error or ""),
+            },
+        )
+        return bool(rsp.get("ok"))
+
 class SessionUploader(threading.Thread):
     def __init__(
         self,
