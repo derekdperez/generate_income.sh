@@ -429,6 +429,7 @@ class _ExtractorMatchesCache:
             "content_sha256": str(content_sha256 or "").strip().lower(),
             "updated_at_utc": str(updated_at_utc or "") or None,
             "match_count": int(match_count or 0),
+            "max_importance_score": max((_safe_int(item.get("importance_score", 0), 0) for item in rows if isinstance(item, dict)), default=0),
             "rows": rows,
             "files": files,
             "loaded_at_epoch": time.time(),
@@ -447,6 +448,15 @@ class _ExtractorMatchesCache:
             return int(entry.get("match_count", 0) or 0)
         except Exception:
             return None
+
+    def get_domain_stats(self, root_domain: str, content_sha256: str) -> Optional[dict[str, int]]:
+        entry = self.get(root_domain, content_sha256)
+        if entry is None:
+            return None
+        return {
+            "match_count": _safe_int(entry.get("match_count", 0), 0),
+            "max_importance_score": _safe_int(entry.get("max_importance_score", 0), 0),
+        }
 
 
 class _FozzySummaryCache:
@@ -877,9 +887,15 @@ def _apply_fuzzing_row_query(
 
 
 def _count_matches_in_zip_bytes(data: bytes) -> int:
+    stats = _extractor_match_stats_from_zip_bytes(data)
+    return int(stats.get("match_count", 0) or 0)
+
+
+def _extractor_match_stats_from_zip_bytes(data: bytes) -> dict[str, int]:
     try:
         with zipfile.ZipFile(io.BytesIO(data), mode="r") as zf:
             total = 0
+            max_importance_score = 0
             for info in zf.infolist():
                 if info.is_dir():
                     continue
@@ -888,9 +904,16 @@ def _count_matches_in_zip_bytes(data: bytes) -> int:
                     continue
                 if name.split("/")[-1].startswith("m_"):
                     total += 1
-            return total
+                    try:
+                        payload = zf.read(info)
+                        parsed = json.loads(payload.decode("utf-8", errors="replace"))
+                    except Exception:
+                        parsed = {}
+                    if isinstance(parsed, dict):
+                        max_importance_score = max(max_importance_score, _safe_int(parsed.get("importance_score", 0), 0))
+            return {"match_count": total, "max_importance_score": max_importance_score}
     except Exception:
-        return 0
+        return {"match_count": 0, "max_importance_score": 0}
 
 
 def _load_extractor_match_rows_from_zip(
@@ -1375,28 +1398,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     continue
                 content_sha256 = str(item.get("content_sha256", "") or "")
                 match_count = item.get("summary_match_count")
-                if match_count is None:
-                    cached_count = self.extractor_matches_cache.get_match_count(root_domain, content_sha256)
-                    if cached_count is not None:
-                        match_count = cached_count
-                if match_count is None and fallback_budget > 0:
+                max_importance_score: Optional[int] = None
+                cached_stats = self.extractor_matches_cache.get_domain_stats(root_domain, content_sha256)
+                if cached_stats is not None:
+                    if match_count is None:
+                        match_count = cached_stats.get("match_count")
+                    max_importance_score = cached_stats.get("max_importance_score")
+                if (match_count is None or max_importance_score is None) and fallback_budget > 0:
                     try:
                         artifact = self.coordinator_store.get_artifact(root_domain, "extractor_matches_zip")
                     except Exception:
                         artifact = None
                     if artifact is not None:
                         fallback_budget -= 1
-                        match_count = _count_matches_in_zip_bytes(bytes(artifact.get("content", b"") or b""))
+                        stats = _extractor_match_stats_from_zip_bytes(bytes(artifact.get("content", b"") or b""))
+                        if match_count is None:
+                            match_count = stats.get("match_count")
+                        if max_importance_score is None:
+                            max_importance_score = stats.get("max_importance_score")
                 out.append(
                     {
                         "root_domain": root_domain,
                         "match_count": int(match_count or 0),
+                        "max_importance_score": int(max_importance_score or 0),
                         "content_size_bytes": int(item.get("content_size_bytes", 0) or 0),
                         "updated_at_utc": item.get("updated_at_utc"),
                         "source_worker": item.get("source_worker"),
-                        "cached": self.extractor_matches_cache.get_match_count(root_domain, content_sha256) is not None,
+                        "cached": cached_stats is not None,
                     }
                 )
+            out.sort(
+                key=lambda row: (
+                    -_safe_int(row.get("max_importance_score", 0), 0),
+                    -_safe_int(row.get("match_count", 0), 0),
+                    str(row.get("root_domain", "")).lower(),
+                )
+            )
             self._write_json(
                 {
                     "generated_at_utc": _iso_now(),

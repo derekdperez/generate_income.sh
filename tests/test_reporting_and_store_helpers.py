@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import io
+import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -14,7 +16,13 @@ from reporting.server_pages import (
     render_fuzzing_html,
     render_workers_html,
 )
-from server import _apply_extractor_row_query, _apply_fuzzing_row_query, _top_extractor_filters, collect_dashboard_data
+from server import (
+    _apply_extractor_row_query,
+    _apply_fuzzing_row_query,
+    _extractor_match_stats_from_zip_bytes,
+    _top_extractor_filters,
+    collect_dashboard_data,
+)
 from server_app.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
 
 
@@ -560,6 +568,17 @@ def test_top_extractor_filters_ranks_descending_and_limits_top_10():
     assert top[0]["match_count"] == 12
     assert top[1]["filter_name"] == "rule-10"
     assert top[-1]["filter_name"] == "rule-02"
+
+
+def test_extractor_match_stats_from_zip_bytes_returns_count_and_max_score():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m_1.json", '{"importance_score": 3}')
+        zf.writestr("m_2.json", '{"importance_score": 12}')
+        zf.writestr("misc.json", '{"importance_score": 999}')
+    stats = _extractor_match_stats_from_zip_bytes(buf.getvalue())
+    assert stats["match_count"] == 2
+    assert stats["max_importance_score"] == 12
 
 
 def test_apply_extractor_row_query_filters_sorts_and_pages():

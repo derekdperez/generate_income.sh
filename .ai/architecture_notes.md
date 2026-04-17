@@ -81,6 +81,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Parsed extractor zip rows/files are cached in-process (`_ExtractorMatchesCache`) keyed by `root_domain + content_sha256` with TTL + bounded domain count.
   - UI page `/extractor-matches` consumes these APIs and can query one domain or all domains without requiring pre-expanded filesystem artifacts.
 - Extractor match query shaping (global search, per-column filters, sort, paging) is handled in `server.py` before serialization so clients can request only one page at a time and avoid transferring full result sets.
+  - Domain metadata endpoint now also computes highest extractor match importance score per domain, sourced from cache when present and zip-scan fallback when needed.
 
 - Fozzy findings observability boundary:
   - New `/fuzzing` page is template-rendered; findings data is sourced from coordinator DB artifacts (`fozzy_summary_json` and `fozzy_results_zip`).

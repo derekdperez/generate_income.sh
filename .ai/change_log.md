@@ -514,3 +514,12 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Added navigation links to Fuzzing from dashboard/workers/database/crawl-progress/extractor pages.
   - Added tests for new renderer, server module wiring, store domain query parsing, and fuzzing row query behavior.
 - Validation: `pytest -q` -> 97 passed.
+
+- Extractor domain dropdown improvements:
+  - `/api/coord/extractor-matches/domains` now includes `max_importance_score` per domain.
+  - Domain ordering now prioritizes highest `max_importance_score` (desc), then `match_count` (desc), then domain name.
+  - Added extractor zip stats scan helper to compute both match count and max importance score when summary/cache data is incomplete.
+  - Extractor cache entries now persist `max_importance_score` alongside `match_count`.
+  - `templates/extractor_matches.html.j2` now includes `hideZeroDomains` checkbox to hide/show zero-result domains in dropdown without reloading artifacts.
+  - Dropdown labels now show both highest score and match count per domain.
+- Validation: `pytest -q` -> 98 passed.

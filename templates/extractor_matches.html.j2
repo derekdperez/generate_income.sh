@@ -39,6 +39,7 @@
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <select id="domainSelect" style="min-width: 320px;"></select>
+    <label><input id="hideZeroDomains" type="checkbox" checked> Hide 0-result domains</label>
     <input id="searchText" type="text" placeholder="Global search (all fields)">
     <input id="limit" type="number" min="1" max="2000" value="250" title="Rows per page">
     <button class="primary" onclick="refreshDomainsAndMatches()">Refresh</button>
@@ -135,6 +136,7 @@
     let currentRows = [];
     let currentTopFilters = [];
     let currentFiles = [];
+    let currentDomainStats = [];
     let currentOffset = 0;
     let currentTotalRows = 0;
     let debounceHandle = null;
@@ -355,17 +357,31 @@
               </tr>`;
             }).join("");
     }
-    async function loadDomains() {
-      const payload = await apiGet("/api/coord/extractor-matches/domains?limit=20000");
-      const domains = Array.isArray(payload.domains) ? payload.domains : [];
-      const totalMatches = domains.reduce((sum, d) => sum + Number(d.match_count || 0), 0);
+    function renderDomainOptions() {
       const select = document.getElementById("domainSelect");
       const current = String(select.value || "__all__");
+      const hideZero = Boolean(document.getElementById("hideZeroDomains").checked);
+      const domains = [...currentDomainStats]
+        .filter((d) => !hideZero || Number(d.match_count || 0) > 0)
+        .sort((a, b) => {
+          const scoreDiff = Number(b.max_importance_score || 0) - Number(a.max_importance_score || 0);
+          if (scoreDiff !== 0) return scoreDiff;
+          const countDiff = Number(b.match_count || 0) - Number(a.match_count || 0);
+          if (countDiff !== 0) return countDiff;
+          return String(a.root_domain || "").localeCompare(String(b.root_domain || ""));
+        });
+      const totalMatches = domains.reduce((sum, d) => sum + Number(d.match_count || 0), 0);
       select.innerHTML = `<option value="__all__">All domains (${esc(domains.length)} domains, ${esc(totalMatches)} matches)</option>` +
-        domains.map((d) => `<option value="${esc(d.root_domain)}">${esc(d.root_domain)} (${esc(d.match_count || 0)})</option>`).join("");
+        domains.map((d) => `<option value="${esc(d.root_domain)}">${esc(d.root_domain)} (score ${esc(d.max_importance_score || 0)}, matches ${esc(d.match_count || 0)})</option>`).join("");
       if ([...select.options].some((o) => o.value === current)) select.value = current;
+      else select.value = "__all__";
       updateDownloadLink();
       return domains.length;
+    }
+    async function loadDomains() {
+      const payload = await apiGet("/api/coord/extractor-matches/domains?limit=20000");
+      currentDomainStats = Array.isArray(payload.domains) ? payload.domains : [];
+      return renderDomainOptions();
     }
     async function loadMatches() {
       const msg = document.getElementById("msg");
@@ -417,6 +433,12 @@
     document.getElementById("token").addEventListener("change", persistTokenCookie);
     document.getElementById("token").addEventListener("blur", persistTokenCookie);
     document.getElementById("domainSelect").addEventListener("change", () => { updateDownloadLink(); scheduleLoadMatches(true); });
+    document.getElementById("hideZeroDomains").addEventListener("change", () => {
+      const before = selectedDomain();
+      renderDomainOptions();
+      const after = selectedDomain();
+      if (before !== after) scheduleLoadMatches(true);
+    });
     document.getElementById("searchText").addEventListener("input", () => scheduleLoadMatches(true));
     document.getElementById("limit").addEventListener("change", () => scheduleLoadMatches(true));
     [
