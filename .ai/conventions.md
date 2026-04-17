@@ -131,3 +131,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Per-domain crawl monitoring should be served from coordinator DB via `/api/coord/crawl-progress` and `CoordinatorStore.crawl_progress_snapshot(...)`.
   - Response should include phase + discovered/visited/frontier counts + active workers/stages and summary totals.
   - CLI operator workflow uses `client.py progress` (or `client.py status`) with shared coordinator auth flags.
+- Operator UI convention: new operational pages should be template-backed under `templates/*.j2`, exposed via `reporting/server_pages.py`, and routed in `server.py` (no inline HTML in route handlers).
+- Crawl monitoring UX convention: use `/api/coord/crawl-progress` as source-of-truth and render per-domain `discovered_urls_count`/`visited_urls_count`/`frontier_count` with lightweight auto-refresh.
+- Cross-page ops navigation should keep `/dashboard`, `/workers`, `/database`, and `/crawl-progress` linked in page headers/meta bars.

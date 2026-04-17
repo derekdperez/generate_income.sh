@@ -22,9 +22,11 @@ def test_server_uses_external_coordinator_store():
     assert "render_dashboard_html" in server_source
     assert "render_workers_html" in server_source
     assert "render_database_html" in server_source
+    assert "render_crawl_progress_html" in server_source
     assert "def _render_dashboard_html" not in server_source
     assert "def _render_workers_html" not in server_source
     assert "def _render_database_html" not in server_source
+    assert "def _render_crawl_progress_html" not in server_source
 
 
 def test_store_includes_database_status_method():

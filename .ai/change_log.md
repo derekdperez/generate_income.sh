@@ -443,3 +443,10 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `test_client_main_progress_fetches_crawl_progress`
   - `test_crawl_progress_snapshot_reports_domain_counts`
 - Validation: `python -m pytest -q` -> 84 passed.
+- Added web app crawl progress report page:
+  - New route in `server.py`: `GET /crawl-progress`.
+  - New template-backed renderer in `reporting/server_pages.py`: `render_crawl_progress_html()`.
+  - New template `templates/crawl_progress.html.j2` with token-cookie auth, auto-refresh (3s), domain filter, limit control, and table showing phase/found/visited/frontier/active-workers/activity age from `/api/coord/crawl-progress`.
+- Added cross-page navigation link to Crawl Progress from dashboard/workers/database templates.
+- Added/updated tests for template render and server decomposition imports.
+- Validation: full suite passes (`python -m pytest -q` => 86 passed).

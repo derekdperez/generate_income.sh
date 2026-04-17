@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crawl Progress</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #64748b; }
+    .v { font-size: 20px; font-weight: 700; margin-top: 4px; word-break: break-word; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 14px; flex-wrap: wrap; }
+    input { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
+    .muted { color: #64748b; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #e2e8f0; }
+    .empty { padding: 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; }
+    .phase-running { color: #15803d; font-weight: 600; }
+    .phase-pending { color: #b45309; font-weight: 600; }
+    .phase-failed { color: #b91c1c; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Crawl Progress</h1>
+  <div class="meta">Live coordinator crawl status by domain. Auto-refresh every 3s. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a></div>
+
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <input id="filter" type="text" placeholder="Filter domain...">
+    <input id="limit" type="number" min="1" max="2000" value="200" style="max-width: 120px;" title="Max domains">
+    <button class="primary" onclick="refresh()">Refresh</button>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <div id="cards" class="cards"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Domain</th>
+        <th>Phase</th>
+        <th>Found URLs</th>
+        <th>Visited</th>
+        <th>Frontier</th>
+        <th>Active Workers</th>
+        <th>Last Activity (UTC)</th>
+        <th>Age (s)</th>
+      </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="8">Loading...</td></tr></tbody>
+  </table>
+
+  <script>
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) {
+          return decodeURIComponent(item.slice(needle.length));
+        }
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function hydrateTokenFromCookie() {
+      const token = readCookie(TOKEN_COOKIE_NAME);
+      if (token) document.getElementById("token").value = token;
+    }
+    function persistTokenCookie() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+    }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[ch]));
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    async function apiGet(path) {
+      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
+      if (!rsp.ok) throw new Error(await rsp.text());
+      return rsp.json();
+    }
+    function renderCards(payload) {
+      const counts = payload.counts || {};
+      const cards = [
+        ["Domains", counts.total_domains || 0],
+        ["Running", counts.running_domains || 0],
+        ["Queued", counts.queued_domains || 0],
+        ["Failed", counts.failed_domains || 0],
+        ["Completed", counts.completed_domains || 0],
+        ["Generated", payload.generated_at_utc || ""],
+      ];
+      document.getElementById("cards").innerHTML = cards
+        .map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`)
+        .join("");
+    }
+    function phaseClass(phase) {
+      const text = String(phase || "");
+      if (text.endsWith("_running")) return "phase-running";
+      if (text.endsWith("_pending")) return "phase-pending";
+      if (text === "failed") return "phase-failed";
+      return "";
+    }
+    function renderRows(payload) {
+      const filter = String(document.getElementById("filter").value || "").trim().toLowerCase();
+      const rows = Array.isArray(payload.domains) ? payload.domains : [];
+      const filtered = filter
+        ? rows.filter((row) => String(row.root_domain || "").toLowerCase().includes(filter))
+        : rows;
+      if (!filtered.length) {
+        document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No domains match the current filter.</td></tr>";
+        return;
+      }
+      const sorted = [...filtered].sort((a, b) => Number(b.discovered_urls_count || 0) - Number(a.discovered_urls_count || 0));
+      document.getElementById("rows").innerHTML = sorted.map((row) => {
+        const workers = Array.isArray(row.active_workers) ? row.active_workers.join(", ") : "";
+        const phase = String(row.phase || "idle");
+        return `<tr>
+          <td>${esc(row.root_domain || "")}</td>
+          <td><span class="${phaseClass(phase)}">${esc(phase)}</span></td>
+          <td>${esc(row.discovered_urls_count || 0)}</td>
+          <td>${esc(row.visited_urls_count || 0)}</td>
+          <td>${esc(row.frontier_count || 0)}</td>
+          <td>${esc(workers || "-")}</td>
+          <td>${esc(row.last_activity_at_utc || "-")}</td>
+          <td>${esc(row.seconds_since_activity ?? "-")}</td>
+        </tr>`;
+      }).join("");
+    }
+    async function refresh() {
+      const msg = document.getElementById("msg");
+      msg.textContent = "Loading...";
+      try {
+        const limitInput = document.getElementById("limit");
+        const limitValue = Math.max(1, Number(limitInput.value || 200));
+        const payload = await apiGet(`/api/coord/crawl-progress?limit=${encodeURIComponent(limitValue)}`);
+        renderCards(payload);
+        renderRows(payload);
+        msg.textContent = `Loaded ${Number((payload.counts || {}).total_domains || 0)} domain(s).`;
+      } catch (e) {
+        msg.textContent = "Load failed.";
+        document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load crawl progress: ${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    hydrateTokenFromCookie();
+    document.getElementById("token").addEventListener("change", persistTokenCookie);
+    document.getElementById("token").addEventListener("blur", persistTokenCookie);
+    document.getElementById("filter").addEventListener("input", refresh);
+    document.getElementById("limit").addEventListener("change", refresh);
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

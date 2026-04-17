@@ -66,3 +66,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Worker liveness in UI is no longer inferred only from target/stage leases; `server_app/store.py` now persists lightweight worker presence heartbeats in `coordinator_worker_presence`.
   - Polling claims/heartbeats/completions update this presence table, allowing idle-but-running workers to appear in `/api/coord/workers` and `/api/coord/worker-control`.
 - Observability boundary update: crawl-progress aggregation lives in `server_app/store.py` and is exposed by `server.py` as `/api/coord/crawl-progress`; this follows the server/store separation (routing in server, query logic in store).
+- Server UI boundary preserved during crawl-progress page addition:
+  - Route dispatch remains in `server.py`.
+  - HTML rendering remains delegated to `reporting/server_pages.py` templates.
+  - Data for crawl page is supplied by existing coordinator API `/api/coord/crawl-progress` (store/query logic remains in `server_app/store.py`).

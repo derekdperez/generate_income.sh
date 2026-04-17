@@ -16,3 +16,7 @@ def render_workers_html() -> str:
 
 def render_database_html() -> str:
     return render_template("database_status.html.j2")
+
+
+def render_crawl_progress_html() -> str:
+    return render_template("crawl_progress.html.j2")

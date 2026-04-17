@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html
-from reporting.server_pages import render_dashboard_html, render_workers_html
+from reporting.server_pages import render_crawl_progress_html, render_dashboard_html, render_workers_html
 from server_app.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
 
 
@@ -18,6 +18,11 @@ def test_render_dashboard_html_contains_expected_heading():
 def test_render_workers_html_contains_expected_heading():
     html = render_workers_html()
     assert "Worker Control Center" in html
+
+
+def test_render_crawl_progress_html_contains_expected_heading():
+    html = render_crawl_progress_html()
+    assert "Crawl Progress" in html
 
 
 def test_extractor_report_html_escapes_script_content():

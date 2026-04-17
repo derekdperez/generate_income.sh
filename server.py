@@ -46,7 +46,12 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from output_cleanup import clear_output_root_children
-from reporting.server_pages import render_dashboard_html, render_database_html, render_workers_html
+from reporting.server_pages import (
+    render_crawl_progress_html,
+    render_dashboard_html,
+    render_database_html,
+    render_workers_html,
+)
 from server_app.store import CoordinatorStore
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -562,6 +567,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/database":
             self._write_text(render_database_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/crawl-progress":
+            self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/summary":
             payload = collect_dashboard_data(self.output_root)
