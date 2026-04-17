@@ -127,3 +127,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Worker UI discovery should include idle workers via presence heartbeats, not only workers with running/completed target/stage rows.
   - `server_app/store.py` should keep `coordinator_worker_presence` updated during claim/heartbeat/complete code paths.
   - `/api/coord/workers` and `/api/coord/worker-control` routes should catch store exceptions and return JSON error responses instead of breaking the fetch channel.
+- Crawl progress observability convention:
+  - Per-domain crawl monitoring should be served from coordinator DB via `/api/coord/crawl-progress` and `CoordinatorStore.crawl_progress_snapshot(...)`.
+  - Response should include phase + discovered/visited/frontier counts + active workers/stages and summary totals.
+  - CLI operator workflow uses `client.py progress` (or `client.py status`) with shared coordinator auth flags.

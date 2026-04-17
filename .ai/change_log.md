@@ -432,3 +432,14 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
     - `test_worker_control_snapshot_includes_presence_only_worker`
     - `test_worker_statuses_includes_presence_only_worker`
 - Why: previous worker pages only discovered workers that had target/stage rows or queued commands, so idle polling workers could appear as “no workers discovered”.
+- Added coordinator crawl-progress observability path for per-domain crawl monitoring:
+  - New store query: `CoordinatorStore.crawl_progress_snapshot(limit=...)` in `server_app/store.py`.
+  - New API route: `GET /api/coord/crawl-progress` in `server.py`.
+  - New client action: `client.py progress` with `--progress-limit`.
+  - `status` action now also prints crawl-progress summary.
+- Fixed row-column index mapping bug in crawl-progress result parsing that could misread timestamps/counts and fail at runtime.
+- Added tests:
+  - `test_client_main_progress_rejects_skip_coordinator`
+  - `test_client_main_progress_fetches_crawl_progress`
+  - `test_crawl_progress_snapshot_reports_domain_counts`
+- Validation: `python -m pytest -q` -> 84 passed.
