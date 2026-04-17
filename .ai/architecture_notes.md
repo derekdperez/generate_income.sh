@@ -88,3 +88,6 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Domain-level summary metadata comes from `server_app/store.py::list_fozzy_summary_domains`.
   - Findings row flattening/paging/filtering/sorting is handled in `server.py` before JSON serialization.
   - Zip file browsing for Fozzy results is handled on-demand from DB artifact bytes (no extraction to disk required), with cached zip file index metadata.
+
+- Fuzzing results enrichment boundary: summary flattening in server.py is now augmented by optional zip-based hydration from ozzy_results_zip (parsed once per domain and cached) so legacy summaries without rich fields can still render detailed baseline-vs-fuzz columns in the web UI.
+

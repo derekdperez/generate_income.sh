@@ -161,3 +161,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Use server-side paging/filter/sort for findings endpoints (`limit`, `offset`, `sort_key`, `sort_dir`, `f_<column>`, global `q`) with default 250 rows/page.
   - File-level detail browsing should read from `fozzy_results_zip` artifact bytes on demand and use in-memory zip index caching for repeated listing/lookups.
   - Keep findings/file tables in fixed-height scroll containers and provide both global and column-specific search/filter controls.
+
+- Fuzzing UI data contract: /api/coord/fuzzing rows should include baseline/fuzz request content, response content, response code, response size, response duration, and diff fields (status_difference, size_difference, duration_difference_ms) so the page can compare pairs without additional client joins.
+- Reflection-note convention: when esult_type=reflection, include reflected value text in nomaly_note (format eflection_detected: <value>).
+

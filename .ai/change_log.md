@@ -523,3 +523,9 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `templates/extractor_matches.html.j2` now includes `hideZeroDomains` checkbox to hide/show zero-result domains in dropdown without reloading artifacts.
   - Dropdown labels now show both highest score and match count per domain.
 - Validation: `pytest -q` -> 98 passed.
+
+## 2026-04-17
+- Fuzzing page now exposes full baseline vs fuzz comparison columns (request/response content, status/size/duration, and diff columns) from /api/coord/fuzzing rows.
+- Added server-side enrichment that reads per-result JSON payloads from ozzy_results_zip and hydrates baseline/fuzz request/response previews + duration metrics for existing artifacts.
+- Reflection findings now include reflected text directly in the note field (eflection_detected: <value>) for both live flattening and new fozzy summary outputs.
+

@@ -568,6 +568,124 @@ def _to_preview_text(value: Any, *, max_len: int = 220) -> str:
     return text
 
 
+def _fuzzing_preview(value: Any, *, max_len: int = 600) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _fuzzing_extract_request_content(payload: dict[str, Any], response_payload: dict[str, Any] | None = None) -> str:
+    requested_url = str(payload.get("requested_url", "") or "")
+    http_method = str(
+        payload.get("http_method")
+        or ((response_payload or {}).get("http_method") if isinstance(response_payload, dict) else "")
+        or "GET"
+    ).strip().upper() or "GET"
+    mutated_parameter = str(payload.get("mutated_parameter", "") or "")
+    mutated_value = str(payload.get("mutated_value", "") or "")
+    if mutated_parameter:
+        if mutated_value:
+            return _fuzzing_preview(f"{http_method} {requested_url} [{mutated_parameter}={mutated_value}]")
+        return _fuzzing_preview(f"{http_method} {requested_url} [{mutated_parameter}]")
+    return _fuzzing_preview(f"{http_method} {requested_url}")
+
+
+def _build_fozzy_result_details_map(data: bytes) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    raw = bytes(data or b"")
+    if not raw:
+        return out
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw), mode="r") as zf:
+            for name in zf.namelist():
+                member = _normalize_zip_member_path(name)
+                if not member or not member.lower().endswith(".json"):
+                    continue
+                basename = Path(member).name
+                if not basename:
+                    continue
+                try:
+                    payload = json.loads(zf.read(name).decode("utf-8", errors="replace"))
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                baseline = payload.get("baseline") if isinstance(payload.get("baseline"), dict) else {}
+                fuzzing = payload.get("anomaly") if isinstance(payload.get("anomaly"), dict) else {}
+                if not fuzzing and isinstance(payload.get("response"), dict):
+                    fuzzing = payload.get("response") or {}
+                reflected_text = str(payload.get("mutated_value", "") or "")
+                out[member] = {
+                    "baseline_request_content": _fuzzing_extract_request_content(payload, baseline),
+                    "fuzzing_request_content": _fuzzing_extract_request_content(payload, fuzzing),
+                    "baseline_response_content": _fuzzing_preview(baseline.get("body_preview", "")),
+                    "fuzzing_response_content": _fuzzing_preview(fuzzing.get("body_preview", "")),
+                    "baseline_status": _safe_int(baseline.get("status", 0), 0),
+                    "new_status": _safe_int(fuzzing.get("status", 0), 0),
+                    "baseline_size": _safe_int(baseline.get("size", 0), 0),
+                    "new_size": _safe_int(fuzzing.get("size", 0), 0),
+                    "baseline_duration_ms": _safe_int(baseline.get("elapsed_ms", 0), 0),
+                    "fuzzing_duration_ms": _safe_int(fuzzing.get("elapsed_ms", 0), 0),
+                    "reflected_text": reflected_text,
+                }
+                if basename not in out:
+                    out[basename] = out[member]
+    except Exception:
+        return {}
+    return out
+
+
+def _enrich_fuzzing_rows_from_result_details(rows: list[dict[str, Any]], details: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows or not details:
+        return rows
+    out_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        result_file = str(row.get("result_file", "") or "")
+        file_key = _normalize_zip_member_path(result_file)
+        basename = Path(file_key or result_file).name
+        item = details.get(file_key) or details.get(basename)
+        if item is None:
+            out_rows.append(row)
+            continue
+        merged = dict(row)
+        merged["baseline_request_content"] = _fuzzing_preview(
+            item.get("baseline_request_content") or merged.get("baseline_request_content", "")
+        )
+        merged["fuzzing_request_content"] = _fuzzing_preview(
+            item.get("fuzzing_request_content") or merged.get("fuzzing_request_content", "")
+        )
+        merged["baseline_response_content"] = _fuzzing_preview(
+            item.get("baseline_response_content") or merged.get("baseline_response_content", "")
+        )
+        merged["fuzzing_response_content"] = _fuzzing_preview(
+            item.get("fuzzing_response_content") or merged.get("fuzzing_response_content", "")
+        )
+        baseline_status = _safe_int(item.get("baseline_status", merged.get("baseline_status", 0)), 0)
+        new_status = _safe_int(item.get("new_status", merged.get("new_status", 0)), 0)
+        baseline_size = _safe_int(item.get("baseline_size", merged.get("baseline_size", 0)), 0)
+        new_size = _safe_int(item.get("new_size", merged.get("new_size", 0)), 0)
+        baseline_duration_ms = _safe_int(item.get("baseline_duration_ms", merged.get("baseline_duration_ms", 0)), 0)
+        fuzzing_duration_ms = _safe_int(item.get("fuzzing_duration_ms", merged.get("fuzzing_duration_ms", 0)), 0)
+        merged["baseline_status"] = baseline_status
+        merged["new_status"] = new_status
+        merged["baseline_size"] = baseline_size
+        merged["new_size"] = new_size
+        merged["size_difference"] = new_size - baseline_size
+        merged["status_difference"] = new_status - baseline_status
+        merged["baseline_duration_ms"] = baseline_duration_ms
+        merged["fuzzing_duration_ms"] = fuzzing_duration_ms
+        merged["duration_difference_ms"] = fuzzing_duration_ms - baseline_duration_ms
+        if str(merged.get("result_type", "") or "") == "reflection":
+            reflected = str(item.get("reflected_text", "") or "").strip()
+            if reflected:
+                merged["anomaly_note"] = _fuzzing_preview(f"reflection_detected: {reflected}")
+        out_rows.append(merged)
+    return out_rows
+
+
 def _top_extractor_filters(rows: list[dict[str, Any]], *, top_n: int = 10) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -615,6 +733,11 @@ def _flatten_fozzy_summary_rows(root_domain: str, summary: dict[str, Any]) -> tu
         for entry in group.get("anomaly_entries", []) if isinstance(group.get("anomaly_entries"), list) else []:
             if not isinstance(entry, dict):
                 continue
+            baseline_status = _safe_int(entry.get("baseline_status", 0), 0)
+            new_status = _safe_int(entry.get("new_status", 0), 0)
+            baseline_size = _safe_int(entry.get("baseline_size", 0), 0)
+            new_size = _safe_int(entry.get("new_size", 0), 0)
+            size_difference = _safe_int(entry.get("size_difference", new_size - baseline_size), new_size - baseline_size)
             rows.append(
                 {
                     "root_domain": root_domain,
@@ -626,33 +749,72 @@ def _flatten_fozzy_summary_rows(root_domain: str, summary: dict[str, Any]) -> tu
                     "path": str(entry.get("path", "") or path),
                     "mutated_parameter": str(entry.get("mutated_parameter", "") or ""),
                     "mutated_value": str(entry.get("mutated_value", "") or ""),
-                    "baseline_status": _safe_int(entry.get("baseline_status", 0), 0),
-                    "new_status": _safe_int(entry.get("new_status", 0), 0),
-                    "baseline_size": _safe_int(entry.get("baseline_size", 0), 0),
-                    "new_size": _safe_int(entry.get("new_size", 0), 0),
-                    "size_difference": _safe_int(entry.get("size_difference", 0), 0),
+                    "baseline_status": baseline_status,
+                    "new_status": new_status,
+                    "baseline_size": baseline_size,
+                    "new_size": new_size,
+                    "size_difference": size_difference,
+                    "status_difference": new_status - baseline_status,
+                    "baseline_duration_ms": _safe_int(entry.get("baseline_duration_ms", 0), 0),
+                    "fuzzing_duration_ms": _safe_int(entry.get("fuzzing_duration_ms", 0), 0),
+                    "duration_difference_ms": _safe_int(
+                        entry.get(
+                            "duration_difference_ms",
+                            _safe_int(entry.get("fuzzing_duration_ms", 0), 0)
+                            - _safe_int(entry.get("baseline_duration_ms", 0), 0),
+                        ),
+                        0,
+                    ),
+                    "baseline_request_content": str(entry.get("baseline_request_content", "") or ""),
+                    "fuzzing_request_content": str(entry.get("fuzzing_request_content", "") or ""),
+                    "baseline_response_content": str(entry.get("baseline_response_content", "") or ""),
+                    "fuzzing_response_content": str(entry.get("fuzzing_response_content", "") or ""),
                     "result_file": str(entry.get("result_file", "") or ""),
                 }
             )
         for entry in group.get("reflection_entries", []) if isinstance(group.get("reflection_entries"), list) else []:
             if not isinstance(entry, dict):
                 continue
+            mutated_value = str(entry.get("mutated_value", "") or "")
+            reflection_note = "reflection_detected"
+            if mutated_value:
+                reflection_note = f"reflection_detected: {mutated_value}"
+            baseline_status = _safe_int(entry.get("baseline_status", 0), 0)
+            new_status = _safe_int(entry.get("new_status", 0), 0)
+            baseline_size = _safe_int(entry.get("baseline_size", 0), 0)
+            new_size = _safe_int(entry.get("new_size", 0), 0)
+            size_difference = _safe_int(entry.get("size_difference", new_size - baseline_size), new_size - baseline_size)
             rows.append(
                 {
                     "root_domain": root_domain,
                     "result_type": "reflection",
                     "anomaly_type": "",
-                    "anomaly_note": "reflection_detected",
+                    "anomaly_note": reflection_note,
                     "url": str(entry.get("url", "") or ""),
                     "host": str(entry.get("host", "") or host),
                     "path": str(entry.get("path", "") or path),
                     "mutated_parameter": str(entry.get("mutated_parameter", "") or ""),
-                    "mutated_value": str(entry.get("mutated_value", "") or ""),
-                    "baseline_status": _safe_int(entry.get("baseline_status", 0), 0),
-                    "new_status": _safe_int(entry.get("new_status", 0), 0),
-                    "baseline_size": _safe_int(entry.get("baseline_size", 0), 0),
-                    "new_size": _safe_int(entry.get("new_size", 0), 0),
-                    "size_difference": _safe_int(entry.get("size_difference", 0), 0),
+                    "mutated_value": mutated_value,
+                    "baseline_status": baseline_status,
+                    "new_status": new_status,
+                    "baseline_size": baseline_size,
+                    "new_size": new_size,
+                    "size_difference": size_difference,
+                    "status_difference": new_status - baseline_status,
+                    "baseline_duration_ms": _safe_int(entry.get("baseline_duration_ms", 0), 0),
+                    "fuzzing_duration_ms": _safe_int(entry.get("fuzzing_duration_ms", 0), 0),
+                    "duration_difference_ms": _safe_int(
+                        entry.get(
+                            "duration_difference_ms",
+                            _safe_int(entry.get("fuzzing_duration_ms", 0), 0)
+                            - _safe_int(entry.get("baseline_duration_ms", 0), 0),
+                        ),
+                        0,
+                    ),
+                    "baseline_request_content": str(entry.get("baseline_request_content", "") or ""),
+                    "fuzzing_request_content": str(entry.get("fuzzing_request_content", "") or ""),
+                    "baseline_response_content": str(entry.get("baseline_response_content", "") or ""),
+                    "fuzzing_response_content": str(entry.get("fuzzing_response_content", "") or ""),
                     "result_file": str(entry.get("result_file", "") or ""),
                 }
             )
@@ -691,6 +853,10 @@ FUZZING_RESULT_FILTER_KEYS = {
     "anomaly_type",
     "anomaly_note",
     "url",
+    "baseline_request_content",
+    "baseline_response_content",
+    "fuzzing_request_content",
+    "fuzzing_response_content",
     "host",
     "path",
     "mutated_parameter",
@@ -699,10 +865,24 @@ FUZZING_RESULT_FILTER_KEYS = {
     "new_status",
     "baseline_size",
     "new_size",
+    "baseline_duration_ms",
+    "fuzzing_duration_ms",
+    "status_difference",
     "size_difference",
+    "duration_difference_ms",
     "result_file",
 }
-FUZZING_RESULT_NUMERIC_KEYS = {"baseline_status", "new_status", "baseline_size", "new_size", "size_difference"}
+FUZZING_RESULT_NUMERIC_KEYS = {
+    "baseline_status",
+    "new_status",
+    "baseline_size",
+    "new_size",
+    "baseline_duration_ms",
+    "fuzzing_duration_ms",
+    "status_difference",
+    "size_difference",
+    "duration_difference_ms",
+}
 FUZZING_RESULT_DEFAULT_SORT_KEY = "size_difference"
 
 
@@ -803,6 +983,10 @@ def _fuzzing_row_search_blob(row: dict[str, Any]) -> str:
         row.get("anomaly_type"),
         row.get("anomaly_note"),
         row.get("url"),
+        row.get("baseline_request_content"),
+        row.get("baseline_response_content"),
+        row.get("fuzzing_request_content"),
+        row.get("fuzzing_response_content"),
         row.get("host"),
         row.get("path"),
         row.get("mutated_parameter"),
@@ -2278,6 +2462,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             str(artifact.get("content_encoding", "identity") or "identity"),
         )
         rows, totals = _flatten_fozzy_summary_rows(rd, summary)
+        # Enrich with per-result baseline/fuzz content and timing from fozzy_results_zip when available.
+        try:
+            results_artifact = self.coordinator_store.get_artifact(rd, "fozzy_results_zip")
+        except Exception:
+            results_artifact = None
+        if results_artifact is not None:
+            details = _build_fozzy_result_details_map(bytes(results_artifact.get("content", b"") or b""))
+            rows = _enrich_fuzzing_rows_from_result_details(rows, details)
         self.fuzzing_summary_cache.set(
             rd,
             summary_sha256,

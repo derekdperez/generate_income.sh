@@ -4280,6 +4280,14 @@ def fuzz_group(
                                 "new_size": int(trial_response.get("size", 0) or 0),
                                 "size_difference": int(trial_response.get("size", 0) or 0)
                                 - int(baseline_response.get("size", 0) or 0),
+                                "baseline_duration_ms": int(baseline_response.get("elapsed_ms", 0) or 0),
+                                "fuzzing_duration_ms": int(trial_response.get("elapsed_ms", 0) or 0),
+                                "duration_difference_ms": int(trial_response.get("elapsed_ms", 0) or 0)
+                                - int(baseline_response.get("elapsed_ms", 0) or 0),
+                                "baseline_request_content": f"{str(baseline_response.get('http_method', 'GET') or 'GET').upper()} {str(baseline_response.get('url', '') or '')}",
+                                "fuzzing_request_content": f"{str(trial_response.get('http_method', 'GET') or 'GET').upper()} {trial_url}",
+                                "baseline_response_content": str(baseline_response.get("body_preview", "") or ""),
+                                "fuzzing_response_content": str(trial_response.get("body_preview", "") or ""),
                             }
                         )
                         if live_report_callback:
@@ -4329,6 +4337,15 @@ def fuzz_group(
                                 "new_size": int(trial_response.get("size", 0) or 0),
                                 "size_difference": int(trial_response.get("size", 0) or 0)
                                 - int(baseline_response.get("size", 0) or 0),
+                                "baseline_duration_ms": int(baseline_response.get("elapsed_ms", 0) or 0),
+                                "fuzzing_duration_ms": int(trial_response.get("elapsed_ms", 0) or 0),
+                                "duration_difference_ms": int(trial_response.get("elapsed_ms", 0) or 0)
+                                - int(baseline_response.get("elapsed_ms", 0) or 0),
+                                "anomaly_note": f"reflection_detected: {fuzz_value}",
+                                "baseline_request_content": f"{str(baseline_response.get('http_method', 'GET') or 'GET').upper()} {str(baseline_response.get('url', '') or '')}",
+                                "fuzzing_request_content": f"{str(trial_response.get('http_method', 'GET') or 'GET').upper()} {trial_url}",
+                                "baseline_response_content": str(baseline_response.get("body_preview", "") or ""),
+                                "fuzzing_response_content": str(trial_response.get("body_preview", "") or ""),
                             }
                         )
                         if live_report_callback:

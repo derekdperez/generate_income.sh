@@ -21,10 +21,12 @@
     .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 14px; }
     .table-wrap { max-height: 520px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
     .table-wrap.files { max-height: 360px; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 0; table-layout: fixed; }
     th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
     th { background: #e2e8f0; cursor: pointer; user-select: none; }
     td pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+    .col-url { width: 180px; max-width: 180px; word-break: break-all; }
+    .col-note { width: 340px; max-width: 340px; }
     .filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 10px; }
     .pager { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .sort-ind { color: #0f172a; font-weight: 700; margin-left: 4px; }
@@ -46,23 +48,27 @@
 
   <div id="cards" class="cards"></div>
 
-  <div class="panel">
-    <strong>Findings</strong>
-    <div class="filters-grid">
-      <input id="colRootDomain" type="text" placeholder="Domain contains">
-      <input id="colResultType" type="text" placeholder="Type contains">
-      <input id="colAnomalyType" type="text" placeholder="Anomaly type contains">
-      <input id="colAnomalyNote" type="text" placeholder="Anomaly/reflection note contains">
-      <input id="colUrl" type="text" placeholder="URL contains">
-      <input id="colHost" type="text" placeholder="Host contains">
-      <input id="colPath" type="text" placeholder="Path contains">
-      <input id="colMutatedParam" type="text" placeholder="Mutated parameter contains">
-      <input id="colMutatedValue" type="text" placeholder="Mutated value contains">
-      <input id="colBaselineStatus" type="text" placeholder="Baseline status contains">
-      <input id="colNewStatus" type="text" placeholder="New status contains">
-      <input id="colSizeDiff" type="text" placeholder="Size diff contains">
-      <input id="colResultFile" type="text" placeholder="Result file contains">
-    </div>
+    <div class="panel">
+      <strong>Findings</strong>
+      <div class="filters-grid">
+        <input id="colRootDomain" type="text" placeholder="Domain contains">
+        <input id="colResultType" type="text" placeholder="Type contains">
+        <input id="colAnomalyNote" type="text" placeholder="Note contains">
+        <input id="colUrl" type="text" placeholder="URL contains">
+        <input id="colBaselineRequestContent" type="text" placeholder="Baseline request contains">
+        <input id="colBaselineResponseContent" type="text" placeholder="Baseline response contains">
+        <input id="colFuzzingRequestContent" type="text" placeholder="Fuzzing request contains">
+        <input id="colFuzzingResponseContent" type="text" placeholder="Fuzzing response contains">
+        <input id="colBaselineStatus" type="text" placeholder="Baseline status contains">
+        <input id="colFuzzingStatus" type="text" placeholder="Fuzzing status contains">
+        <input id="colStatusDiff" type="text" placeholder="Status diff contains">
+        <input id="colBaselineSize" type="text" placeholder="Baseline size contains">
+        <input id="colFuzzingSize" type="text" placeholder="Fuzzing size contains">
+        <input id="colSizeDiff" type="text" placeholder="Size diff contains">
+        <input id="colBaselineDuration" type="text" placeholder="Baseline duration contains">
+        <input id="colFuzzingDuration" type="text" placeholder="Fuzzing duration contains">
+        <input id="colDurationDiff" type="text" placeholder="Duration diff contains">
+      </div>
     <div class="pager">
       <button id="prevPageBtn" type="button">Prev</button>
       <button id="nextPageBtn" type="button">Next</button>
@@ -75,20 +81,24 @@
           <tr>
             <th data-key="root_domain">Domain <span class="sort-ind" id="sort_root_domain"></span></th>
             <th data-key="result_type">Type <span class="sort-ind" id="sort_result_type"></span></th>
-            <th data-key="anomaly_type">Anomaly Type <span class="sort-ind" id="sort_anomaly_type"></span></th>
-            <th data-key="anomaly_note">Note <span class="sort-ind" id="sort_anomaly_note"></span></th>
-            <th data-key="url">URL <span class="sort-ind" id="sort_url"></span></th>
-            <th data-key="host">Host <span class="sort-ind" id="sort_host"></span></th>
-            <th data-key="path">Path <span class="sort-ind" id="sort_path"></span></th>
-            <th data-key="mutated_parameter">Param <span class="sort-ind" id="sort_mutated_parameter"></span></th>
-            <th data-key="mutated_value">Value <span class="sort-ind" id="sort_mutated_value"></span></th>
-            <th data-key="baseline_status">Base Status <span class="sort-ind" id="sort_baseline_status"></span></th>
-            <th data-key="new_status">New Status <span class="sort-ind" id="sort_new_status"></span></th>
+            <th data-key="anomaly_note" class="col-note">Note <span class="sort-ind" id="sort_anomaly_note"></span></th>
+            <th data-key="url" class="col-url">URL <span class="sort-ind" id="sort_url"></span></th>
+            <th data-key="baseline_request_content">Baseline Request Content <span class="sort-ind" id="sort_baseline_request_content"></span></th>
+            <th data-key="baseline_response_content">Baseline Response Content <span class="sort-ind" id="sort_baseline_response_content"></span></th>
+            <th data-key="baseline_status">Baseline Response Code <span class="sort-ind" id="sort_baseline_status"></span></th>
+            <th data-key="baseline_size">Baseline Response Size <span class="sort-ind" id="sort_baseline_size"></span></th>
+            <th data-key="baseline_duration_ms">Baseline Response Duration (ms) <span class="sort-ind" id="sort_baseline_duration_ms"></span></th>
+            <th data-key="fuzzing_request_content">Fuzzing Request Content <span class="sort-ind" id="sort_fuzzing_request_content"></span></th>
+            <th data-key="fuzzing_response_content">Fuzzing Response Content <span class="sort-ind" id="sort_fuzzing_response_content"></span></th>
+            <th data-key="new_status">Fuzzing Response Code <span class="sort-ind" id="sort_new_status"></span></th>
+            <th data-key="new_size">Fuzzing Response Size <span class="sort-ind" id="sort_new_size"></span></th>
+            <th data-key="fuzzing_duration_ms">Fuzzing Response Duration (ms) <span class="sort-ind" id="sort_fuzzing_duration_ms"></span></th>
+            <th data-key="status_difference">Status Diff <span class="sort-ind" id="sort_status_difference"></span></th>
             <th data-key="size_difference">Size Diff <span class="sort-ind" id="sort_size_difference"></span></th>
-            <th data-key="result_file">Result File <span class="sort-ind" id="sort_result_file"></span></th>
+            <th data-key="duration_difference_ms">Duration Diff (ms) <span class="sort-ind" id="sort_duration_difference_ms"></span></th>
           </tr>
         </thead>
-        <tbody id="rows"><tr><td colspan="13">Loading...</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="17">Loading...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -223,17 +233,21 @@
       return {
         root_domain: String(document.getElementById("colRootDomain").value || "").trim(),
         result_type: String(document.getElementById("colResultType").value || "").trim(),
-        anomaly_type: String(document.getElementById("colAnomalyType").value || "").trim(),
         anomaly_note: String(document.getElementById("colAnomalyNote").value || "").trim(),
         url: String(document.getElementById("colUrl").value || "").trim(),
-        host: String(document.getElementById("colHost").value || "").trim(),
-        path: String(document.getElementById("colPath").value || "").trim(),
-        mutated_parameter: String(document.getElementById("colMutatedParam").value || "").trim(),
-        mutated_value: String(document.getElementById("colMutatedValue").value || "").trim(),
+        baseline_request_content: String(document.getElementById("colBaselineRequestContent").value || "").trim(),
+        baseline_response_content: String(document.getElementById("colBaselineResponseContent").value || "").trim(),
+        fuzzing_request_content: String(document.getElementById("colFuzzingRequestContent").value || "").trim(),
+        fuzzing_response_content: String(document.getElementById("colFuzzingResponseContent").value || "").trim(),
         baseline_status: String(document.getElementById("colBaselineStatus").value || "").trim(),
-        new_status: String(document.getElementById("colNewStatus").value || "").trim(),
+        new_status: String(document.getElementById("colFuzzingStatus").value || "").trim(),
+        status_difference: String(document.getElementById("colStatusDiff").value || "").trim(),
+        baseline_size: String(document.getElementById("colBaselineSize").value || "").trim(),
+        new_size: String(document.getElementById("colFuzzingSize").value || "").trim(),
         size_difference: String(document.getElementById("colSizeDiff").value || "").trim(),
-        result_file: String(document.getElementById("colResultFile").value || "").trim(),
+        baseline_duration_ms: String(document.getElementById("colBaselineDuration").value || "").trim(),
+        fuzzing_duration_ms: String(document.getElementById("colFuzzingDuration").value || "").trim(),
+        duration_difference_ms: String(document.getElementById("colDurationDiff").value || "").trim(),
       };
     }
     function scheduleLoad(resetOffset = true) {
@@ -246,24 +260,28 @@
     }
     function renderRows(rows) {
       if (!rows.length) {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='13'>No findings found.</td></tr>";
+        document.getElementById("rows").innerHTML = "<tr><td colspan='17'>No findings found.</td></tr>";
         return;
       }
       document.getElementById("rows").innerHTML = rows.map((r) => {
         return `<tr>
           <td>${esc(r.root_domain || "")}</td>
           <td>${esc(r.result_type || "")}</td>
-          <td>${esc(r.anomaly_type || "")}</td>
-          <td><pre>${esc(r.anomaly_note || "")}</pre></td>
-          <td>${esc(r.url || "")}</td>
-          <td>${esc(r.host || "")}</td>
-          <td>${esc(r.path || "")}</td>
-          <td>${esc(r.mutated_parameter || "")}</td>
-          <td><pre>${esc(r.mutated_value || "")}</pre></td>
+          <td class="col-note"><pre>${esc(r.anomaly_note || "")}</pre></td>
+          <td class="col-url">${esc(r.url || "")}</td>
+          <td><pre>${esc(r.baseline_request_content || "")}</pre></td>
+          <td><pre>${esc(r.baseline_response_content || "")}</pre></td>
           <td>${esc(r.baseline_status || 0)}</td>
+          <td>${esc(r.baseline_size || 0)}</td>
+          <td>${esc(r.baseline_duration_ms || 0)}</td>
+          <td><pre>${esc(r.fuzzing_request_content || "")}</pre></td>
+          <td><pre>${esc(r.fuzzing_response_content || "")}</pre></td>
           <td>${esc(r.new_status || 0)}</td>
+          <td>${esc(r.new_size || 0)}</td>
+          <td>${esc(r.fuzzing_duration_ms || 0)}</td>
+          <td>${esc(r.status_difference || 0)}</td>
           <td>${esc(r.size_difference || 0)}</td>
-          <td>${esc(r.result_file || "")}</td>
+          <td>${esc(r.duration_difference_ms || 0)}</td>
         </tr>`;
       }).join("");
     }
@@ -347,7 +365,7 @@
         setSortIndicators();
         msg.textContent = `Loaded ${payload.rows_returned || 0} row(s) from offset ${payload.offset || 0}.`;
       } catch (e) {
-        document.getElementById("rows").innerHTML = `<tr><td colspan='13'>Failed to load fuzzing results: ${esc(e.message)}</td></tr>`;
+        document.getElementById("rows").innerHTML = `<tr><td colspan='17'>Failed to load fuzzing results: ${esc(e.message)}</td></tr>`;
         document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>Load failed.</td></tr>";
         msg.textContent = "Load failed.";
       }
@@ -365,9 +383,11 @@
     document.getElementById("searchText").addEventListener("input", () => scheduleLoad(true));
     document.getElementById("limit").addEventListener("change", () => scheduleLoad(true));
     [
-      "colRootDomain", "colResultType", "colAnomalyType", "colAnomalyNote", "colUrl",
-      "colHost", "colPath", "colMutatedParam", "colMutatedValue", "colBaselineStatus",
-      "colNewStatus", "colSizeDiff", "colResultFile",
+      "colRootDomain", "colResultType", "colAnomalyNote", "colUrl",
+      "colBaselineRequestContent", "colBaselineResponseContent", "colFuzzingRequestContent", "colFuzzingResponseContent",
+      "colBaselineStatus", "colFuzzingStatus", "colStatusDiff",
+      "colBaselineSize", "colFuzzingSize", "colSizeDiff",
+      "colBaselineDuration", "colFuzzingDuration", "colDurationDiff",
     ].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => scheduleLoad(true));
     });
@@ -388,7 +408,17 @@
         if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
         else {
           sortKey = key;
-          sortDir = (key === "size_difference" || key === "baseline_status" || key === "new_status") ? "desc" : "asc";
+          sortDir = (
+            key === "size_difference"
+            || key === "status_difference"
+            || key === "duration_difference_ms"
+            || key === "baseline_status"
+            || key === "new_status"
+            || key === "baseline_size"
+            || key === "new_size"
+            || key === "baseline_duration_ms"
+            || key === "fuzzing_duration_ms"
+          ) ? "desc" : "asc";
         }
         scheduleLoad(true);
       });
