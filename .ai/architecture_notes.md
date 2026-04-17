@@ -47,3 +47,5 @@
 - Central/worker trust boundary:
   - `bootstrap-central-auto.sh` defaults to self-signed TLS for coordinator HTTPS.
   - Worker coordinator clients verify TLS by default; deployments using bootstrap self-signed certs must explicitly set `COORDINATOR_INSECURE_TLS=true` on workers or provision trust anchors.
+- UI rendering boundary tightened: `server.py` now delegates all HTML page generation (dashboard, worker control, database status) to `reporting/server_pages.py`, keeping route handling separate from template markup.
+- Operational visibility hardening: dashboard JS now surfaces API load failures directly in-page to reduce false "empty dashboard" ambiguity during outages or API regressions.

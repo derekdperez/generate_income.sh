@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Database Status</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #64748b; }
+    .v { font-size: 18px; font-weight: 700; margin-top: 4px; word-break: break-word; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 16px; flex-wrap: wrap; }
+    input { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; min-width: 340px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
+    .muted { color: #64748b; }
+    .tableCard { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+    .tableHead { padding: 10px 12px; border-bottom: 1px solid #cbd5e1; background: #e2e8f0; }
+    .tableBody { padding: 10px 12px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; margin-top: 10px; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #f1f5f9; }
+    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12px; }
+    .empty { padding: 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Database Status</h1>
+  <div class="meta">Shows current PostgreSQL status, all non-system tables, and full contents of each table. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a></div>
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <button class="primary" onclick="refresh()">Refresh</button>
+    <span id="msg" class="muted"></span>
+  </div>
+  <div id="cards" class="cards"></div>
+  <div id="tables"><div class="empty">Loading...</div></div>
+  <script>
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[ch]));
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    async function apiGet(path) {
+      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
+      if (!rsp.ok) throw new Error(await rsp.text());
+      return rsp.json();
+    }
+    function renderCards(data) {
+      const db = data.database || {};
+      const cards = [
+        ["Database", db.name || ""],
+        ["User", db.current_user || ""],
+        ["Server Time", db.server_time_utc || ""],
+        ["Tables", data.table_count || 0],
+      ];
+      document.getElementById("cards").innerHTML = cards
+        .map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`)
+        .join("");
+    }
+    function renderValue(v) {
+      if (v === null || v === undefined) return '<span class="muted">null</span>';
+      if (typeof v === "object") return `<pre>${esc(JSON.stringify(v, null, 2))}</pre>`;
+      return esc(v);
+    }
+    function renderTables(data) {
+      const tables = data.tables || [];
+      if (!tables.length) {
+        document.getElementById("tables").innerHTML = '<div class="empty">No non-system tables found.</div>';
+        return;
+      }
+      document.getElementById("tables").innerHTML = tables.map((t) => {
+        const columns = (t.columns || [])
+          .map((c) => `${esc(c.name)} <span class="muted">(${esc(c.data_type)}${c.nullable ? ", nullable" : ""})</span>`)
+          .join("<br>");
+        const rows = t.rows || [];
+        const headerNames = (t.columns || []).map((c) => c.name);
+        const tableHtml = rows.length
+          ? `
+          <table>
+            <thead><tr>${headerNames.map((name) => `<th>${esc(name)}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${rows.map((row) => `<tr>${headerNames.map((name) => `<td>${renderValue(row[name])}</td>`).join("")}</tr>`).join("")}
+            </tbody>
+          </table>`
+          : '<div class="empty">No rows.</div>';
+        return `<section class="tableCard">
+          <div class="tableHead"><strong>${esc(t.schema)}.${esc(t.name)}</strong> | ${esc(t.row_count)} row(s)</div>
+          <div class="tableBody">
+            <div><strong>Columns</strong><br>${columns || '<span class="muted">none</span>'}</div>
+            ${tableHtml}
+          </div>
+        </section>`;
+      }).join("");
+    }
+    async function refresh() {
+      const msg = document.getElementById("msg");
+      msg.textContent = "Loading...";
+      try {
+        const data = await apiGet("/api/coord/database-status");
+        renderCards(data);
+        renderTables(data);
+        msg.textContent = `Loaded ${data.table_count || 0} table(s).`;
+      } catch (e) {
+        document.getElementById("tables").innerHTML = `<div class="empty">Failed to load database status: ${esc(e.message)}</div>`;
+        msg.textContent = "Load failed.";
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>

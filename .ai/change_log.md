@@ -355,3 +355,15 @@
   - Added `/database` navigation links back into `templates/server_dashboard.html.j2` and `templates/worker_control.html.j2`.
   - Added template regression tests in `tests/test_refactor_modules.py` to assert database link presence in rendered dashboard/worker pages.
 - Why: `/database` route still existed but link/navigation disappeared from the website UI after page-render modularization.
+
+- Converted `/database` to shared template rendering flow:
+  - Added `templates/database_status.html.j2`.
+  - Added `render_database_html()` in `reporting/server_pages.py`.
+  - Updated `server.py` `/database` route to use template renderer and removed inline `_render_database_html`.
+- Hardened dashboard/worker UI runtime behavior:
+  - Replaced `replaceAll("%2F", "/")` with `replace(/%2F/g, "/")` for broader JS compatibility.
+  - Added visible dashboard load-error handling (`showLoadError`) instead of silent refresh failure.
+  - Fixed malformed JS in worker logs link rendering that prevented template script execution.
+- Extended refactor tests:
+  - Added assertions for database template rendering and route wiring expectations.
+  - Updated decomposition tests to enforce externalized database page rendering in `server.py`.

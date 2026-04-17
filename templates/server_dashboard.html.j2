@@ -23,10 +23,10 @@
 </head>
 <body>
   <h1>Nightmare Live Dashboard</h1>
-  <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>. <a href="/workers">Open Worker Control</a> · <a href="/database">Database Status</a></div>
+  <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>. <a href="/workers">Open Worker Control</a> | <a href="/database">Database Status</a></div>
   <div id="cards" class="cards"></div>
   <h2>Master Reports</h2>
-  <div id="masters" class="muted">Loading…</div>
+  <div id="masters" class="muted">Loading...</div>
   <h2>Domains</h2>
   <table>
     <thead>
@@ -39,7 +39,7 @@
         <th>Latest Log Tail</th>
       </tr>
     </thead>
-    <tbody id="rows"><tr><td colspan="6">Loading…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="6">Loading...</td></tr></tbody>
   </table>
   <script>
     function esc(v) {
@@ -47,8 +47,13 @@
     }
     function fileLink(relPath, label) {
       if (!relPath) return "";
-      const encoded = encodeURIComponent(relPath).replaceAll("%2F", "/");
+      const encoded = encodeURIComponent(relPath).replace(/%2F/g, "/");
       return `<a href="/files/${encoded}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+    }
+    function showLoadError(message) {
+      const msg = esc(message || "Unknown error");
+      document.getElementById("masters").innerHTML = `<span class='muted'>Failed to load: ${msg}</span>`;
+      document.getElementById("rows").innerHTML = `<tr><td colspan='6'>Failed to load dashboard summary: ${msg}</td></tr>`;
     }
     function buildCards(t) {
       const cards = [
@@ -92,10 +97,15 @@
     async function refresh() {
       try {
         const rsp = await fetch("/api/summary", { cache: "no-store" });
-        if (!rsp.ok) return;
+        if (!rsp.ok) {
+          showLoadError(`HTTP ${rsp.status}`);
+          return;
+        }
         const data = await rsp.json();
         render(data);
-      } catch (_) {}
+      } catch (e) {
+        showLoadError(e && e.message ? e.message : "request failed");
+      }
     }
     refresh();
     setInterval(refresh, 5000);

@@ -89,3 +89,6 @@
 - AWS distributed bootstrap convention:
   - When central TLS is generated via `bootstrap-central-auto.sh` (self-signed), worker env must include `COORDINATOR_INSECURE_TLS=true` unless trusted CA certs are installed.
   - Ensure generated `worker.env.generated` and cloud-init worker `.env` both carry `COORDINATOR_BASE_URL`, `COORDINATOR_API_TOKEN`, and `COORDINATOR_INSECURE_TLS`.
+- Server page rendering convention: all operator UI pages (`/dashboard`, `/workers`, `/database`) should render from `templates/*.j2` through `reporting/server_pages.py`; avoid inline HTML page methods in `server.py`.
+- Dashboard/worker client URL encoding convention: use `encodeURIComponent(...).replace(/%2F/g, "/")` instead of `replaceAll` for broader JS runtime compatibility.
+- Dashboard refresh UX convention: never silently swallow summary-fetch failures; show explicit on-page load failure messaging so operators can distinguish empty data from failed API calls.

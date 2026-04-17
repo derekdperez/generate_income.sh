@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from nightmare_shared.config import ClientSettings, CoordinatorSettings, ServerSettings, normalize_server_base_url
-from reporting.server_pages import render_dashboard_html, render_workers_html
+from reporting.server_pages import render_dashboard_html, render_database_html, render_workers_html
 
 
 def test_normalize_server_base_url():
@@ -38,6 +38,8 @@ def test_server_template_renders():
     assert "<!doctype html>" in html.lower()
     assert "Nightmare Live Dashboard" in html
     assert 'href="/database"' in html
+    assert '/api/summary' in html
+    assert "showLoadError" in html
 
 
 def test_worker_template_renders_database_link():
@@ -45,3 +47,13 @@ def test_worker_template_renders_database_link():
     assert "<!doctype html>" in html.lower()
     assert "Worker Control Center" in html
     assert 'href="/database"' in html
+    assert 'encodeURIComponent(l.relative).replace(/%2F/g, "/")' in html
+
+
+def test_database_template_renders():
+    html = render_database_html()
+    assert "<!doctype html>" in html.lower()
+    assert "Database Status" in html
+    assert 'href="/dashboard"' in html
+    assert 'href="/workers"' in html
+    assert "/api/coord/database-status" in html

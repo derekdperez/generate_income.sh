@@ -28,7 +28,7 @@
 </head>
 <body>
   <h1>Worker Control Center</h1>
-  <div class="meta">Asynchronous auto-refresh every 3s. Use row selection to run bulk start/stop/pause commands. <a href="/dashboard">Back to Dashboard</a> · <a href="/database">Database Status</a></div>
+  <div class="meta">Asynchronous auto-refresh every 3s. Use row selection to run bulk start/stop/pause commands. <a href="/dashboard">Back to Dashboard</a> | <a href="/database">Database Status</a></div>
   <div id="cards" class="cards"></div>
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
@@ -50,7 +50,7 @@
         <th>Config</th>
       </tr>
     </thead>
-    <tbody id="rows"><tr><td colspan="8">Loading…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="8">Loading...</td></tr></tbody>
   </table>
 
   <div id="configModal">
@@ -133,7 +133,7 @@
       const rows = data.workers || [];
       if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; return; }
       document.getElementById("rows").innerHTML = rows.map((w) => {
-        const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replaceAll("%2F","/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
+        const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replace(/%2F/g, "/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
         const statusClass = w.status === "online" ? "online" : "stale";
         const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
         return `<tr>
@@ -158,3 +158,4 @@
   </script>
 </body>
 </html>
+

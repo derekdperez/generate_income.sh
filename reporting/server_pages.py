@@ -12,3 +12,7 @@ def render_dashboard_html() -> str:
 
 def render_workers_html() -> str:
     return render_template("worker_control.html.j2")
+
+
+def render_database_html() -> str:
+    return render_template("database_status.html.j2")
