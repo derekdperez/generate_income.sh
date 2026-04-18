@@ -217,3 +217,4 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Compose operation convention: `docker compose up ... <service>` must use service keys from compose YAML (`server`, `postgres`), not container_name values.
 - Worker control convention: Logs column should include direct file links and a one-click per-worker log bundle download action.
 - Worker log download API convention: use `/api/coord/worker-log-download?worker_id=...` with coordinator auth and zip response payload.
+- Full deploy convention: scripts should include coordinator readiness wait and automatic `register_targets.py` execution against `targets.txt` using values from `deploy/.env`.

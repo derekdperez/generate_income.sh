@@ -687,3 +687,11 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Added `Download Logs` button per worker row.
   - Button opens worker log bundle endpoint and relies on coordinator token cookie auth.
 - Why: operators requested one-click worker log download from the worker control center.
+## 2026-04-18
+
+- Updated full deploy scripts (`full_deploy_command.sh` and `deploy/full_deploy_command.sh`) to automatically register targets after central bootstrap.
+- New behavior:
+  - Source `deploy/.env` for coordinator URL/token.
+  - Wait for coordinator readiness via `/api/coord/database-status`.
+  - Run `python3 register_targets.py --targets-file targets.txt` automatically.
+- Why: eliminate post-deploy manual target registration and ensure queue is populated immediately after deployment.
