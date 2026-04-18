@@ -13,12 +13,17 @@
     .k { font-size: 12px; color: #64748b; }
     .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+    .toolbar input[type="text"] { min-width: 280px; }
     button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
     button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
     .table-wrap { max-height: 620px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
     table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
     th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
     th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
+    th.sortable { cursor: pointer; user-select: none; }
+    .sort-ind { color: #0f172a; font-weight: 700; margin-left: 4px; }
+    .filter-row th { top: 33px; background: #f1f5f9; z-index: 2; }
+    .col-filter { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border: 1px solid #94a3b8; border-radius: 4px; }
     .online { color: #15803d; font-weight: 600; }
     .stale { color: #b45309; font-weight: 600; }
     .muted { color: #64748b; }
@@ -33,6 +38,7 @@
   <div id="cards" class="cards"></div>
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
+    <input id="globalSearch" type="text" placeholder="Search all worker fields">
     <button class="primary" onclick="bulkCommand('start')">Start selected</button>
     <button onclick="bulkCommand('pause')">Pause selected</button>
     <button onclick="bulkCommand('stop')">Stop selected</button>
@@ -43,13 +49,23 @@
       <thead>
         <tr>
           <th><input type="checkbox" id="selectAll"></th>
-          <th>Worker</th>
-          <th>Status</th>
-          <th>Current Targets</th>
-          <th>URLs Scanned (session)</th>
+          <th class="sortable" data-sort="worker_id">Worker <span class="sort-ind" id="sort_worker_id"></span></th>
+          <th class="sortable" data-sort="status">Status <span class="sort-ind" id="sort_status"></span></th>
+          <th class="sortable" data-sort="current_targets">Current Targets <span class="sort-ind" id="sort_current_targets"></span></th>
+          <th class="sortable" data-sort="urls_scanned_session">URLs Scanned (session) <span class="sort-ind" id="sort_urls_scanned_session"></span></th>
           <th>Actions</th>
-          <th>Logs</th>
-          <th>Config</th>
+          <th class="sortable" data-sort="logs">Logs <span class="sort-ind" id="sort_logs"></span></th>
+          <th class="sortable" data-sort="config">Config <span class="sort-ind" id="sort_config"></span></th>
+        </tr>
+        <tr class="filter-row">
+          <th></th>
+          <th><input id="filter_worker_id" class="col-filter" type="text" placeholder="Filter worker"></th>
+          <th><input id="filter_status" class="col-filter" type="text" placeholder="Filter status"></th>
+          <th><input id="filter_current_targets" class="col-filter" type="text" placeholder="Filter targets"></th>
+          <th><input id="filter_urls_scanned_session" class="col-filter" type="text" placeholder="Filter URLs"></th>
+          <th></th>
+          <th><input id="filter_logs" class="col-filter" type="text" placeholder="Filter logs"></th>
+          <th><input id="filter_config" class="col-filter" type="text" placeholder="Filter config"></th>
         </tr>
       </thead>
       <tbody id="rows"><tr><td colspan="8">Loading...</td></tr></tbody>
@@ -71,6 +87,12 @@
   <script>
     let selectedConfigWorker = "";
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    const WORKER_SELECTION_COOKIE_NAME = "nightmare_worker_selection_v1";
+    let allWorkers = [];
+    let visibleWorkers = [];
+    let selectedWorkerIds = new Set();
+    let sortKey = "worker_id";
+    let sortDir = "asc";
 
     function readCookie(name) {
       const needle = `${name}=`;
@@ -109,6 +131,116 @@
       if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
       return token ? { "Authorization": `Bearer ${token}` } : {};
     }
+    function _parseWorkerSelectionCookie() {
+      try {
+        const raw = readCookie(WORKER_SELECTION_COOKIE_NAME);
+        if (!raw) return [];
+        const parts = raw.split(",").map((v) => String(v || "").trim()).filter(Boolean);
+        return parts;
+      } catch (_) {
+        return [];
+      }
+    }
+    function _persistWorkerSelectionCookie() {
+      const ids = [...selectedWorkerIds].slice(0, 500);
+      if (!ids.length) {
+        deleteCookie(WORKER_SELECTION_COOKIE_NAME);
+        return;
+      }
+      writeCookie(WORKER_SELECTION_COOKIE_NAME, ids.join(","), 7);
+    }
+    function _text(v) {
+      if (v === null || v === undefined) return "";
+      if (Array.isArray(v)) return v.map((item) => _text(item)).join(" ");
+      if (typeof v === "object") return JSON.stringify(v);
+      return String(v);
+    }
+    function _workerFieldText(worker, key) {
+      if (!worker || typeof worker !== "object") return "";
+      if (key === "worker_id") return _text(worker.worker_id).toLowerCase();
+      if (key === "status") return `${_text(worker.status)} ${_text(worker.seconds_since_heartbeat)} ${_text(worker.last_activity)}`.toLowerCase();
+      if (key === "current_targets") return _text(worker.current_targets || []).toLowerCase();
+      if (key === "urls_scanned_session") return _text(worker.urls_scanned_session).toLowerCase();
+      if (key === "logs") return _text((worker.logs || []).map((l) => `${_text(l.label)} ${_text(l.relative)}`)).toLowerCase();
+      if (key === "config") return `${_text(worker.config)} ${_text(worker.config_path_rel)}`.toLowerCase();
+      return "";
+    }
+    function _workerGlobalSearchText(worker) {
+      return [
+        _workerFieldText(worker, "worker_id"),
+        _workerFieldText(worker, "status"),
+        _workerFieldText(worker, "current_targets"),
+        _workerFieldText(worker, "urls_scanned_session"),
+        _workerFieldText(worker, "logs"),
+        _workerFieldText(worker, "config"),
+      ].join(" ");
+    }
+    function _statusSortRank(status) {
+      const value = String(status || "").trim().toLowerCase();
+      const ranks = { running: 1, idle: 2, paused: 3, stopped: 4, errored: 5 };
+      return Object.prototype.hasOwnProperty.call(ranks, value) ? Number(ranks[value]) : 99;
+    }
+    function _cmp(a, b) {
+      if (a < b) return -1;
+      if (a > b) return 1;
+      return 0;
+    }
+    function _filterAndSortWorkers(rows) {
+      const query = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
+      const filterKeys = ["worker_id", "status", "current_targets", "urls_scanned_session", "logs", "config"];
+      const filters = {};
+      for (const key of filterKeys) filters[key] = String((document.getElementById(`filter_${key}`)?.value || "")).trim().toLowerCase();
+      let out = Array.isArray(rows) ? rows.slice() : [];
+      out = out.filter((worker) => {
+        if (query && !_workerGlobalSearchText(worker).includes(query)) return false;
+        for (const key of filterKeys) {
+          const q = filters[key];
+          if (q && !_workerFieldText(worker, key).includes(q)) return false;
+        }
+        return true;
+      });
+      out.sort((left, right) => {
+        let cmp = 0;
+        if (sortKey === "urls_scanned_session") {
+          cmp = _cmp(Number(left?.urls_scanned_session || 0), Number(right?.urls_scanned_session || 0));
+        } else if (sortKey === "status") {
+          const rankCmp = _cmp(_statusSortRank(left?.status), _statusSortRank(right?.status));
+          cmp = rankCmp !== 0 ? rankCmp : _cmp(_workerFieldText(left, "status"), _workerFieldText(right, "status"));
+        } else {
+          cmp = _cmp(_workerFieldText(left, sortKey), _workerFieldText(right, sortKey));
+        }
+        if (cmp === 0) cmp = _cmp(_workerFieldText(left, "worker_id"), _workerFieldText(right, "worker_id"));
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+      return out;
+    }
+    function _setSortIndicators() {
+      document.querySelectorAll("[id^='sort_']").forEach((node) => { node.textContent = ""; });
+      const node = document.getElementById(`sort_${sortKey}`);
+      if (node) node.textContent = sortDir === "asc" ? "^" : "v";
+    }
+    function _updateSelectAllState() {
+      const selectAll = document.getElementById("selectAll");
+      if (!selectAll) return;
+      if (!visibleWorkers.length) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+        return;
+      }
+      let selectedVisible = 0;
+      for (const worker of visibleWorkers) {
+        if (selectedWorkerIds.has(String(worker.worker_id || ""))) selectedVisible += 1;
+      }
+      selectAll.checked = selectedVisible > 0 && selectedVisible === visibleWorkers.length;
+      selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleWorkers.length;
+    }
+    function _syncRenderedSelection() {
+      document.querySelectorAll("input.workerSel").forEach((checkbox) => {
+        const workerId = String(checkbox.value || "");
+        checkbox.checked = selectedWorkerIds.has(workerId);
+      });
+      _updateSelectAllState();
+    }
     async function apiGet(path) {
       const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
       if (!rsp.ok) throw new Error(await rsp.text());
@@ -123,7 +255,10 @@
       if (!rsp.ok) throw new Error(await rsp.text());
       return rsp.json();
     }
-    function selectedWorkers() { return [...document.querySelectorAll("input.workerSel:checked")].map((el) => el.value); }
+    function selectedWorkers() {
+      const known = new Set((allWorkers || []).map((worker) => String(worker.worker_id || "")));
+      return [...selectedWorkerIds].filter((workerId) => known.has(workerId));
+    }
     async function bulkCommand(command) {
       const workers = selectedWorkers();
       if (!workers.length) { document.getElementById("msg").textContent = "Select at least one worker."; return; }
@@ -136,7 +271,10 @@
       }
     }
     async function bulkCommandForOne(workerId, command) {
-      document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = (el.value === workerId); });
+      selectedWorkerIds.clear();
+      selectedWorkerIds.add(String(workerId || ""));
+      _persistWorkerSelectionCookie();
+      _syncRenderedSelection();
       await bulkCommand(command);
     }
     async function openConfig(workerId) {
@@ -173,15 +311,25 @@
         ["Idle", c.idle_workers || 0]
       ];
       document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
-      const rows = data.workers || [];
-      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; return; }
-      document.getElementById("rows").innerHTML = rows.map((w) => {
+      const rows = Array.isArray(data.workers) ? data.workers : [];
+      allWorkers = rows;
+      const knownIds = new Set(rows.map((worker) => String(worker.worker_id || "")));
+      selectedWorkerIds = new Set([...selectedWorkerIds].filter((workerId) => knownIds.has(workerId)));
+      visibleWorkers = _filterAndSortWorkers(rows);
+      _setSortIndicators();
+      const visibleCount = visibleWorkers.length;
+      document.getElementById("msg").textContent = `Showing ${visibleCount} of ${rows.length} workers. Selected: ${selectedWorkers().length}.`;
+      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; _updateSelectAllState(); return; }
+      if (!visibleWorkers.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers match current filters.</td></tr>"; _updateSelectAllState(); return; }
+      document.getElementById("rows").innerHTML = visibleWorkers.map((w) => {
         const logs = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replace(/%2F/g, "/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
         const runningLike = new Set(["running", "idle"]);
         const statusClass = runningLike.has(String(w.status || "")) ? "online" : "stale";
         const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
+        const workerId = String(w.worker_id || "");
+        const checked = selectedWorkerIds.has(workerId) ? " checked" : "";
         return `<tr>
-          <td><input class="workerSel" type="checkbox" value="${esc(w.worker_id)}"></td>
+          <td><input class="workerSel" type="checkbox" value="${esc(workerId)}"${checked}></td>
           <td>${esc(w.worker_id)}</td>
           <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span><br><span class="muted">${esc(w.last_activity || "")}</span></td>
           <td>${targets}</td>
@@ -191,15 +339,60 @@
           <td><button onclick="openConfig('${escJs(w.worker_id)}')">Edit</button><br><span class="muted">${esc(w.config || "")}</span></td>
         </tr>`;
       }).join("");
+      document.querySelectorAll("input.workerSel").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          const workerId = String(checkbox.value || "");
+          if (!workerId) return;
+          if (checkbox.checked) selectedWorkerIds.add(workerId);
+          else selectedWorkerIds.delete(workerId);
+          _persistWorkerSelectionCookie();
+          _updateSelectAllState();
+        });
+      });
+      _syncRenderedSelection();
+      _persistWorkerSelectionCookie();
     }
     async function refresh() {
       try { render(await apiGet("/api/coord/worker-control")); }
       catch (e) { document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load worker state: ${esc(e.message)}</td></tr>`; }
     }
     hydrateTokenFromCookie();
+    selectedWorkerIds = new Set(_parseWorkerSelectionCookie());
     document.getElementById("token").addEventListener("change", persistTokenCookie);
     document.getElementById("token").addEventListener("blur", persistTokenCookie);
-    document.getElementById("selectAll").addEventListener("change", (e) => { document.querySelectorAll("input.workerSel").forEach((el) => { el.checked = e.target.checked; }); });
+    document.getElementById("selectAll").addEventListener("change", (e) => {
+      const checked = Boolean(e.target.checked);
+      for (const worker of visibleWorkers) {
+        const workerId = String(worker.worker_id || "");
+        if (!workerId) continue;
+        if (checked) selectedWorkerIds.add(workerId);
+        else selectedWorkerIds.delete(workerId);
+      }
+      _persistWorkerSelectionCookie();
+      _syncRenderedSelection();
+    });
+    document.getElementById("globalSearch").addEventListener("input", () => render({ counts: (window.__lastCounts || {}), workers: allWorkers }));
+    document.querySelectorAll(".col-filter").forEach((input) => {
+      input.addEventListener("input", () => render({ counts: (window.__lastCounts || {}), workers: allWorkers }));
+    });
+    document.querySelectorAll("th.sortable[data-sort]").forEach((header) => {
+      header.addEventListener("click", () => {
+        const nextKey = String(header.getAttribute("data-sort") || "");
+        if (!nextKey) return;
+        if (sortKey === nextKey) sortDir = sortDir === "asc" ? "desc" : "asc";
+        else {
+          sortKey = nextKey;
+          sortDir = nextKey === "urls_scanned_session" ? "desc" : "asc";
+        }
+        render({ counts: (window.__lastCounts || {}), workers: allWorkers });
+      });
+    });
+    window.__lastCounts = {};
+    const originalRender = render;
+    render = function wrappedRender(data) {
+      window.__lastCounts = (data && typeof data.counts === "object" && data.counts) ? data.counts : {};
+      return originalRender(data);
+    };
     refresh();
     setInterval(refresh, 3000);
   </script>

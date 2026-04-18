@@ -552,3 +552,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Added run summary totals: analyzed_responses and interesting_responses, plus response_analysis_jsonl path in summary JSON.
 - Added deterministic unit tests (tests/test_response_analysis_subsystem.py) covering noise suppression, 500+stacktrace, debug header appearance, security header disappearance, JSON->HTML drift, script-context reflection, redirect/login drift, repeated-cluster behavior, SQL errors, Spring Whitelabel detection.
 - Validation: pytest -q tests/test_response_analysis_subsystem.py (10 passed); pytest -q tests/test_modular_spider_fuzz_core.py tests/test_reporting_and_store_helpers.py (29 passed).
+
+## 2026-04-17
+
+- Fixed fuzzing response modal header rendering fallback in `templates/fuzzing.html.j2`:
+  - Header formatter now supports multiple payload shapes (`response_headers`, `headers`, object/list tuple forms) and only falls back to header-name-only output when values are truly unavailable.
+- Why: View Response modal was showing header names without values for many artifact records.
+
+- Enhanced worker control grid in `templates/worker_control.html.j2`:
+  - Added persistent worker row selection across auto-refresh/page reload via cookie-backed selected worker IDs.
+  - Added global search + per-column filters.
+  - Added sortable columns with explicit sort indicators.
+  - Selection state now survives data refresh and is reapplied to visible rows.
+- Why: operators were repeatedly losing selections on refresh and could not efficiently locate/sort workers in large fleets.

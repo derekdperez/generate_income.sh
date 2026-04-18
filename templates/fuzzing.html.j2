@@ -284,14 +284,45 @@
       if (!fuzzing || !Object.keys(fuzzing).length) fuzzing = (payload && typeof payload.response === "object" && payload.response) ? payload.response : {};
       return { baseline, fuzzing };
     }
+    function _headerLinesFromAny(rawHeaders) {
+      if (!rawHeaders) return [];
+      if (typeof rawHeaders === "object" && !Array.isArray(rawHeaders)) {
+        return Object.entries(rawHeaders).map(([k, v]) => {
+          if (Array.isArray(v)) return `${String(k)}: ${v.map((item) => String(item ?? "")).join(", ")}`;
+          return `${String(k)}: ${String(v ?? "")}`;
+        });
+      }
+      if (Array.isArray(rawHeaders)) {
+        const lines = [];
+        for (const item of rawHeaders) {
+          if (Array.isArray(item) && item.length >= 2) {
+            lines.push(`${String(item[0])}: ${String(item[1] ?? "")}`);
+            continue;
+          }
+          if (item && typeof item === "object") {
+            const key = item.name ?? item.key ?? item.header ?? "";
+            const value = item.value ?? item.val ?? "";
+            if (String(key).trim()) {
+              lines.push(`${String(key)}: ${String(value ?? "")}`);
+              continue;
+            }
+          }
+          const rawLine = String(item ?? "");
+          if (rawLine.includes(":")) lines.push(rawLine);
+        }
+        return lines;
+      }
+      return [];
+    }
     function formatHeadersText(responseObj) {
       if (!responseObj || typeof responseObj !== "object") return "";
-      if (responseObj.response_headers && typeof responseObj.response_headers === "object") {
-        const lines = Object.entries(responseObj.response_headers).map(([k, v]) => `${String(k)}: ${String(v ?? "")}`);
+      const candidateKeys = ["response_headers", "headers", "responseHeaders", "header_map", "headerMap"];
+      for (const key of candidateKeys) {
+        const lines = _headerLinesFromAny(responseObj[key]);
         if (lines.length) return lines.join("\n");
       }
       const names = Array.isArray(responseObj.response_header_names) ? responseObj.response_header_names : [];
-      if (names.length) return names.map((name) => `${String(name)}:`).join("\n");
+      if (names.length) return names.map((name) => `${String(name)}: [value unavailable]`).join("\n");
       return "";
     }
     function formatBodyText(responseObj) { if (!responseObj || typeof responseObj !== "object") return ""; return String(responseObj.body_preview || ""); }
