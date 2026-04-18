@@ -38,8 +38,10 @@
   </div>
   <div id="cards" class="cards"></div>
   <div id="tables"><div class="empty">Loading...</div></div>
+  {% include '_grid_controls.html.j2' %}
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    const dbGridControllers = {};
 
     function readCookie(name) {
       const needle = `${name}=`;
@@ -119,10 +121,11 @@
           .join("<br>");
         const rows = t.rows || [];
         const headerNames = (t.columns || []).map((c) => c.name);
+        const domIdSafe = `db_${String(t.schema || "").replace(/[^a-zA-Z0-9_]+/g, "_")}_${String(t.name || "").replace(/[^a-zA-Z0-9_]+/g, "_")}`;
         const tableHtml = rows.length
           ? `
           <div class="table-wrap">
-            <table>
+            <table class="dbDataTable" id="${esc(domIdSafe)}">
               <thead><tr>${headerNames.map((name) => `<th>${esc(name)}</th>`).join("")}</tr></thead>
               <tbody>
                 ${rows.map((row) => `<tr>${headerNames.map((name) => `<td>${renderValue(row[name])}</td>`).join("")}</tr>`).join("")}
@@ -147,6 +150,20 @@
           </div>
         </section>`;
       }).join("");
+      document.querySelectorAll("table.dbDataTable").forEach((table) => {
+        const key = String(table.id || "db_table");
+        if (!dbGridControllers[key]) {
+          dbGridControllers[key] = window.NightmareGridControls.enhance({
+            table,
+            page: "database_status",
+            prefKey: `${key}_v1`,
+            tokenInputId: "token",
+            mode: "full",
+          });
+        } else {
+          dbGridControllers[key].refresh();
+        }
+      });
     }
     async function refresh() {
       const msg = document.getElementById("msg");

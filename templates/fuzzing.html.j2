@@ -161,7 +161,7 @@
       link.href = `/api/coord/fuzzing/download?artifact_type=fozzy_results_zip&root_domain=${encodeURIComponent(domain)}`;
       link.style.pointerEvents = "auto"; link.style.opacity = "1";
     }
-    function setSortIndicators() { document.querySelectorAll("[id^='sort_']").forEach((el) => { el.textContent = ""; }); const node = document.getElementById(`sort_${sortKey}`); if (node) node.textContent = sortDir === "asc" ? "?" : "?"; }
+    function setSortIndicators() { document.querySelectorAll("[id^='sort_']").forEach((el) => { el.textContent = ""; }); const node = document.getElementById(`sort_${sortKey}`); if (node) node.textContent = sortDir === "asc" ? "^" : "v"; }
     function renderCards(payload) {
       const counts = payload.counts || {};
       const page = Math.floor((Number(payload.offset || 0)) / Math.max(1, Number(payload.limit || DEFAULT_LIMIT))) + 1;
@@ -194,6 +194,29 @@
         });
       });
     }
+    function autoFitColumnWidth(key) {
+      const th = document.querySelector(`th[data-col-key="${key}"]`);
+      if (!th) return;
+      const col = document.getElementById(`col_${key}`);
+      const headerWidth = Math.ceil(th.getBoundingClientRect().width);
+      const rows = Array.from(document.querySelectorAll("#rows tr")).slice(0, 250);
+      const sampleCells = rows.map((row) => row.querySelector(`td[data-col-key="${key}"]`)).filter(Boolean);
+      let maxWidth = headerWidth;
+      sampleCells.forEach((cell) => {
+        const value = String(cell.textContent || "").replace(/\s+/g, " ").trim().slice(0, 320);
+        const canvas = autoFitColumnWidth._canvas || (autoFitColumnWidth._canvas = document.createElement("canvas"));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        const style = getComputedStyle(cell);
+        ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const measured = Math.ceil(ctx.measureText(value).width) + 28;
+        if (measured > maxWidth) maxWidth = measured;
+      });
+      const next = Math.max(80, Math.min(1600, maxWidth));
+      columnPrefs.column_widths[key] = next;
+      applyColumnPrefs();
+      scheduleSaveColumnPrefs();
+    }
     function installColumnResizers() {
       document.querySelectorAll("th[data-col-key]").forEach((th) => {
         if (th.querySelector(".col-resize-handle")) return;
@@ -202,6 +225,8 @@
         const handle = document.createElement("span");
         handle.className = "col-resize-handle";
         th.appendChild(handle);
+        handle.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); });
+        handle.addEventListener("dblclick", (ev) => { ev.preventDefault(); ev.stopPropagation(); autoFitColumnWidth(key); });
         handle.addEventListener("mousedown", (ev) => {
           ev.preventDefault(); ev.stopPropagation();
           const startX = Number(ev.clientX || 0);

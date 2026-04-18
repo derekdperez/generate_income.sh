@@ -56,7 +56,7 @@
       <input id="topFilterName" type="text" placeholder="Filter name contains">
     </div>
     <div class="table-wrap">
-      <table>
+      <table id="extractorTopFiltersTable">
         <thead>
           <tr>
             <th data-top-sort="filter_name">Filter Name <span class="sort-ind" id="topSortFilterName"></span></th>
@@ -75,7 +75,7 @@
       <input id="filesPathFilter" type="text" placeholder="Path contains">
     </div>
     <div class="table-wrap">
-      <table>
+      <table id="extractorFilesTable">
         <thead>
           <tr>
             <th data-files-sort="path">Path <span class="sort-ind" id="filesSortPath"></span></th>
@@ -110,7 +110,7 @@
       <span class="muted" id="pagingTotals"></span>
     </div>
     <div class="table-wrap matches">
-      <table>
+      <table id="extractorMatchesTable">
         <thead>
           <tr>
             <th data-key="root_domain">Domain <span class="sort-ind" id="sort_root_domain"></span></th>
@@ -130,9 +130,13 @@
     </div>
   </div>
 
+  {% include '_grid_controls.html.j2' %}
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     const DEFAULT_LIMIT = 250;
+    let extractorTopGridCtrl = null;
+    let extractorFilesGridCtrl = null;
+    let extractorMatchesGridCtrl = null;
     let currentRows = [];
     let currentTopFilters = [];
     let currentFiles = [];
@@ -283,6 +287,17 @@
           <td>${esc(r.match_file || "")}</td>
         </tr>`;
       }).join("");
+      if (!extractorMatchesGridCtrl) {
+        extractorMatchesGridCtrl = window.NightmareGridControls.enhance({
+          table: "extractorMatchesTable",
+          page: "extractor_matches",
+          prefKey: "matches_table_v1",
+          tokenInputId: "token",
+          mode: "columnsOnly",
+        });
+      } else {
+        extractorMatchesGridCtrl.refresh();
+      }
     }
     function renderTopFilters(topFilters) {
       const rows = Array.isArray(topFilters) ? [...topFilters] : [];
@@ -310,6 +325,17 @@
       }
       document.getElementById("topFiltersRows").innerHTML =
         filtered.map((r) => `<tr><td>${esc(r.filter_name || "")}</td><td>${esc(r.match_count || 0)}</td></tr>`).join("");
+      if (!extractorTopGridCtrl) {
+        extractorTopGridCtrl = window.NightmareGridControls.enhance({
+          table: "extractorTopFiltersTable",
+          page: "extractor_matches",
+          prefKey: "top_filters_table_v1",
+          tokenInputId: "token",
+          mode: "columnsOnly",
+        });
+      } else {
+        extractorTopGridCtrl.refresh();
+      }
     }
     function renderFiles(filesInput) {
       const domain = selectedDomain();
@@ -356,6 +382,17 @@
                 <td><a href="${dlHref}" target="_blank" rel="noopener noreferrer">Download</a></td>
               </tr>`;
             }).join("");
+      if (!extractorFilesGridCtrl) {
+        extractorFilesGridCtrl = window.NightmareGridControls.enhance({
+          table: "extractorFilesTable",
+          page: "extractor_matches",
+          prefKey: "files_table_v1",
+          tokenInputId: "token",
+          mode: "columnsOnly",
+        });
+      } else {
+        extractorFilesGridCtrl.refresh();
+      }
     }
     function renderDomainOptions() {
       const select = document.getElementById("domainSelect");

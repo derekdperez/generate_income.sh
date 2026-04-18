@@ -25,12 +25,13 @@
 <body>
   <h1>Nightmare Live Dashboard</h1>
   <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>. <a href="/workers">Open Worker Control</a> | <a href="/database">Database Status</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/extractor-matches">Extractor Matches</a> | <a href="/fuzzing">Fuzzing</a></div>
+  <div class="meta"><input id="domainSearch" type="text" placeholder="Search all domain table columns" style="padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;min-width:320px;"></div>
   <div id="cards" class="cards"></div>
   <h2>Master Reports</h2>
   <div id="masters" class="muted">Loading...</div>
   <h2>Domains</h2>
   <div class="table-wrap">
-    <table>
+    <table id="dashboardDomainsTable">
       <thead>
         <tr>
           <th>Domain</th>
@@ -44,7 +45,9 @@
       <tbody id="rows"><tr><td colspan="6">Loading...</td></tr></tbody>
     </table>
   </div>
+  {% include '_grid_controls.html.j2' %}
   <script>
+    let dashboardGridCtrl = null;
     function esc(v) {
       return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch]));
     }
@@ -97,6 +100,17 @@
           <td><pre class="log">${esc((d.latest_log_tail || "").slice(-4000))}</pre></td>
         </tr>`;
       }).join("");
+      if (!dashboardGridCtrl) {
+        dashboardGridCtrl = window.NightmareGridControls.enhance({
+          table: "dashboardDomainsTable",
+          page: "dashboard",
+          prefKey: "domains_table_v1",
+          mode: "full",
+          globalSearchInputId: "domainSearch",
+        });
+      } else {
+        dashboardGridCtrl.refresh();
+      }
     }
     async function refresh() {
       try {

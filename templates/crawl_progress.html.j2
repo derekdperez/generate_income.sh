@@ -41,7 +41,7 @@
 
   <div id="cards" class="cards"></div>
   <div class="table-wrap">
-    <table>
+    <table id="crawlProgressTable">
       <thead>
         <tr>
           <th>Domain</th>
@@ -58,7 +58,9 @@
     </table>
   </div>
 
+  {% include '_grid_controls.html.j2' %}
   <script>
+    let crawlGridCtrl = null;
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
 
     function readCookie(name) {
@@ -155,6 +157,18 @@
           <td>${esc(row.seconds_since_activity ?? "-")}</td>
         </tr>`;
       }).join("");
+      if (!crawlGridCtrl) {
+        crawlGridCtrl = window.NightmareGridControls.enhance({
+          table: "crawlProgressTable",
+          page: "crawl_progress",
+          prefKey: "domains_table_v1",
+          tokenInputId: "token",
+          mode: "full",
+          globalSearchInputId: "filter",
+        });
+      } else {
+        crawlGridCtrl.refresh();
+      }
     }
     async function refresh() {
       const msg = document.getElementById("msg");

@@ -180,3 +180,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Artifact compatibility convention: anomaly/reflection JSON artifacts should continue to carry baseline/anomaly payloads for legacy consumers, but include enriched response_analysis blocks for new UI/query features.
 - Worker Control UI convention: preserve selected worker IDs across refresh cycles, and keep grid operations client-side with global search, per-column filtering, and sortable columns so bulk commands remain usable during frequent auto-refresh.
 - Fuzzing response-view convention: header display logic must tolerate mixed/legacy payload shapes (`response_headers`, `headers`, object/list forms) before falling back to names-only rendering.
+- Web grid UX convention: use shared template include `templates/_grid_controls.html.j2` for consistent table behavior (column resize, handle double-click auto-fit, per-table column visibility modal, and persisted column prefs).
+- For dynamic table pages (rows re-rendered by JS), call returned grid controller `.refresh()` after each render so hidden/width/sort/filter state reapplies to new rows.
+- Fuzzing resize convention: resize handles must suppress click bubbling to prevent header-sort race conditions while dragging.

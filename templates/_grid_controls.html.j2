@@ -1,0 +1,386 @@
+<style>
+  .ngc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .ngc-toolbar input[type="text"] { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; min-width: 220px; }
+  .ngc-colmenu-wrap { position: relative; display: inline-block; }
+  .ngc-colmenu { position: absolute; right: 0; top: calc(100% + 4px); width: 320px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,0.12); padding: 8px; z-index: 30; display: none; }
+  .ngc-colmenu.open { display: block; }
+  .ngc-colmenu-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 4px 0; }
+  .ngc-filter-row th { background: #f1f5f9; z-index: 2; }
+  .ngc-filter-row input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border: 1px solid #94a3b8; border-radius: 4px; }
+  th.ngc-sortable { cursor: pointer; user-select: none; }
+  .ngc-sort-ind { color: #0f172a; font-weight: 700; margin-left: 4px; }
+  .ngc-resize-handle { position: absolute; right: -1px; top: 0; width: 8px; height: 100%; cursor: col-resize; user-select: none; touch-action: none; background: transparent; z-index: 6; }
+  .ngc-resize-handle:hover { background: rgba(14, 165, 233, 0.18); }
+  th { position: sticky; }
+</style>
+<script>
+(() => {
+  if (window.NightmareGridControls) return;
+
+  function escAttr(v) {
+    return String(v ?? "").replace(/"/g, "&quot;");
+  }
+  function slug(v) {
+    return String(v || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "col";
+  }
+  function textWidthPx(text, sampleEl) {
+    const canvas = textWidthPx._canvas || (textWidthPx._canvas = document.createElement("canvas"));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return String(text || "").length * 8;
+    const style = getComputedStyle(sampleEl || document.body);
+    const font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    ctx.font = font;
+    return Math.ceil(ctx.measureText(String(text || "")).width);
+  }
+
+  function buildAuthHeaders(tokenInputId) {
+    const tokenEl = tokenInputId ? document.getElementById(tokenInputId) : null;
+    const token = tokenEl ? String(tokenEl.value || "").trim() : "";
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+  async function loadPrefs(page, key, tokenInputId) {
+    try {
+      const rsp = await fetch(`/api/coord/ui-preferences?page=${encodeURIComponent(page)}&key=${encodeURIComponent(key)}`, { cache: "no-store", headers: buildAuthHeaders(tokenInputId) });
+      if (!rsp.ok) throw new Error("pref_get_failed");
+      const payload = await rsp.json();
+      if (payload && typeof payload.pref_value === "object" && payload.pref_value) return payload.pref_value;
+    } catch (_) {}
+    try {
+      const raw = localStorage.getItem(`ngc:${page}:${key}`);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  async function savePrefs(page, key, value, tokenInputId) {
+    try {
+      await fetch("/api/coord/ui-preferences", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", ...buildAuthHeaders(tokenInputId) },
+        body: JSON.stringify({ page, key, value }),
+      });
+      return;
+    } catch (_) {}
+    try {
+      localStorage.setItem(`ngc:${page}:${key}`, JSON.stringify(value || {}));
+    } catch (_) {}
+  }
+
+  function ensureColgroup(table, headers) {
+    let colgroup = table.querySelector("colgroup");
+    if (!colgroup) {
+      colgroup = document.createElement("colgroup");
+      table.insertBefore(colgroup, table.firstChild);
+    }
+    const byKey = new Map(Array.from(colgroup.querySelectorAll("col[data-ngc-key]")).map((col) => [col.getAttribute("data-ngc-key"), col]));
+    headers.forEach((h) => {
+      const key = h.key;
+      if (byKey.has(key)) return;
+      const col = document.createElement("col");
+      col.setAttribute("data-ngc-key", key);
+      colgroup.appendChild(col);
+    });
+  }
+
+  function enhance(options) {
+    const table = typeof options.table === "string" ? document.getElementById(options.table) : options.table;
+    if (!table || !table.tHead || !table.tBodies || !table.tBodies.length) return null;
+    if (!table.__ngc) table.__ngc = { configured: false };
+    const state = table.__ngc;
+    const page = String(options.page || "grid");
+    const prefKey = String(options.prefKey || table.id || "table");
+    const tokenInputId = String(options.tokenInputId || "");
+    const mode = String(options.mode || "full");
+    const headerRow = table.tHead.rows[0];
+    if (!headerRow) return null;
+    const headers = Array.from(headerRow.cells).map((th, index) => {
+      const text = th.getAttribute("data-col-label") || th.textContent || `Column ${index + 1}`;
+      const key = String(th.getAttribute("data-col-key") || th.getAttribute("data-key") || slug(text) || `col_${index}`);
+      th.setAttribute("data-col-key", key);
+      return { th, key, label: String(text).trim() || `Column ${index + 1}`, index };
+    });
+    ensureColgroup(table, headers);
+
+    const tbody = table.tBodies[0];
+    if (!state.originalRows || state.originalRows.length !== tbody.rows.length) {
+      state.originalRows = Array.from(tbody.rows);
+    }
+    if (!state.valuesByRow) {
+      state.valuesByRow = new WeakMap();
+    }
+    const readRowCells = (row) => {
+      if (!row) return {};
+      const cached = state.valuesByRow.get(row);
+      if (cached) return cached;
+      const values = {};
+      headers.forEach(({ key, index }) => {
+        const cell = row.cells[index];
+        values[key] = cell ? String(cell.textContent || "").trim() : "";
+      });
+      state.valuesByRow.set(row, values);
+      return values;
+    };
+
+    if (!state.prefLoaded) {
+      state.prefLoaded = true;
+      loadPrefs(page, prefKey, tokenInputId).then((pref) => {
+        state.hidden = Array.isArray(pref.hidden_columns) ? pref.hidden_columns : [];
+        state.widths = pref.column_widths && typeof pref.column_widths === "object" ? pref.column_widths : {};
+        applyColumnPrefs();
+        applySortFilter();
+      });
+    }
+    if (!state.hidden) state.hidden = [];
+    if (!state.widths) state.widths = {};
+    if (!state.sortKey) state.sortKey = "";
+    if (!state.sortDir) state.sortDir = "asc";
+    if (!state.colFilters) state.colFilters = {};
+    if (typeof state.globalSearch !== "string") state.globalSearch = "";
+    if (state.saveTimer) clearTimeout(state.saveTimer);
+
+    function scheduleSave() {
+      if (state.saveTimer) clearTimeout(state.saveTimer);
+      state.saveTimer = setTimeout(() => {
+        state.saveTimer = null;
+        savePrefs(page, prefKey, { hidden_columns: state.hidden, column_widths: state.widths, sort_key: state.sortKey, sort_dir: state.sortDir }, tokenInputId);
+      }, 220);
+    }
+
+    function applyColumnPrefs() {
+      const hidden = new Set(state.hidden || []);
+      headers.forEach(({ key, th }) => {
+        const col = table.querySelector(`colgroup col[data-ngc-key="${CSS.escape(key)}"]`);
+        const width = Number(state.widths[key] || 0);
+        if (col && Number.isFinite(width) && width >= 80) {
+          col.style.width = `${Math.round(width)}px`;
+          col.style.minWidth = `${Math.round(width)}px`;
+        }
+        const isHidden = hidden.has(key);
+        th.style.display = isHidden ? "none" : "";
+        if (state.filterRow) {
+          const filterTh = state.filterRow.cells[th.cellIndex];
+          if (filterTh) filterTh.style.display = isHidden ? "none" : "";
+        }
+        Array.from(tbody.rows).forEach((row) => {
+          const cell = row.cells[th.cellIndex];
+          if (cell) cell.style.display = isHidden ? "none" : "";
+        });
+      });
+    }
+
+    function valueForSort(row, key) {
+      const values = readRowCells(row);
+      const raw = String(values[key] || "").trim();
+      const num = Number(raw.replace(/,/g, ""));
+      if (raw !== "" && Number.isFinite(num) && /^[-+]?[\d,.]+$/.test(raw)) return { num, text: raw.toLowerCase(), isNum: true };
+      return { num: 0, text: raw.toLowerCase(), isNum: false };
+    }
+    function applySortFilter() {
+      if (!state.originalRows) state.originalRows = Array.from(tbody.rows);
+      const q = String(state.globalSearch || "").trim().toLowerCase();
+      const filters = state.colFilters || {};
+      let rows = state.originalRows.slice();
+      rows = rows.filter((row) => {
+        const values = readRowCells(row);
+        if (q) {
+          const blob = headers.map(({ key }) => String(values[key] || "")).join(" ").toLowerCase();
+          if (!blob.includes(q)) return false;
+        }
+        for (const { key } of headers) {
+          const needle = String(filters[key] || "").trim().toLowerCase();
+          if (!needle) continue;
+          if (!String(values[key] || "").toLowerCase().includes(needle)) return false;
+        }
+        return true;
+      });
+      if (state.sortKey) {
+        const key = state.sortKey;
+        const dir = state.sortDir === "asc" ? 1 : -1;
+        rows.sort((a, b) => {
+          const av = valueForSort(a, key);
+          const bv = valueForSort(b, key);
+          if (av.isNum && bv.isNum) {
+            const diff = av.num - bv.num;
+            if (diff !== 0) return diff * dir;
+          }
+          const cmp = av.text.localeCompare(bv.text);
+          if (cmp !== 0) return cmp * dir;
+          return 0;
+        });
+      }
+      tbody.innerHTML = "";
+      rows.forEach((row) => tbody.appendChild(row));
+      headers.forEach(({ th, key }) => {
+        const ind = th.querySelector(".ngc-sort-ind");
+        if (ind) ind.textContent = state.sortKey === key ? (state.sortDir === "asc" ? "^" : "v") : "";
+      });
+      applyColumnPrefs();
+    }
+
+    function autoFitColumn(key) {
+      const header = headers.find((h) => h.key === key);
+      if (!header) return;
+      const idx = header.index;
+      let maxW = textWidthPx(header.label, header.th) + 28;
+      const rows = Array.from(tbody.rows).slice(0, 250);
+      rows.forEach((row) => {
+        const cell = row.cells[idx];
+        if (!cell) return;
+        const text = String(cell.textContent || "").replace(/\s+/g, " ").trim();
+        const width = textWidthPx(text.slice(0, 300), cell) + 24;
+        if (width > maxW) maxW = width;
+      });
+      state.widths[key] = Math.max(80, Math.min(1800, Math.round(maxW)));
+      applyColumnPrefs();
+      scheduleSave();
+    }
+
+    if (!state.menuWrap) {
+      const tableWrap = table.closest(".table-wrap") || table.parentElement;
+      const toolbar = document.createElement("div");
+      toolbar.className = "ngc-toolbar";
+      const buttonWrap = document.createElement("div");
+      buttonWrap.className = "ngc-colmenu-wrap";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Columns";
+      const menu = document.createElement("div");
+      menu.className = "ngc-colmenu";
+      buttonWrap.appendChild(btn);
+      buttonWrap.appendChild(menu);
+      toolbar.appendChild(buttonWrap);
+      if (mode === "full") {
+        const localSearch = document.createElement("input");
+        localSearch.type = "text";
+        localSearch.placeholder = "Search table...";
+        localSearch.value = state.globalSearch || "";
+        localSearch.addEventListener("input", () => { state.globalSearch = localSearch.value; applySortFilter(); });
+        toolbar.appendChild(localSearch);
+        state.localSearchInput = localSearch;
+      }
+      if (tableWrap && tableWrap.parentElement) {
+        tableWrap.parentElement.insertBefore(toolbar, tableWrap);
+      }
+      btn.addEventListener("click", (ev) => { ev.preventDefault(); menu.classList.toggle("open"); });
+      document.addEventListener("click", (ev) => { if (!buttonWrap.contains(ev.target)) menu.classList.remove("open"); });
+      state.menuWrap = buttonWrap;
+      state.menu = menu;
+      state.toolbar = toolbar;
+    }
+
+    state.menu.innerHTML = headers.map(({ key, label }) => {
+      const checked = !(state.hidden || []).includes(key);
+      return `<label class="ngc-colmenu-row"><input type="checkbox" data-ngc-col="${escAttr(key)}" ${checked ? "checked" : ""}>${escAttr(label)}</label>`;
+    }).join("");
+    state.menu.querySelectorAll("input[data-ngc-col]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = String(input.getAttribute("data-ngc-col") || "");
+        const hidden = new Set(state.hidden || []);
+        if (input.checked) hidden.delete(key); else hidden.add(key);
+        state.hidden = headers.map((h) => h.key).filter((k) => hidden.has(k));
+        applyColumnPrefs();
+        scheduleSave();
+      });
+    });
+
+    if (mode === "full" && !state.filterRow) {
+      const fr = document.createElement("tr");
+      fr.className = "ngc-filter-row";
+      headers.forEach(({ key, label }) => {
+        const th = document.createElement("th");
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.placeholder = `Filter ${label}`;
+        inp.value = String(state.colFilters[key] || "");
+        inp.addEventListener("input", () => {
+          state.colFilters[key] = inp.value;
+          applySortFilter();
+        });
+        th.appendChild(inp);
+        fr.appendChild(th);
+      });
+      table.tHead.appendChild(fr);
+      state.filterRow = fr;
+    }
+    if (state.filterRow) {
+      const h = Number(headerRow.getBoundingClientRect().height || 34);
+      state.filterRow.querySelectorAll("th").forEach((th) => { th.style.top = `${h}px`; });
+    }
+
+    headers.forEach(({ th, key }) => {
+      if (!th.querySelector(".ngc-sort-ind")) {
+        const ind = document.createElement("span");
+        ind.className = "ngc-sort-ind";
+        th.appendChild(ind);
+      }
+      if (!th.querySelector(".ngc-resize-handle")) {
+        const handle = document.createElement("span");
+        handle.className = "ngc-resize-handle";
+        th.appendChild(handle);
+        handle.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); });
+        handle.addEventListener("dblclick", (ev) => { ev.preventDefault(); ev.stopPropagation(); autoFitColumn(key); });
+        handle.addEventListener("mousedown", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const startX = Number(ev.clientX || 0);
+          const col = table.querySelector(`colgroup col[data-ngc-key="${CSS.escape(key)}"]`);
+          const startW = Number(state.widths[key] || (col ? col.getBoundingClientRect().width : th.getBoundingClientRect().width || 120));
+          const onMove = (mv) => {
+            const next = Math.max(80, Math.min(1800, Math.round(startW + (Number(mv.clientX || 0) - startX))));
+            state.widths[key] = next;
+            applyColumnPrefs();
+          };
+          const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            scheduleSave();
+          };
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        });
+      }
+      if (mode === "full" && !th.__ngcSortBound) {
+        th.__ngcSortBound = true;
+        th.classList.add("ngc-sortable");
+        th.addEventListener("click", (ev) => {
+          if (ev.target && ev.target.closest(".ngc-resize-handle")) return;
+          if (state.sortKey === key) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+          else { state.sortKey = key; state.sortDir = "asc"; }
+          applySortFilter();
+          scheduleSave();
+        });
+      }
+    });
+
+    if (mode === "full" && options.globalSearchInputId) {
+      const globalInput = document.getElementById(options.globalSearchInputId);
+      if (globalInput && !globalInput.__ngcBound) {
+        globalInput.__ngcBound = true;
+        globalInput.addEventListener("input", () => {
+          state.globalSearch = String(globalInput.value || "");
+          if (state.localSearchInput && state.localSearchInput !== globalInput) state.localSearchInput.value = state.globalSearch;
+          applySortFilter();
+        });
+      }
+      if (globalInput) globalInput.value = String(state.globalSearch || globalInput.value || "");
+    }
+
+    applyColumnPrefs();
+    if (mode === "full") applySortFilter();
+    state.configured = true;
+    return {
+      refresh() {
+        state.originalRows = Array.from(tbody.rows);
+        state.valuesByRow = new WeakMap();
+        applyColumnPrefs();
+        if (mode === "full") applySortFilter();
+      },
+    };
+  }
+
+  window.NightmareGridControls = { enhance };
+})();
+</script>

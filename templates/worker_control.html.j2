@@ -45,7 +45,7 @@
     <span id="msg" class="muted"></span>
   </div>
   <div class="table-wrap">
-    <table>
+    <table id="workerControlTable">
       <thead>
         <tr>
           <th><input type="checkbox" id="selectAll"></th>
@@ -84,8 +84,10 @@
     </div>
   </div>
 
+  {% include '_grid_controls.html.j2' %}
   <script>
     let selectedConfigWorker = "";
+    let workerGridCtrl = null;
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     const WORKER_SELECTION_COOKIE_NAME = "nightmare_worker_selection_v1";
     let allWorkers = [];
@@ -351,6 +353,17 @@
       });
       _syncRenderedSelection();
       _persistWorkerSelectionCookie();
+      if (!workerGridCtrl) {
+        workerGridCtrl = window.NightmareGridControls.enhance({
+          table: "workerControlTable",
+          page: "workers",
+          prefKey: "workers_table_v1",
+          tokenInputId: "token",
+          mode: "columnsOnly",
+        });
+      } else {
+        workerGridCtrl.refresh();
+      }
     }
     async function refresh() {
       try { render(await apiGet("/api/coord/worker-control")); }

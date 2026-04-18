@@ -565,3 +565,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Added sortable columns with explicit sort indicators.
   - Selection state now survives data refresh and is reapplied to visible rows.
 - Why: operators were repeatedly losing selections on refresh and could not efficiently locate/sort workers in large fleets.
+
+- Standardized table/grid interaction layer across web pages via shared include `templates/_grid_controls.html.j2`:
+  - Added reusable column resizing with per-column resize handles.
+  - Added double-click auto-fit behavior on resize handles.
+  - Added per-table column visibility modal (`Columns`) with persisted hidden/width preferences (DB-backed when available, localStorage fallback).
+  - Added optional local sortable/filterable mode used on dashboard/crawl/database data tables.
+- Why: make table UX consistent and satisfy operator requirement for resizable/sortable/filterable/configurable grids across pages.
+
+- Fixed fuzzing table resize reliability in `templates/fuzzing.html.j2`:
+  - Resize handle now suppresses click propagation (prevents accidental sort-trigger while resizing).
+  - Added double-click auto-fit width for the target column.
+  - Normalized sort indicator glyphs to ASCII (`^` / `v`) for cross-platform rendering consistency.
+- Why: resize drag area was intermittently acting on wrong behavior and did not support requested auto-fit interaction.
