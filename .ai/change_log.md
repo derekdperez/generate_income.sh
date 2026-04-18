@@ -794,6 +794,25 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Why: sudo-run deploys created root-only files that broke non-root rollout/status commands and normal operator workflows.
 ## 2026-04-18
 
+- Hardened central bootstrap token reuse to prevent worker auth drift on reruns.
+- `deploy/bootstrap-central-auto.sh` now attempts to recover `COORDINATOR_API_TOKEN` from the running `nightmare-coordinator-server` container when `.env` is missing/incomplete (and not `--force`).
+- Why: this prevents unintended token regeneration that causes workers to loop on `401 Unauthorized` for claim/poll endpoints.
+
+## 2026-04-18
+
+- Standardized website table time rendering toward fixed EST (`UTC-5`) `HH:MM:SS` display for column data.
+- `templates/crawl_progress.html.j2`:
+  - changed `Last Activity` column label to `Last Activity (EST)`;
+  - added deterministic client formatter to render `last_activity_at_utc` as `HH:MM:SS` in fixed UTC-5.
+- `templates/view_logs.html.j2` + `server.py`:
+  - added diagnostics table `Time (EST)` column;
+  - diagnostics rows now include `checked_at_est_time` generated server-side via shared EST time formatter.
+- `server.py`:
+  - added `_format_est_time(dt)` helper to keep EST time-only formatting consistent with no fractional seconds.
+- Why: enforce a single operator-friendly time format in table columns (`HH:MM:SS`, EST/UTC-5) and remove mixed ISO/date-time outputs in grids.
+
+## 2026-04-18
+
 - Prevented unwanted extra log-DB VM provisioning on reruns when infra already exists.
 - `deploy/bootstrap-central-auto.sh` now recovers missing `LOG_DATABASE_URL` from existing `nightmare-coordinator-server` container env before deciding to provision log DB.
 - `deploy/provision-log-db-aws.sh` now:

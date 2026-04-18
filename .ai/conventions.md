@@ -244,3 +244,4 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Full deploy wrapper convention: pass coordinator URL/token explicitly to `client.py rollout` instead of relying only on local default env discovery.
 - Log reader resilience convention: local container log collection should not depend solely on `docker logs`; always include fallback to compose service logs (`docker compose` and `docker-compose`) for known coordinator/DB services.
 - Compose spec convention for observability: include `docker-compose.log-store.yml` in compose-spec discovery used by Docker status/log APIs.
+- UI time-column convention: render table time fields as fixed EST (`UTC-5`) `HH:MM:SS` with no fractional seconds; prefer dedicated `..._est_time` values from API payloads or deterministic client conversion from UTC timestamps.

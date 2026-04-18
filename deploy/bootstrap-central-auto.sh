@@ -624,6 +624,14 @@ if [[ -z "$LOG_DATABASE_URL" && "$FORCE_REGEN" -ne 1 ]]; then
   fi
 fi
 
+if [[ -z "$COORDINATOR_API_TOKEN" && "$FORCE_REGEN" -ne 1 ]]; then
+  recovered_api_token="$(recover_env_value_from_container nightmare-coordinator-server COORDINATOR_API_TOKEN)"
+  if [[ -n "$recovered_api_token" ]]; then
+    COORDINATOR_API_TOKEN="$recovered_api_token"
+    echo "Recovered existing COORDINATOR_API_TOKEN from nightmare-coordinator-server container configuration."
+  fi
+fi
+
 if [[ -z "$POSTGRES_PASSWORD" ]]; then
   if [[ "$EXISTING_INSTALL_DETECTED" -eq 1 && "$FORCE_REGEN" -ne 1 ]]; then
     recovered_postgres_password="$(recover_postgres_password_from_container)"

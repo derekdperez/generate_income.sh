@@ -92,6 +92,7 @@
     <table id="diagTable">
       <thead>
         <tr>
+          <th>Time (EST)</th>
           <th>Status</th>
           <th>Source</th>
           <th>System</th>
@@ -103,7 +104,7 @@
           <th>Preview</th>
         </tr>
       </thead>
-      <tbody id="diagRows"><tr><td colspan="9">No diagnostics run yet.</td></tr></tbody>
+      <tbody id="diagRows"><tr><td colspan="10">No diagnostics run yet.</td></tr></tbody>
     </table>
   </div>
   {% include '_grid_controls.html.j2' %}
@@ -270,7 +271,7 @@
       meta.textContent = `Diagnosed ${payload.diagnosed_sources || 0}/${payload.total_sources || 0} sources | ok=${payload.ok_sources || 0} | error=${payload.error_sources || 0} | generated=${payload.generated_at_utc || ""}`;
       const tbody = document.getElementById("diagRows");
       if (!rows.length) {
-        tbody.innerHTML = "<tr><td colspan='9'>No diagnostics data returned.</td></tr>";
+        tbody.innerHTML = "<tr><td colspan='10'>No diagnostics data returned.</td></tr>";
         return;
       }
       tbody.innerHTML = rows.map((row) => {
@@ -278,6 +279,7 @@
         const status = ok ? "ok" : "error";
         const statusCls = ok ? "diag-ok" : "diag-error";
         return `<tr>
+          <td>${esc(row.checked_at_est_time || "")}</td>
           <td><span class="${statusCls}">${esc(status)}</span></td>
           <td>${esc(row.label || row.source_id || "")}</td>
           <td>${esc(row.system || "")}</td>
@@ -334,7 +336,7 @@
         msg.textContent = `Diagnostics complete: ${payload.ok_sources || 0} readable, ${payload.error_sources || 0} failing source(s).`;
       } catch (e) {
         const isTimeout = String(e && (e.name || "")).toLowerCase() === "aborterror";
-        document.getElementById("diagRows").innerHTML = `<tr><td colspan="9">Diagnostics failed: ${esc(e.message || e)}</td></tr>`;
+        document.getElementById("diagRows").innerHTML = `<tr><td colspan="10">Diagnostics failed: ${esc(e.message || e)}</td></tr>`;
         setLoadState(isTimeout ? "timeout" : "error", isTimeout ? "Diagnostics timed out" : "Diagnostics failed");
         msg.textContent = isTimeout ? "Diagnostics timed out." : `Diagnostics failed: ${e.message || e}`;
       }

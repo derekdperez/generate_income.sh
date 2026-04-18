@@ -902,6 +902,13 @@ def _format_est_datetime(dt: datetime) -> str:
         return ""
 
 
+def _format_est_time(dt: datetime) -> str:
+    try:
+        return dt.astimezone(EST_TZ).strftime("%H:%M:%S")
+    except Exception:
+        return ""
+
+
 def _parse_timestamp(value: Any) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
@@ -1293,6 +1300,7 @@ def _diagnose_view_log_sources(
     ok_count = 0
     error_count = 0
     for source in sources[:safe_limit]:
+        checked_at = datetime.now(timezone.utc)
         source_id = str(source.get("source_id", "") or "")
         label = str(source.get("label", "") or source_id)
         source_type = str(source.get("source_type", "") or "")
@@ -1312,6 +1320,8 @@ def _diagnose_view_log_sources(
                 "label": label,
                 "source_type": source_type,
                 "system": system,
+                "checked_at_utc": checked_at.isoformat(),
+                "checked_at_est_time": _format_est_time(checked_at),
                 "instance_id": str(source.get("instance_id", "") or ""),
                 "container_name": str(source.get("container_name", "") or ""),
                 "ok": bool(ok),
