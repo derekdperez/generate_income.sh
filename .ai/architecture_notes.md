@@ -91,3 +91,5 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 
 - Fuzzing results enrichment boundary: summary flattening in server.py is now augmented by optional zip-based hydration from ozzy_results_zip (parsed once per domain and cached) so legacy summaries without rich fields can still render detailed baseline-vs-fuzz columns in the web UI.
 
+
+- Added coordinator_ui_preferences table for durable operator UI state. Server routes own auth + HTTP handling; store layer owns upsert/query of JSON preference payloads by page/key.

@@ -109,4 +109,6 @@ def test_fuzzing_template_renders():
     assert 'href="/extractor-matches"' in html
     assert "/api/coord/fuzzing/domains" in html
     assert "/api/coord/fuzzing?" in html
+    assert "/api/coord/ui-preferences" in html
+    assert "columnToggleBtn" in html
     assert "nightmare_coord_token" in html

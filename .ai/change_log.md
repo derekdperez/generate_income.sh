@@ -529,3 +529,5 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Added server-side enrichment that reads per-result JSON payloads from ozzy_results_zip and hydrates baseline/fuzz request/response previews + duration metrics for existing artifacts.
 - Reflection findings now include reflected text directly in the note field (eflection_detected: <value>) for both live flattening and new fozzy summary outputs.
 
+
+- 2026-04-17: Fuzzing table UX upgrade: added horizontal scrolling, per-column resize handles, and column hide/show menu with persisted prefs in Postgres via /api/coord/ui-preferences (GET/POST).

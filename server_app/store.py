@@ -345,6 +345,16 @@ CREATE TABLE IF NOT EXISTS coordinator_fleet_settings (
 INSERT INTO coordinator_fleet_settings(singleton) VALUES (1)
 ON CONFLICT (singleton) DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS coordinator_ui_preferences (
+  page TEXT NOT NULL,
+  pref_key TEXT NOT NULL,
+  pref_value JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(page, pref_key)
+);
+CREATE INDEX IF NOT EXISTS idx_coordinator_ui_preferences_page
+  ON coordinator_ui_preferences(page);
+
 CREATE TABLE IF NOT EXISTS coordinator_worker_commands (
   id BIGSERIAL PRIMARY KEY,
   worker_id TEXT NOT NULL,
@@ -640,6 +650,71 @@ RETURNING output_clear_generation, updated_at_utc;
         gen, updated = row[0], row[1]
         return {
             "output_clear_generation": int(gen or 0),
+            "updated_at_utc": updated.isoformat() if updated else None,
+        }
+
+    def get_ui_preference(self, *, page: str, pref_key: str) -> dict[str, Any]:
+        page_text = str(page or "").strip().lower()
+        key_text = str(pref_key or "").strip().lower()
+        if not page_text:
+            raise ValueError("page is required")
+        if not key_text:
+            raise ValueError("pref_key is required")
+        sql = """
+SELECT pref_value, updated_at_utc
+FROM coordinator_ui_preferences
+WHERE page = %s AND pref_key = %s;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (page_text, key_text))
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return {
+                "page": page_text,
+                "pref_key": key_text,
+                "found": False,
+                "pref_value": {},
+                "updated_at_utc": None,
+            }
+        value = row[0] if isinstance(row[0], dict) else {}
+        updated = row[1]
+        return {
+            "page": page_text,
+            "pref_key": key_text,
+            "found": True,
+            "pref_value": value,
+            "updated_at_utc": updated.isoformat() if updated else None,
+        }
+
+    def set_ui_preference(self, *, page: str, pref_key: str, pref_value: dict[str, Any]) -> dict[str, Any]:
+        page_text = str(page or "").strip().lower()
+        key_text = str(pref_key or "").strip().lower()
+        if not page_text:
+            raise ValueError("page is required")
+        if not key_text:
+            raise ValueError("pref_key is required")
+        if not isinstance(pref_value, dict):
+            raise ValueError("pref_value must be an object")
+        sql = """
+INSERT INTO coordinator_ui_preferences(page, pref_key, pref_value, updated_at_utc)
+VALUES (%s, %s, %s::jsonb, NOW())
+ON CONFLICT (page, pref_key) DO UPDATE
+SET pref_value = EXCLUDED.pref_value,
+    updated_at_utc = NOW()
+RETURNING updated_at_utc;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (page_text, key_text, json.dumps(pref_value, ensure_ascii=False)))
+                row = cur.fetchone()
+            conn.commit()
+        updated = row[0] if row else None
+        return {
+            "page": page_text,
+            "pref_key": key_text,
+            "pref_value": pref_value,
             "updated_at_utc": updated.isoformat() if updated else None,
         }
 

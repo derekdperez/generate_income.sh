@@ -2044,6 +2044,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json(self.coordinator_store.get_fleet_settings())
             return
+        if path == "/api/coord/ui-preferences":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            page = str((query.get("page") or [""])[0] or "").strip().lower()
+            pref_key = str((query.get("key") or [""])[0] or "").strip().lower()
+            if not page or not pref_key:
+                self._write_json({"error": "page and key are required"}, status=400)
+                return
+            try:
+                payload = self.coordinator_store.get_ui_preference(page=page, pref_key=pref_key)
+            except Exception as exc:
+                self.log_message("get_ui_preference failed: %r", exc)
+                self._write_json({"error": "ui preference query failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json(payload)
+            return
         if path == "/api/coord/session":
             if self.coordinator_store is None:
                 self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
@@ -2350,6 +2370,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/coord/fleet-signal-clear-output":
             self._write_json({"ok": True, **self.coordinator_store.bump_output_clear_generation()})
+            return
+
+        if path == "/api/coord/ui-preferences":
+            page = str(body.get("page", "") or "").strip().lower()
+            pref_key = str(body.get("key", "") or "").strip().lower()
+            pref_value = body.get("value", {})
+            if not page or not pref_key:
+                self._write_json({"error": "page and key are required"}, status=400)
+                return
+            if not isinstance(pref_value, dict):
+                self._write_json({"error": "value must be an object"}, status=400)
+                return
+            try:
+                payload = self.coordinator_store.set_ui_preference(page=page, pref_key=pref_key, pref_value=pref_value)
+            except Exception as exc:
+                self.log_message("set_ui_preference failed: %r", exc)
+                self._write_json({"error": "ui preference update failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json({"ok": True, **payload})
             return
 
         self._write_json({"error": "not found"}, status=404)

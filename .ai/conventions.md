@@ -165,3 +165,5 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Fuzzing UI data contract: /api/coord/fuzzing rows should include baseline/fuzz request content, response content, response code, response size, response duration, and diff fields (status_difference, size_difference, duration_difference_ms) so the page can compare pairs without additional client joins.
 - Reflection-note convention: when esult_type=reflection, include reflected value text in nomaly_note (format eflection_detected: <value>).
 
+
+- Web UI preference convention: persist page-specific table settings (hidden columns, column widths) in DB using coordinator API /api/coord/ui-preferences keyed by (page, key) instead of localStorage-only state.

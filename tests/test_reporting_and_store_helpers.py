@@ -52,6 +52,8 @@ def test_render_fuzzing_html_contains_expected_heading():
     assert "Fuzzing" in html
     assert "/api/coord/fuzzing/domains" in html
     assert "/api/coord/fuzzing?" in html
+    assert "/api/coord/ui-preferences" in html
+    assert "columnToggleBtn" in html
 
 
 def test_extractor_report_html_escapes_script_content():
@@ -234,6 +236,96 @@ def test_database_status_tolerates_single_table_query_failure():
     assert table["rows_returned"] == 0
     assert table["rows_limited"] is False
     assert "simulated table read failure" in table["table_error"]
+
+
+def test_get_ui_preference_returns_default_when_missing():
+    now = datetime(2026, 4, 16, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchone = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            assert "FROM coordinator_ui_preferences" in compact
+            assert params == ("fuzzing", "table_columns_v1")
+            self._fetchone = None
+
+        def fetchone(self):
+            return self._fetchone
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+    payload = CoordinatorStore.get_ui_preference(store, page="fuzzing", pref_key="table_columns_v1")
+    assert payload["found"] is False
+    assert payload["pref_value"] == {}
+    assert payload["updated_at_utc"] is None
+
+
+def test_set_ui_preference_upserts_json_payload():
+    now = datetime(2026, 4, 16, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchone = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            assert "INSERT INTO coordinator_ui_preferences" in compact
+            assert params[0] == "fuzzing"
+            assert params[1] == "table_columns_v1"
+            assert isinstance(params[2], str)
+            self._fetchone = (now,)
+
+        def fetchone(self):
+            return self._fetchone
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+    value = {"hidden_columns": ["url"], "column_widths": {"url": 180}}
+    payload = CoordinatorStore.set_ui_preference(store, page="fuzzing", pref_key="table_columns_v1", pref_value=value)
+    assert payload["page"] == "fuzzing"
+    assert payload["pref_key"] == "table_columns_v1"
+    assert payload["pref_value"] == value
+    assert payload["updated_at_utc"] == now.isoformat()
 
 
 def test_worker_control_snapshot_includes_presence_only_worker():
