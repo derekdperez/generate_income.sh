@@ -38,7 +38,7 @@ services:
       COORDINATOR_WORKER_SSM_TARGET_KEY: ${COORDINATOR_WORKER_SSM_TARGET_KEY:-tag:Name}
       COORDINATOR_WORKER_SSM_TARGET_VALUES: ${COORDINATOR_WORKER_SSM_TARGET_VALUES:-nightmare-worker*}
       COORDINATOR_LOG_EC2_FILTER_KEY: ${COORDINATOR_LOG_EC2_FILTER_KEY:-tag:Name}
-      COORDINATOR_LOG_EC2_FILTER_VALUES: ${COORDINATOR_LOG_EC2_FILTER_VALUES:-nightmare-worker*,nightmare-central*}
+      COORDINATOR_LOG_EC2_FILTER_VALUES: ${COORDINATOR_LOG_EC2_FILTER_VALUES:-nightmare-worker*,nightmare-central*,nightmare-log-db*}
     volumes:
       - ../output:/app/output
       - ../config:/app/config

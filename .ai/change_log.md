@@ -695,3 +695,14 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Wait for coordinator readiness via `/api/coord/database-status`.
   - Run `python3 register_targets.py --targets-file targets.txt` automatically.
 - Why: eliminate post-deploy manual target registration and ensure queue is populated immediately after deployment.
+## 2026-04-18
+
+- Fixed log visibility gaps in View Logs backend.
+- Changes in `server.py`:
+  - Added remote-EC2 docker container discovery via SSM + `docker ps` (not limited to worker compose services).
+  - Expanded default EC2 log filter scope to include log DB VM name pattern (`nightmare-log-db*`).
+  - Ensured central must-have docker log sources are always present in source list (`nightmare-coordinator-server`, `nightmare-postgres`, `nightmare-log-postgres`).
+  - Enabled docker log reads for remote VM sources (`system=remote_vm`) using existing SSM log readers.
+  - Updated `/api/coord/log-events` to fall back to live source parsing when structured log DB query returns zero rows, instead of returning empty immediately.
+- Updated `deploy/docker-compose.central.yml` default `COORDINATOR_LOG_EC2_FILTER_VALUES` to include `nightmare-log-db*`.
+- Why: operators were seeing empty/no-log behavior despite active fleet services and required visibility for coordinator + both DBs.

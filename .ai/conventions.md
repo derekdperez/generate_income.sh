@@ -218,3 +218,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Worker control convention: Logs column should include direct file links and a one-click per-worker log bundle download action.
 - Worker log download API convention: use `/api/coord/worker-log-download?worker_id=...` with coordinator auth and zip response payload.
 - Full deploy convention: scripts should include coordinator readiness wait and automatic `register_targets.py` execution against `targets.txt` using values from `deploy/.env`.
+- Log source discovery convention: do not restrict remote docker source discovery only to worker compose services; include all EC2 fleet instances matched by log filters and query `docker ps` over SSM.
+- View Logs resilience convention: when log DB query returns zero events, fallback to live source reads before returning an empty response.
+- Fleet log filter convention: default EC2 log filter values should include coordinator, workers, and dedicated log-db VM name patterns.

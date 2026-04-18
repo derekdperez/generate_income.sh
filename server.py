@@ -607,6 +607,37 @@ def _parse_docker_log_sections(raw: str) -> dict[str, str]:
     return {name: "\n".join(lines).strip() for name, lines in sections.items()}
 
 
+def _parse_docker_ps_json_lines(raw: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for line in str(raw or "").splitlines():
+        text = str(line or "").strip()
+        if not text or not text.startswith("{") or not text.endswith("}"):
+            continue
+        try:
+            row = json.loads(text)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("Names", "") or "")
+        image = str(row.get("Image", "") or "")
+        lowered = f"{name} {image}".lower()
+        out.append(
+            {
+                "id": str(row.get("ID", "") or ""),
+                "name": name,
+                "image": image,
+                "command": str(row.get("Command", "") or ""),
+                "created_at": str(row.get("CreatedAt", "") or ""),
+                "running_for": str(row.get("RunningFor", "") or ""),
+                "status": str(row.get("Status", "") or ""),
+                "ports": str(row.get("Ports", "") or ""),
+                "is_application": "nightmare" in lowered or "deploy-" in lowered,
+            }
+        )
+    return out
+
+
 def _list_worker_vm_docker_containers(*, log_lines: int = 0, timeout_seconds_override: Optional[int] = None) -> dict[str, Any]:
     settings = dict(_worker_ssm_settings_from_env())
     if timeout_seconds_override is not None:
@@ -692,6 +723,82 @@ def _list_worker_vm_docker_containers(*, log_lines: int = 0, timeout_seconds_ove
     }
 
 
+def _list_remote_ec2_docker_containers(*, log_lines: int = 0, timeout_seconds_override: Optional[int] = None) -> dict[str, Any]:
+    settings = dict(_worker_ssm_settings_from_env())
+    if timeout_seconds_override is not None:
+        settings["timeout_seconds"] = max(10, int(timeout_seconds_override))
+    ec2_payload = _list_ec2_fleet_instances()
+    if not ec2_payload.get("ok"):
+        return {"ok": False, "error": str(ec2_payload.get("error", "EC2 discovery failed") or "EC2 discovery failed"), "instances": [], "containers": []}
+    instances = ec2_payload.get("instances", []) if isinstance(ec2_payload.get("instances"), list) else []
+    instance_ids = [str(item.get("instance_id", "") or "").strip() for item in instances if isinstance(item, dict) and str(item.get("instance_id", "") or "").strip()]
+    if not instance_ids:
+        return {"ok": True, "error": "", "instances": [], "containers": []}
+
+    instance_name_map: dict[str, str] = {}
+    for item in instances:
+        if not isinstance(item, dict):
+            continue
+        iid = str(item.get("instance_id", "") or "").strip()
+        if not iid:
+            continue
+        instance_name_map[iid] = str(item.get("name", "") or "").strip()
+
+    ps_cmd = "docker ps --no-trunc --format '{{json .}}' || true"
+    ps_result = _run_ssm_shell(ps_cmd, settings=settings, instance_ids=instance_ids)
+    if not ps_result.get("ok"):
+        return {"ok": False, "error": ps_result.get("error", "SSM docker ps failed"), "instances": [], "containers": []}
+
+    instance_rows: list[dict[str, Any]] = []
+    containers: list[dict[str, Any]] = []
+    for inv in ps_result.get("invocations", []):
+        if not isinstance(inv, dict):
+            continue
+        instance_id = str(inv.get("InstanceId", "") or "").strip()
+        status = str(inv.get("Status", "") or "").strip()
+        output = ""
+        plugin_rows = inv.get("CommandPlugins", [])
+        if isinstance(plugin_rows, list) and plugin_rows and isinstance(plugin_rows[0], dict):
+            output = str(plugin_rows[0].get("Output", "") or "")
+        rows = _parse_docker_ps_json_lines(output)
+        instance_rows.append({"instance_id": instance_id, "status": status, "container_count": len(rows)})
+        for row in rows:
+            containers.append(
+                {
+                    **row,
+                    "host_type": "remote_vm",
+                    "host_label": instance_name_map.get(instance_id) or instance_id,
+                    "instance_id": instance_id,
+                }
+            )
+
+    if log_lines > 0 and containers:
+        log_cmd = (
+            f"for n in $(docker ps --format '{{{{.Names}}}}'); do "
+            f"echo \"###BEGIN_CONTAINER_LOG:$n\"; "
+            f"docker logs --tail {max(1, int(log_lines))} \"$n\" 2>&1 || true; "
+            f"echo \"###END_CONTAINER_LOG:$n\"; done"
+        )
+        log_result = _run_ssm_shell(log_cmd, settings=settings, instance_ids=instance_ids)
+        if log_result.get("ok"):
+            logs_by_instance: dict[str, dict[str, str]] = {}
+            for inv in log_result.get("invocations", []):
+                if not isinstance(inv, dict):
+                    continue
+                instance_id = str(inv.get("InstanceId", "") or "").strip()
+                output = ""
+                plugin_rows = inv.get("CommandPlugins", [])
+                if isinstance(plugin_rows, list) and plugin_rows and isinstance(plugin_rows[0], dict):
+                    output = str(plugin_rows[0].get("Output", "") or "")
+                logs_by_instance[instance_id] = _parse_docker_log_sections(output)
+            for row in containers:
+                iid = str(row.get("instance_id", "") or "")
+                name = str(row.get("name", "") or "")
+                row["log_tail"] = str(logs_by_instance.get(iid, {}).get(name, "") or "")
+
+    return {"ok": True, "error": "", "instances": instance_rows, "containers": containers}
+
+
 def _ec2_log_settings_from_env() -> dict[str, Any]:
     return {
         "enabled": shutil.which("aws") is not None,
@@ -706,9 +813,9 @@ def _ec2_log_settings_from_env() -> dict[str, Any]:
         "filter_values": str(
             os.getenv(
                 "COORDINATOR_LOG_EC2_FILTER_VALUES",
-                "nightmare-worker*,nightmare-central*",
+                "nightmare-worker*,nightmare-central*,nightmare-log-db*",
             )
-            or "nightmare-worker*,nightmare-central*"
+            or "nightmare-worker*,nightmare-central*,nightmare-log-db*"
         ).strip(),
     }
 
@@ -1047,8 +1154,8 @@ def _discover_view_log_docker_sources() -> list[dict[str, Any]]:
 
 
 def _discover_view_log_remote_docker_sources() -> list[dict[str, Any]]:
-    worker = _list_worker_vm_docker_containers(log_lines=0, timeout_seconds_override=15)
-    rows = worker.get("containers", []) if isinstance(worker.get("containers"), list) else []
+    remote = _list_remote_ec2_docker_containers(log_lines=0, timeout_seconds_override=20)
+    rows = remote.get("containers", []) if isinstance(remote.get("containers"), list) else []
     out: list[dict[str, Any]] = []
     for row in rows:
         container_name = str(row.get("name", "") or "").strip()
@@ -1059,13 +1166,13 @@ def _discover_view_log_remote_docker_sources() -> list[dict[str, Any]]:
             {
                 "source_id": f"ssm:{instance_id}:docker:{container_name}",
                 "source_type": "docker",
-                "system": "worker_vm",
-                "label": f"{instance_id}:{container_name}",
+                "system": "remote_vm",
+                "label": f"{str(row.get('host_label', '') or instance_id)}:{container_name}",
                 "container_name": container_name,
                 "instance_id": instance_id,
                 "status": str(row.get("status", "") or ""),
                 "image": str(row.get("image", "") or ""),
-                "is_application": True,
+                "is_application": bool(row.get("is_application", False)),
             }
         )
     out.sort(key=lambda item: str(item.get("label", "")).lower())
@@ -1114,30 +1221,29 @@ def _collect_view_log_sources(app_root: Path, output_root: Path) -> list[dict[st
         + _discover_view_log_ec2_console_sources()
         + _discover_view_log_file_sources(app_root, output_root)
     )
+    must_have = [
+        ("nightmare-coordinator-server", True),
+        ("nightmare-postgres", True),
+        ("nightmare-log-postgres", False),
+    ]
+    existing_ids = {str(item.get("source_id", "") or "").strip() for item in sources if isinstance(item, dict)}
+    for container_name, app_flag in must_have:
+        sid = f"docker:{container_name}"
+        if sid in existing_ids:
+            continue
+        sources.append(
+            {
+                "source_id": sid,
+                "source_type": "docker",
+                "system": "docker",
+                "label": container_name,
+                "container_name": container_name,
+                "status": "unknown",
+                "image": "",
+                "is_application": app_flag,
+            }
+        )
     sources.sort(key=lambda item: (str(item.get("source_type", "")), str(item.get("label", "")).lower()))
-    if not sources:
-        sources = [
-            {
-                "source_id": "docker:nightmare-coordinator-server",
-                "source_type": "docker",
-                "system": "docker",
-                "label": "nightmare-coordinator-server",
-                "container_name": "nightmare-coordinator-server",
-                "status": "unknown",
-                "image": "",
-                "is_application": True,
-            },
-            {
-                "source_id": "docker:nightmare-postgres",
-                "source_type": "docker",
-                "system": "docker",
-                "label": "nightmare-postgres",
-                "container_name": "nightmare-postgres",
-                "status": "unknown",
-                "image": "",
-                "is_application": True,
-            },
-        ]
     return sources
 
 
@@ -1281,7 +1387,7 @@ def _read_log_source_text(
     if source_type == "docker":
         system = str(source.get("system", "") or "").strip().lower()
         container_name = str(source.get("container_name", "") or "").strip()
-        if system == "worker_vm":
+        if system in {"worker_vm", "remote_vm"}:
             instance_id = str(source.get("instance_id", "") or "").strip()
             if full:
                 return _read_worker_vm_docker_log_full(instance_id, container_name)
@@ -2688,9 +2794,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         offset=offset,
                         sort_dir=sort_dir,
                     )
-                    payload.update({"generated_at_utc": _iso_now(), "source_id": source_id or "__all__", "from_log_db": True})
-                    self._write_json(payload)
-                    return
+                    db_total = int(payload.get("total", 0) or 0)
+                    if db_total > 0:
+                        payload.update({"generated_at_utc": _iso_now(), "source_id": source_id or "__all__", "from_log_db": True})
+                        self._write_json(payload)
+                        return
                 except Exception as exc:
                     self.log_message("log_store query failed: %r", exc)
             sources: list[dict[str, Any]] = []
