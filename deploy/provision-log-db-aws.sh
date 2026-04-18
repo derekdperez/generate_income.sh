@@ -101,6 +101,36 @@ set_env_key() {
   restore_invoking_user_ownership "$file"
 }
 
+find_existing_log_db_instances() {
+  local region_opts=("$@")
+  aws ec2 describe-instances \
+    "${region_opts[@]}" \
+    --filters "Name=tag:Name,Values=${INSTANCE_NAME_PREFIX}*" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query "Reservations[].Instances[].InstanceId" \
+    --output text 2>/dev/null || true
+}
+
+read_env_value_from_coordinator_container() {
+  local key="$1"
+  local env_lines=""
+  env_lines="$(docker inspect nightmare-coordinator-server --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
+  if [[ -z "$env_lines" ]] && command -v sudo >/dev/null 2>&1; then
+    env_lines="$(sudo docker inspect nightmare-coordinator-server --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
+  fi
+  if [[ -z "$env_lines" ]]; then
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      "${key}"=*)
+        echo "${line#${key}=}"
+        return 0
+        ;;
+    esac
+  done <<< "$env_lines"
+  return 0
+}
+
 resolve_compose_cmd() {
   if docker compose version >/dev/null 2>&1; then
     echo "docker compose"
@@ -162,6 +192,13 @@ if [[ -z "$DB_PASSWORD" ]]; then
 fi
 
 existing_log_db_url="$(load_key_from_env_file "LOG_DATABASE_URL" "$ENV_FILE")"
+if [[ -z "$existing_log_db_url" ]]; then
+  existing_log_db_url="$(read_env_value_from_coordinator_container "LOG_DATABASE_URL")"
+  if [[ -n "$existing_log_db_url" ]]; then
+    set_env_key "$ENV_FILE" "LOG_DATABASE_URL" "$existing_log_db_url"
+    echo "Recovered LOG_DATABASE_URL from nightmare-coordinator-server container and wrote ${ENV_FILE}."
+  fi
+fi
 if [[ -n "$existing_log_db_url" ]]; then
   echo "LOG_DATABASE_URL already exists in ${ENV_FILE}; skipping VM provisioning."
   if [[ "$SKIP_REBUILD_CENTRAL" -eq 0 ]]; then
@@ -173,6 +210,16 @@ if [[ -n "$existing_log_db_url" ]]; then
     run_compose "$compose_cmd" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build server
   fi
   exit 0
+fi
+
+if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity "${region_args[@]}" >/dev/null 2>&1; then
+  existing_instance_ids="$(find_existing_log_db_instances "${region_args[@]}")"
+  if [[ -n "$existing_instance_ids" && "$existing_instance_ids" != "None" ]]; then
+    echo "Found existing log DB instance(s): ${existing_instance_ids}" >&2
+    echo "Refusing to provision another log DB VM because LOG_DATABASE_URL is missing." >&2
+    echo "Recover/set LOG_DATABASE_URL in ${ENV_FILE} and rerun." >&2
+    exit 1
+  fi
 fi
 
 for required in AMI_ID SUBNET_ID SECURITY_GROUP_IDS; do

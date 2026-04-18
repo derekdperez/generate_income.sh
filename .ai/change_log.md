@@ -792,3 +792,11 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `.bashrc` update target now uses invoking user home directory instead of root home.
 - `deploy/provision-log-db-aws.sh` now restores ownership of `.env` updates using invoking user + primary group (not username-assumed group).
 - Why: sudo-run deploys created root-only files that broke non-root rollout/status commands and normal operator workflows.
+## 2026-04-18
+
+- Prevented unwanted extra log-DB VM provisioning on reruns when infra already exists.
+- `deploy/bootstrap-central-auto.sh` now recovers missing `LOG_DATABASE_URL` from existing `nightmare-coordinator-server` container env before deciding to provision log DB.
+- `deploy/provision-log-db-aws.sh` now:
+  - recovers `LOG_DATABASE_URL` from existing coordinator container env and writes it to `.env` when missing;
+  - detects existing log DB instances by tag (`${INSTANCE_NAME_PREFIX}*`) and refuses to provision duplicates when URL is missing.
+- Why: reruns were trying to create another VM and failing with `VcpuLimitExceeded` even though fleet was already up.

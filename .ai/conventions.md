@@ -238,3 +238,5 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Env reader convention: `.env` loaders should fail-soft (return empty map) on permission/read errors rather than crashing CLI flows.
 - Sudo deploy ownership convention: any deploy-generated files that later need non-root access must be re-owned to invoking user (`$SUDO_USER`) with their primary group after write.
 - User-shell integration convention: when scripts update shell startup files, target invoking user's home (`getent passwd $SUDO_USER`) rather than inherited root HOME from sudo context.
+- Log DB provisioning convention: before launching a new log DB VM, scripts must attempt to recover `LOG_DATABASE_URL` from existing coordinator container config and must check for existing tagged log-DB instances to avoid duplicate provisioning.
+- Rerunnable deploy convention: missing local `.env` values should be reconstructed from live container configuration when possible, rather than interpreted as a request to create new infrastructure.

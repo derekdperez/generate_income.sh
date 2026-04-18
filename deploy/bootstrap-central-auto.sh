@@ -291,6 +291,25 @@ recover_postgres_password_from_container() {
   return 0
 }
 
+recover_env_value_from_container() {
+  local container_name="$1"
+  local env_key="$2"
+  local env_lines
+  env_lines="$(run_docker inspect "$container_name" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
+  if [[ -z "$env_lines" ]]; then
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      "${env_key}"=*)
+        echo "${line#${env_key}=}"
+        return 0
+        ;;
+    esac
+  done <<< "$env_lines"
+  return 0
+}
+
 install_standalone_compose_if_needed() {
   if resolve_compose_cmd; then
     return 0
@@ -595,6 +614,14 @@ if [[ -f "$ENV_FILE" && "$FORCE_REGEN" -ne 1 ]]; then
   fi
 else
   COORDINATOR_BASE_URL="$(detect_base_url)"
+fi
+
+if [[ -z "$LOG_DATABASE_URL" && "$FORCE_REGEN" -ne 1 ]]; then
+  recovered_log_database_url="$(recover_env_value_from_container nightmare-coordinator-server LOG_DATABASE_URL)"
+  if [[ -n "$recovered_log_database_url" ]]; then
+    LOG_DATABASE_URL="$recovered_log_database_url"
+    echo "Recovered existing LOG_DATABASE_URL from nightmare-coordinator-server container configuration."
+  fi
 fi
 
 if [[ -z "$POSTGRES_PASSWORD" ]]; then
