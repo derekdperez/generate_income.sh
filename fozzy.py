@@ -62,6 +62,7 @@ from fozzy_app.fuzz_core import (
     route_group_all_param_names as _core_route_group_all_param_names,
     route_group_param_meta as _core_route_group_param_meta,
 )
+from fozzy_app.response_analysis import ResponseAnalysisPipeline
 from http_client import request_capped
 from http_request_queue import HttpRequestQueue
 from nightmare_shared.value_types import infer_observed_value_type
@@ -4042,6 +4043,8 @@ def fuzz_group(
     stop_event: threading.Event | None = None,
     resume_access_lock: threading.RLock | None = None,
     allowed_request_keys: set[str] | None = None,
+    response_analysis_pipeline: ResponseAnalysisPipeline | None = None,
+    analysis_record_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     total_requests = count_live_requests_for_group_with_allowlist(
         group, permutations, quick_fuzz_values, allowed_request_keys if not dry_run else None
@@ -4059,6 +4062,8 @@ def fuzz_group(
         "skipped_by_endpoint_cap": 0,
         "anomaly_entries": [],
         "reflection_entries": [],
+        "analyzed_responses": 0,
+        "interesting_responses": 0,
         "interrupted_by_user": False,
     }
     issued_requests = 0
@@ -4281,21 +4286,64 @@ def fuzz_group(
                             f"fuzz={summary['fuzz_requests']} anomalies={summary['anomalies']}"
                         )
 
+                    analysis_output: dict[str, Any] | None = None
+                    if response_analysis_pipeline is not None:
+                        try:
+                            analysis_output = response_analysis_pipeline.analyze_response(
+                                request_context={
+                                    "request_id": trial_request_key,
+                                    "http_method": tm,
+                                    "request_url": trial_url,
+                                    "host": group.host,
+                                    "path": group.path,
+                                    "parameter_layout": list(permutation),
+                                    "mutated_parameter": name,
+                                    "mutated_value": fuzz_value,
+                                },
+                                baseline_response=baseline_response,
+                                fuzzed_response=trial_response,
+                            )
+                            summary["analyzed_responses"] += 1
+                            if int(analysis_output.get("score", 0) or 0) >= 20:
+                                summary["interesting_responses"] += 1
+                            if analysis_record_callback is not None:
+                                try:
+                                    analysis_record_callback(analysis_output)
+                                except Exception:
+                                    pass
+                        except Exception as analysis_exc:
+                            if progress_callback:
+                                progress_callback(
+                                    f"[{group.host}{group.path}] analysis failed for {trial_url}: {analysis_exc}"
+                                )
+
                     anomaly_signals: list[tuple[str, str]] = []
-                    if response_differs(baseline_response, trial_response):
-                        anomaly_signals.append(("status_or_size_change", "Response status or size differs from baseline"))
-                    time_discrepancy, time_note = detect_response_time_discrepancy(
-                        baseline_response,
-                        trial_response,
-                    )
-                    if time_discrepancy:
-                        anomaly_signals.append(("response_time_discrepancy", time_note))
-                    header_change, header_note = detect_header_change(
-                        baseline_response,
-                        trial_response,
-                    )
-                    if header_change:
-                        anomaly_signals.append(("header_change", header_note))
+                    if isinstance(analysis_output, dict):
+                        for finding in analysis_output.get("findings", []):
+                            if not isinstance(finding, dict):
+                                continue
+                            if str(finding.get("category", "")).strip().lower() == "reflection":
+                                continue
+                            finding_id = str(finding.get("id", "") or "analysis_finding").strip().lower()
+                            finding_title = str(finding.get("title", "") or "Response analysis finding")
+                            if finding_id and finding_title:
+                                anomaly_signals.append((finding_id, finding_title))
+
+                    if not anomaly_signals:
+                        if response_differs(baseline_response, trial_response):
+                            anomaly_signals.append(("status_or_size_change", "Response status or size differs from baseline"))
+                        time_discrepancy, time_note = detect_response_time_discrepancy(
+                            baseline_response,
+                            trial_response,
+                        )
+                        if time_discrepancy:
+                            anomaly_signals.append(("response_time_discrepancy", time_note))
+                        header_change, header_note = detect_header_change(
+                            baseline_response,
+                            trial_response,
+                        )
+                        if header_change:
+                            anomaly_signals.append(("header_change", header_note))
 
                     for anomaly_type, anomaly_note in anomaly_signals:
                         payload = {
@@ -4313,6 +4361,7 @@ def fuzz_group(
                             "requested_url": trial_url,
                             "baseline": baseline_response,
                             "anomaly": trial_response,
+                            "response_analysis": analysis_output or {},
                         }
                         anomaly_path = results_dir / anomaly_file_name(
                             group.host,
@@ -4329,6 +4378,9 @@ def fuzz_group(
                                 "result_type": "anomaly",
                                 "anomaly_type": anomaly_type,
                                 "anomaly_note": anomaly_note,
+                                "analysis_score": int((analysis_output or {}).get("score", 0) or 0),
+                                "analysis_cluster_id": str((analysis_output or {}).get("cluster_id", "") or ""),
+                                "analysis_summary": str((analysis_output or {}).get("summary", "") or ""),
                                 "result_file": str(anomaly_path),
                                 "url": trial_url,
                                 "host": group.host,
@@ -4356,14 +4408,25 @@ def fuzz_group(
                                 live_report_callback()
                             except Exception:
                                 pass
+
+                    reflection_matches: list[dict[str, Any]] = []
+                    if isinstance(analysis_output, dict):
+                        raw_reflection = analysis_output.get("reflection", [])
+                        if isinstance(raw_reflection, list):
+                            reflection_matches = [item for item in raw_reflection if isinstance(item, dict)]
                     body_preview = str(trial_response.get("body_preview", "") or "")
                     fuzz_needle = str(fuzz_value)
-                    if (
+                    legacy_reflection_detected = bool(
                         body_preview
                         and fuzz_needle
                         and not is_low_signal_reflection_fuzz_value(fuzz_value)
                         and fuzz_needle in body_preview
-                    ):
+                    )
+                    if reflection_matches or legacy_reflection_detected:
+                        reflected_text = fuzz_value
+                        if reflection_matches:
+                            first_match = reflection_matches[0]
+                            reflected_text = str(first_match.get("marker", fuzz_value) or fuzz_value)
                         reflection_payload = {
                             "captured_at_utc": datetime.now(timezone.utc).isoformat(),
                             "host": group.host,
@@ -4375,8 +4438,10 @@ def fuzz_group(
                             "mutated_value": fuzz_value,
                             "requested_url": trial_url,
                             "reflection_detected": True,
+                            "reflection_matches": reflection_matches,
                             "baseline": baseline_response,
                             "response": trial_response,
+                            "response_analysis": analysis_output or {},
                         }
                         reflection_path = results_dir / reflection_file_name(
                             group.host, group.path, permutation, name, fuzz_value
@@ -4402,7 +4467,10 @@ def fuzz_group(
                                 "fuzzing_duration_ms": int(trial_response.get("elapsed_ms", 0) or 0),
                                 "duration_difference_ms": int(trial_response.get("elapsed_ms", 0) or 0)
                                 - int(baseline_response.get("elapsed_ms", 0) or 0),
-                                "anomaly_note": f"reflection_detected: {fuzz_value}",
+                                "anomaly_note": f"reflection_detected: {reflected_text}",
+                                "analysis_score": int((analysis_output or {}).get("score", 0) or 0),
+                                "analysis_cluster_id": str((analysis_output or {}).get("cluster_id", "") or ""),
+                                "analysis_summary": str((analysis_output or {}).get("summary", "") or ""),
                                 "baseline_request_content": f"{str(baseline_response.get('http_method', 'GET') or 'GET').upper()} {str(baseline_response.get('url', '') or '')}",
                                 "fuzzing_request_content": f"{str(trial_response.get('http_method', 'GET') or 'GET').upper()} {trial_url}",
                                 "baseline_response_content": str(baseline_response.get("body_preview", "") or ""),
@@ -4571,8 +4639,19 @@ def run_fozzy_for_parameters(
     else:
         output_dir = (parameters_path.parent / "fozzy-output" / root_domain).resolve()
     results_dir = output_dir / "results"
+    analysis_jsonl_path = output_dir / f"{root_domain}.fozzy.response_analysis.jsonl"
     ensure_directory(output_dir)
     ensure_directory(results_dir)
+    analysis_jsonl_path.write_text("", encoding="utf-8")
+    response_analysis_pipeline = ResponseAnalysisPipeline()
+    analysis_write_lock = threading.Lock()
+
+    def append_response_analysis(record: dict[str, Any]) -> None:
+        line = json.dumps(record, ensure_ascii=False)
+        with analysis_write_lock:
+            with analysis_jsonl_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(line)
+                handle.write("\n")
 
     groups = load_route_groups(payload)
     post_path = parameters_path.parent / f"{root_domain}.post.requests.json"
@@ -4728,6 +4807,8 @@ def run_fozzy_for_parameters(
             dry_run_plan_lines=dry_run_plan_lines,
             progress_callback=None,
             live_report_callback=None,
+            response_analysis_pipeline=response_analysis_pipeline,
+            analysis_record_callback=append_response_analysis,
         )
         planned_summary.append(plan_summary)
         if plan_summary.get("interrupted_by_user"):
@@ -4982,6 +5063,8 @@ def run_fozzy_for_parameters(
                         mark_requested_callback=mark_request_completed,
                         resume_access_lock=None,
                         allowed_request_keys=allowed_request_keys_live,
+                        response_analysis_pipeline=response_analysis_pipeline,
+                        analysis_record_callback=append_response_analysis,
                     )
                     run_summary.append(group_summary)
                     if group_summary.get("interrupted_by_user"):
@@ -5047,6 +5130,8 @@ def run_fozzy_for_parameters(
                             stop_event=stop_event,
                             resume_access_lock=state_lock,
                             allowed_request_keys=allowed_request_keys_live,
+                            response_analysis_pipeline=response_analysis_pipeline,
+                            analysis_record_callback=append_response_analysis,
                         )
                         return index, summary
                     finally:
@@ -5183,10 +5268,13 @@ def run_fozzy_for_parameters(
             "fuzz_requests": sum(int(item.get("fuzz_requests", 0)) for item in run_summary),
             "anomalies": sum(int(item.get("anomalies", 0)) for item in run_summary),
             "reflections": sum(int(item.get("reflections", 0)) for item in run_summary),
+            "analyzed_responses": sum(int(item.get("analyzed_responses", 0)) for item in run_summary),
+            "interesting_responses": sum(int(item.get("interesting_responses", 0)) for item in run_summary),
             "skipped_by_endpoint_cap": sum(int(item.get("skipped_by_endpoint_cap", 0)) for item in run_summary),
             "placeholder_permutations": len(permutations_lines),
             "planned_requests": len(dry_run_plan_lines),
         },
+        "response_analysis_jsonl": str(analysis_jsonl_path),
     }
     summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -5234,6 +5322,7 @@ def run_fozzy_for_parameters(
     print(f"Run summary JSON: {summary_path}")
     print(f"Results summary JSON: {anomaly_summary_path}")
     print(f"Results summary HTML: {anomaly_summary_html_path}")
+    print(f"Response analysis JSONL: {analysis_jsonl_path}")
     print(f"Request plan JSONL: {dry_run_plan_path}")
     print(f"Results directory: {results_dir}")
     print(

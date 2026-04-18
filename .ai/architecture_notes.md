@@ -95,3 +95,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 - Added coordinator_ui_preferences table for durable operator UI state. Server routes own auth + HTTP handling; store layer owns upsert/query of JSON preference payloads by page/key.
 
 - Fozzy response payload now includes esponse_headers (normalized map) in addition to header names, enabling rich modal rendering in coordinator web UI without extra network requests.
+
+- Added modular deterministic fuzz response-analysis subsystem under fozzy_app/response_analysis (normalizer, feature extractor, baseline manager, diff engine, detector registry, scorer, summarizer, clusterer, pipeline).
+- Integration boundary: fuzz_group now analyzes each live mutation against its baseline and records one structured analysis document per fuzz response to <domain>.fozzy.response_analysis.jsonl; anomaly/reflection artifacts embed response_analysis for downstream UI/reporting.
+- Baseline model boundary: baseline profiles are keyed by method + normalized route pattern + MIME + parameter layout, then updated incrementally during run to keep comparison endpoint-scoped and noise-resistant.

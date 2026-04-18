@@ -1,0 +1,3 @@
+- On the fuzzing screen, the View Response modal, the first textbox is displaying header names but no header values for any requests.
+- On the Workers page, the selection checkbox for the worker rows must retain it's value when the page refreshes. If a row is selected, it should remain selected after the refresh, the user should not have to keep re-checking rows.
+- On the workers screen, add the ability to sort and filter the worker grid, both by column and with a global search box that searches and filters on all fields.

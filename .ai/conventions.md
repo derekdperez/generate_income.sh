@@ -174,3 +174,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - Fuzzing UI convention: action-oriented grid with per-row View Response and View Diff buttons. Response modal should show headers and body in separate stacked text panes; diff modal should be side-by-side with synchronized scrolling.
 - Fuzzing zip-file convention: result_file values may be basename-only while zip entries are nested. File-serving endpoints should support exact-path lookup plus safe unique basename/suffix fallback before returning 404.
+
+- Fozzy response-analysis convention: perform deterministic baseline-vs-fuzz analysis for every live fuzz mutation and emit structured JSONL records (<root_domain>.fozzy.response_analysis.jsonl) with stable fields (request_id, baseline_id, cluster_id, summary, score, findings, header/body diffs, reflection, exceptions, tags).
+- Detector convention: keep detectors modular under fozzy_app/response_analysis/detectors and return normalized Finding objects; pipeline orchestrates detector execution, scoring, noise suppression, and clustering (detectors should not directly write files).
+- Artifact compatibility convention: anomaly/reflection JSON artifacts should continue to carry baseline/anomaly payloads for legacy consumers, but include enriched response_analysis blocks for new UI/query features.

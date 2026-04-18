@@ -538,3 +538,17 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 
 - 2026-04-17: Reworked /fuzzing grid to operator layout (URL, Parameter, Payload, Code, Response/Diff actions, Size Diff, Time Diff, Notes placeholder). Added full-screen response modal (stacked headers/body) and side-by-side diff modal with synchronized scrolling and line-level highlighting.
 - 2026-04-17: Fixed /api/coord/fuzzing/file lookup for zip members when rows contain basename-only result_file values. Endpoint now resolves by exact path first, then unique basename/suffix fallback to avoid false 'file not found in zip' failures from UI View Response/View Diff actions.
+
+## 2026-04-17
+- Implemented a full baseline-driven response analysis subsystem for Fozzy under fozzy_app/response_analysis:
+  - normalizer.py (header/body normalization with deterministic volatile-token masking)
+  - feature_extractor.py (metadata/header/body + JSON/HTML/XML/text feature extraction)
+  - baseline_manager.py (endpoint/template baseline profiles)
+  - diff_engine.py (structured semantic diff + similarity + auth/redirect drift)
+  - detectors registry (status/header/semantic/stacktrace/error/reflection/structural-drift)
+  - scorer.py, summarizer.py, clusterer.py, pipeline.py
+- Wired subsystem into fozzy.py fuzz_group live path so every fuzzed response is analyzed and written to <root_domain>.fozzy.response_analysis.jsonl.
+- Updated anomaly/reflection artifact payloads to include response_analysis and added analysis fields to summary entries (score, cluster_id, summary).
+- Added run summary totals: analyzed_responses and interesting_responses, plus response_analysis_jsonl path in summary JSON.
+- Added deterministic unit tests (tests/test_response_analysis_subsystem.py) covering noise suppression, 500+stacktrace, debug header appearance, security header disappearance, JSON->HTML drift, script-context reflection, redirect/login drift, repeated-cluster behavior, SQL errors, Spring Whitelabel detection.
+- Validation: pytest -q tests/test_response_analysis_subsystem.py (10 passed); pytest -q tests/test_modular_spider_fuzz_core.py tests/test_reporting_and_store_helpers.py (29 passed).
