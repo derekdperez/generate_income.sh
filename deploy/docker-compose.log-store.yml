@@ -1,0 +1,22 @@
+services:
+  log_postgres:
+    image: postgres:16
+    container_name: nightmare-log-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LOG_POSTGRES_DB:-nightmare_logs}
+      POSTGRES_USER: ${LOG_POSTGRES_USER:-nightmare_logs}
+      POSTGRES_PASSWORD: ${LOG_POSTGRES_PASSWORD:?set LOG_POSTGRES_PASSWORD}
+    volumes:
+      - log_postgres_data:/var/lib/postgresql/data
+      - ./logs:/var/log/nightmare
+    ports:
+      - "${LOG_POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LOG_POSTGRES_USER:-nightmare_logs} -d ${LOG_POSTGRES_DB:-nightmare_logs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  log_postgres_data:

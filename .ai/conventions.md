@@ -192,3 +192,16 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Fleet observability convention: Docker/log status APIs should aggregate data from both the central server and worker VMs (via SSM) when AWS credentials and target selectors are configured.
 - Remote log source ID convention: `ssm:<instance_id>:docker:<container_name>` is used by `/api/coord/log-sources` and `/api/coord/log-tail`.
 - Docker status API convention: support optional expensive log collection (`include_logs`) and bounded tail size (`log_lines`) to keep UI refreshes responsive.
+- Fleet command compatibility convention: runtime tooling in server APIs must support both `docker compose` and `docker-compose` because host/AMI environments vary.
+- Log viewer API convention:
+  - `/api/coord/log-events` is the structured query endpoint for UI search/filter/sort.
+  - `/api/coord/log-download` returns a zipped source export.
+  - `/api/coord/log-tail` remains for raw quick-tail reads.
+- Source ID conventions:
+  - Local docker: `docker:<container_name>`
+  - Worker VM docker over SSM: `ssm:<instance_id>:docker:<container_name>`
+  - EC2 console: `ec2-console:<instance_id>`
+- Time normalization convention for operator logs: UI/event payloads emit `event_time_est` using fixed EST (UTC-5) for consistent operator triage.
+- Optional dedicated log DB convention:
+  - Configure `log_database_url` / `LOG_DATABASE_URL` for structured event persistence in separate Postgres.
+  - Keep coordinator DB (`database_url`) and log DB (`log_database_url`) distinct.

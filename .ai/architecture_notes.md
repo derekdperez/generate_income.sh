@@ -107,3 +107,11 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - `server.py` now includes an SSM-backed collector path for worker fleet container status/log tails.
   - Fleet status APIs remain coordinator-auth protected and return merged central + worker container inventories.
   - Remote execution uses AWS CLI (`ssm send-command` + `list-command-invocations`) so no new Python dependency was introduced.
+- Observability architecture extension:
+  - `server.py` now unifies log source abstraction across local docker, worker VM docker (SSM), EC2 console output, and filesystem files.
+  - Log sources feed a parser pipeline that derives normalized events (time/severity/description/machine/source) for UI queries.
+- Optional persistence boundary:
+  - `logging_app/store.py` introduces a dedicated structured-log persistence path separate from coordinator state store.
+  - Server can operate with or without log DB; query path falls back to live source reads when log DB is absent.
+- Deployment boundary for container introspection:
+  - Central server container now needs Docker socket mount + docker CLI to introspect central containers from inside the app container.

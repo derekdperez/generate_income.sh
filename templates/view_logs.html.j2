@@ -9,29 +9,75 @@
     h1 { margin-bottom: 8px; }
     .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 16px; flex-wrap: wrap; }
-    input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; min-width: 260px; }
+    input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; min-width: 220px; }
     button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
     button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
     .muted { color: #64748b; }
-    .log-wrap { border: 1px solid #cbd5e1; border-radius: 8px; background: #0b1220; color: #c8d3f5; padding: 10px; max-height: 72vh; overflow: auto; }
-    pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.3; }
+    .table-wrap { max-height: 68vh; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
+    code { white-space: pre-wrap; word-break: break-word; }
+    .sev-debug { color: #64748b; }
+    .sev-info { color: #0369a1; font-weight: 600; }
+    .sev-warning { color: #b45309; font-weight: 600; }
+    .sev-error { color: #dc2626; font-weight: 700; }
+    .sev-critical { color: #991b1b; font-weight: 700; }
   </style>
 </head>
 <body>
   <h1>View Logs</h1>
-  <div class="meta">Select a log source and view the most recent 300 lines. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/extractor-matches">Extractor Matches</a> | <a href="/fuzzing">Fuzzing</a> | <a href="/docker-status">Docker Status</a></div>
+  <div class="meta">Fleet log viewer (central server + worker VMs + AWS console output). Time shown in EST (UTC-5). <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/extractor-matches">Extractor Matches</a> | <a href="/fuzzing">Fuzzing</a> | <a href="/docker-status">Docker Status</a></div>
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <select id="sourceSelect"></select>
-    <button class="primary" onclick="loadSelectedLog()">Load Last 300</button>
+    <input id="searchText" type="text" placeholder="Search description/raw line">
+    <select id="severityFilter">
+      <option value="">All severities</option>
+      <option value="debug">debug</option>
+      <option value="info">info</option>
+      <option value="warning">warning</option>
+      <option value="error">error</option>
+      <option value="critical">critical</option>
+    </select>
+    <input id="machineFilter" type="text" placeholder="Machine filter">
+    <select id="sortKey">
+      <option value="event_time_utc">Sort: time</option>
+      <option value="severity">Sort: severity</option>
+      <option value="machine">Sort: machine</option>
+      <option value="description">Sort: description</option>
+    </select>
+    <select id="sortDir">
+      <option value="desc">Newest first</option>
+      <option value="asc">Oldest first</option>
+    </select>
+    <button class="primary" onclick="loadEvents()">Refresh</button>
     <button onclick="refreshSources()">Refresh Sources</button>
+    <button onclick="downloadSource()">Download Zip</button>
     <span id="msg" class="muted"></span>
   </div>
-  <div class="log-wrap"><pre id="logText">Loading...</pre></div>
+  <div class="table-wrap">
+    <table id="logEventsTable">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Time (EST)</th>
+          <th>Severity</th>
+          <th>Description</th>
+          <th>Machine</th>
+          <th>Source</th>
+          <th>Raw</th>
+        </tr>
+      </thead>
+      <tbody id="eventsRows"><tr><td colspan="7">Loading...</td></tr></tbody>
+    </table>
+  </div>
+  {% include '_grid_controls.html.j2' %}
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
-    const SOURCE_PREF_KEY = "nightmare_view_logs_source_v1";
+    const SOURCE_PREF_KEY = "nightmare_view_logs_source_v2";
     const LOG_LINES = 300;
+    let logGridCtrl = null;
 
     function esc(v){ return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch])); }
     function readCookie(name) {
@@ -73,9 +119,8 @@
     }
     function buildSourceLabel(source) {
       const type = String(source.source_type || "");
-      if (type === "docker") {
-        return `[docker] ${source.label || source.container_name || "unknown"} (${source.status || "unknown"})`;
-      }
+      if (type === "docker") return `[docker/${source.system || "local"}] ${source.label || source.container_name || "unknown"} (${source.status || "unknown"})`;
+      if (type === "ec2_console") return `[ec2-console] ${source.label || source.instance_id || "unknown"} (${source.status || "unknown"})`;
       return `[file] ${source.relative_path || source.label || "unknown"}`;
     }
     async function apiGet(path) {
@@ -91,47 +136,105 @@
         const select = document.getElementById("sourceSelect");
         const sources = Array.isArray(payload.sources) ? payload.sources : [];
         const prior = loadSelectedSource();
-        select.innerHTML = sources.length
-          ? sources.map((source) => `<option value="${esc(source.source_id)}">${esc(buildSourceLabel(source))}</option>`).join("")
-          : "<option value=''>No log sources available</option>";
-        if (prior && sources.some((source) => String(source.source_id || "") === prior)) {
-          select.value = prior;
-        }
-        if (!select.value && sources.length) {
-          select.value = String(sources[0].source_id || "");
-        }
+        const allOption = { source_id: "__all__", source_type: "virtual", label: "All Sources" };
+        const options = [allOption, ...sources];
+        select.innerHTML = options.map((source) => `<option value="${esc(source.source_id)}">${esc(source.source_id === "__all__" ? "[all] All Sources" : buildSourceLabel(source))}</option>`).join("");
+        if (prior && options.some((source) => String(source.source_id || "") === prior)) select.value = prior;
+        if (!select.value && options.length) select.value = String(options[0].source_id || "__all__");
         if (select.value) saveSelectedSource(select.value);
         msg.textContent = `Loaded ${sources.length} sources.`;
       } catch (e) {
         msg.textContent = `Source load failed: ${e.message || e}`;
       }
     }
-    async function loadSelectedLog() {
+    function renderEvents(payload) {
+      const rows = Array.isArray(payload.events) ? payload.events : [];
+      const tbody = document.getElementById("eventsRows");
+      if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='7'>No log events returned.</td></tr>";
+      } else {
+        tbody.innerHTML = rows.map((row) => {
+          const est = String(row.event_time_est || "");
+          const datePart = est ? est.slice(0, 10) : "";
+          const timePart = est ? est.slice(11) : "";
+          const sev = String(row.severity || "info").toLowerCase();
+          return `<tr>
+            <td>${esc(datePart)}</td>
+            <td>${esc(timePart)}</td>
+            <td><span class="sev-${esc(sev)}">${esc(sev)}</span></td>
+            <td>${esc(row.description || "")}</td>
+            <td>${esc(row.machine || "")}</td>
+            <td>${esc(row.source_id || "")}</td>
+            <td><code>${esc(row.raw_line || "")}</code></td>
+          </tr>`;
+        }).join("");
+      }
+      if (!logGridCtrl) {
+        logGridCtrl = window.NightmareGridControls.enhance({
+          table: "logEventsTable",
+          page: "view_logs",
+          prefKey: "log_events_table_v1",
+          tokenInputId: "token",
+          mode: "columnsOnly",
+        });
+      } else {
+        logGridCtrl.refresh();
+      }
+    }
+    async function loadEvents() {
       const msg = document.getElementById("msg");
-      const select = document.getElementById("sourceSelect");
-      const sourceId = String(select.value || "").trim();
-      if (!sourceId) {
-        msg.textContent = "Select a log source first.";
+      const sourceId = String(document.getElementById("sourceSelect").value || "__all__").trim() || "__all__";
+      saveSelectedSource(sourceId);
+      msg.textContent = "Loading log events...";
+      try {
+        const params = new URLSearchParams();
+        params.set("source_id", sourceId);
+        params.set("lines", String(LOG_LINES));
+        const searchText = String(document.getElementById("searchText").value || "").trim();
+        const severity = String(document.getElementById("severityFilter").value || "").trim();
+        const machine = String(document.getElementById("machineFilter").value || "").trim();
+        const sortKey = String(document.getElementById("sortKey").value || "event_time_utc").trim();
+        const sortDir = String(document.getElementById("sortDir").value || "desc").trim();
+        if (searchText) params.set("search", searchText);
+        if (severity) params.set("severity", severity);
+        if (machine) params.set("machine", machine);
+        params.set("sort_key", sortKey);
+        params.set("sort_dir", sortDir);
+        params.set("limit", "1000");
+        const payload = await apiGet(`/api/coord/log-events?${params.toString()}`);
+        renderEvents(payload);
+        msg.textContent = `Loaded ${rowsCount(payload.events)} / ${payload.total || 0} log event(s).`;
+      } catch (e) {
+        document.getElementById("eventsRows").innerHTML = `<tr><td colspan="7">Failed to load events: ${esc(e.message || e)}</td></tr>`;
+        msg.textContent = `Event load failed: ${e.message || e}`;
+      }
+    }
+    function rowsCount(rows) {
+      return Array.isArray(rows) ? rows.length : 0;
+    }
+    function downloadSource() {
+      const sourceId = String(document.getElementById("sourceSelect").value || "").trim();
+      if (!sourceId || sourceId === "__all__") {
+        document.getElementById("msg").textContent = "Select a specific source to download.";
         return;
       }
-      saveSelectedSource(sourceId);
-      msg.textContent = "Loading log tail...";
-      try {
-        const payload = await apiGet(`/api/coord/log-tail?source_id=${encodeURIComponent(sourceId)}&lines=${LOG_LINES}`);
-        document.getElementById("logText").textContent = String(payload.tail || "");
-        msg.textContent = `Showing ${LOG_LINES} lines from ${sourceId}`;
-      } catch (e) {
-        document.getElementById("logText").textContent = "";
-        msg.textContent = `Log load failed: ${e.message || e}`;
-      }
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      const href = `/api/coord/log-download?source_id=${encodeURIComponent(sourceId)}`;
+      window.open(href, "_blank", "noopener,noreferrer");
     }
     hydrateTokenFromCookie();
     document.getElementById("token").addEventListener("change", persistTokenCookie);
     document.getElementById("token").addEventListener("blur", persistTokenCookie);
-    document.getElementById("sourceSelect").addEventListener("change", () => saveSelectedSource(document.getElementById("sourceSelect").value));
+    document.getElementById("sourceSelect").addEventListener("change", () => { saveSelectedSource(document.getElementById("sourceSelect").value); loadEvents(); });
+    document.getElementById("searchText").addEventListener("keydown", (e) => { if (e.key === "Enter") loadEvents(); });
+    document.getElementById("severityFilter").addEventListener("change", loadEvents);
+    document.getElementById("machineFilter").addEventListener("keydown", (e) => { if (e.key === "Enter") loadEvents(); });
+    document.getElementById("sortKey").addEventListener("change", loadEvents);
+    document.getElementById("sortDir").addEventListener("change", loadEvents);
     (async () => {
       await refreshSources();
-      await loadSelectedLog();
+      await loadEvents();
     })();
   </script>
 </body>

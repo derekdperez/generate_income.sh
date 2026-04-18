@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     awscli \
     ca-certificates \
     curl \
+    docker.io \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 

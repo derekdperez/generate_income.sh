@@ -61,6 +61,10 @@
     <div id="composeRows" class="muted">Loading...</div>
   </div>
   <div class="section">
+    <strong>AWS VM Fleet</strong>
+    <div id="ec2Rows" class="muted">Loading...</div>
+  </div>
+  <div class="section">
     <strong>All Running Containers</strong>
     <div class="table-wrap">
       <table id="allContainersTable">
@@ -171,6 +175,7 @@
       document.getElementById("cards").innerHTML = [
         card("All Containers", summary.container_count || 0),
         card("Application Containers", summary.application_container_count || 0),
+        card("Worker VMs", summary.worker_vm_count || 0),
         card("Compose Files Checked", summary.compose_files_checked || 0),
         card("Compose Files OK", summary.compose_files_ok || 0),
       ].join("");
@@ -178,6 +183,15 @@
       const allRows = Array.isArray(data.all_containers) ? data.all_containers : [];
       renderContainerRows("allRows", allRows, true);
       renderCompose(data.compose || []);
+      const ec2 = data.ec2_instances || {};
+      const ec2Rows = Array.isArray(ec2.instances) ? ec2.instances : [];
+      if (!ec2.ok) {
+        document.getElementById("ec2Rows").innerHTML = `<pre>${esc(ec2.error || "EC2 lookup failed")}</pre>`;
+      } else if (!ec2Rows.length) {
+        document.getElementById("ec2Rows").innerHTML = "<span class='muted'>No matching EC2 instances returned.</span>";
+      } else {
+        document.getElementById("ec2Rows").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th></tr></thead><tbody>${ec2Rows.map((row) => `<tr><td>${esc(row.name || "")}</td><td>${esc(row.instance_id || "")}</td><td>${esc(row.state || "")}</td><td>${esc(row.private_ip || "")}</td><td>${esc(row.public_ip || "")}</td></tr>`).join("")}</tbody></table></div>`;
+      }
       if (!appGrid) {
         appGrid = window.NightmareGridControls.enhance({
           table: "appContainersTable",

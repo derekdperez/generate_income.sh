@@ -8,3 +8,6 @@
   - `fozzy.py`: split report rendering payload builders from fuzz execution control flow.
   - `extractor.py`: split matcher engine, summary aggregation, and I/O/reporting boundaries.
 - Implement worker command consumption loop for queued control commands (`start`/`pause`/`stop`) from `coordinator_worker_commands`; commands are currently enqueued by server APIs/UI but not applied by `coordinator.py`.
+- Add pagination + server-side source selection caching for `/api/coord/log-events` when querying `source_id=__all__` on very large fleets.
+- Add explicit UI diagnostics panel on View Logs for SSM/EC2 permission failures and target-filter mismatches.
+- Add optional asynchronous ingestion worker for log DB writes to decouple source polling latency from API response times.

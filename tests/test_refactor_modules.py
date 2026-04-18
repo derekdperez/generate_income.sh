@@ -131,5 +131,6 @@ def test_view_logs_template_renders():
     assert "View Logs" in html
     assert 'href="/docker-status"' in html
     assert "/api/coord/log-sources" in html
-    assert "/api/coord/log-tail" in html
+    assert "/api/coord/log-events" in html
+    assert "/api/coord/log-download" in html
     assert "nightmare_coord_token" in html

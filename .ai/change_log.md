@@ -616,3 +616,28 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Postgres access and operational SQL checks
   - watch-style monitor commands (placed at end)
 - Why: provide one operator-facing reference for day-to-day deployment and troubleshooting workflows.
+
+## 2026-04-18
+
+- Fixed Docker/compose command compatibility in server fleet observability APIs:
+  - Compose status probes now try both `docker compose` and `docker-compose` command styles.
+- Expanded log-source discovery and collection:
+  - Added worker VM docker log sources via AWS SSM.
+  - Added AWS EC2 console output sources (`ec2-console:<instance_id>`).
+  - Added fallback central docker sources (`nightmare-coordinator-server`, `nightmare-postgres`) when discovery fails.
+- Added new log APIs in `server.py`:
+  - `GET /api/coord/log-events` (parsed, searchable, filterable, sortable events)
+  - `GET /api/coord/log-download` (zip download for selected source)
+  - Refactored `GET /api/coord/log-tail` to use unified source readers.
+- Upgraded `templates/view_logs.html.j2` into a full log viewer grid with source selector, search/filter/sort controls, and zip download action.
+- Upgraded `templates/docker_status.html.j2` to display worker VM count, AWS fleet section, and per-container console output.
+- Added optional dedicated structured logging DB support:
+  - New `logging_app/store.py` (`LogStore`) with `application_logs` schema and query/insert methods.
+  - `server.py` now supports `log_database_url` (config/CLI/env) and writes server request logs to that store when configured.
+  - Added config key `log_database_url` in `config/server.json`.
+- Deployment updates:
+  - `Dockerfile` now installs `docker.io` so containerized server can run docker CLI probes.
+  - `deploy/docker-compose.central.yml` now mounts `/var/run/docker.sock` and passes fleet/log env selectors.
+  - Added `deploy/docker-compose.log-store.yml` for a dedicated log Postgres stack.
+  - Updated `deploy/full_deploy_command.sh` worker default from 6 to 5.
+- Why: fix empty log-source experience and provide fleet-wide centralized log visibility with structured query capability and download/export.

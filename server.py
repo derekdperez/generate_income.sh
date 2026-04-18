@@ -62,6 +62,7 @@ from reporting.server_pages import (
     render_workers_html,
 )
 from server_app.store import CoordinatorStore
+from logging_app.store import LogStore
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_ROOT = BASE_DIR / "output"
@@ -82,6 +83,8 @@ FUZZING_CACHE_TTL_SECONDS = 900
 DEFAULT_VIEW_LOG_LINES = 300
 MAX_VIEW_LOG_LINES = 2000
 MAX_VIEW_LOG_FILE_SOURCES = 1000
+MAX_LOG_DOWNLOAD_BYTES = 25 * 1024 * 1024
+EST_TZ = timezone(timedelta(hours=-5), name="EST")
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -112,6 +115,7 @@ def _default_server_config() -> dict[str, Any]:
         "port": DEFAULT_PORT,
         "output_root": "output",
         "database_url": "",
+        "log_database_url": "",
         "coordinator_api_token": "",
         "master_report_regen_token": "",
     }
@@ -268,6 +272,20 @@ def _run_command(command: list[str], *, cwd: Optional[Path] = None, timeout_seco
     return completed.returncode == 0, str(completed.stdout or ""), str(completed.stderr or ""), int(completed.returncode or 0)
 
 
+def _compose_command_prefixes() -> list[list[str]]:
+    prefixes: list[list[str]] = []
+    has_docker = shutil.which("docker") is not None
+    has_docker_compose = shutil.which("docker-compose") is not None
+    if has_docker:
+        prefixes.append(["docker", "compose"])
+    if has_docker_compose:
+        prefixes.append(["docker-compose"])
+    if not prefixes:
+        # Keep deterministic fallback order for better error reporting.
+        prefixes = [["docker", "compose"], ["docker-compose"]]
+    return prefixes
+
+
 def _run_aws_json(command: list[str], *, timeout_seconds: int = 60) -> tuple[bool, dict[str, Any], str]:
     ok, stdout, stderr, exit_code = _run_command(command, timeout_seconds=timeout_seconds)
     if not ok:
@@ -335,13 +353,23 @@ def _parse_compose_ps_json(raw: str) -> list[dict[str, Any]]:
 
 
 def _load_docker_containers() -> dict[str, Any]:
-    cmd = ["docker", "ps", "--no-trunc", "--format", "{{json .}}"]
-    ok, stdout, stderr, exit_code = _run_command(cmd)
-    if not ok:
+    command_attempts: list[list[str]] = [["docker", "ps", "--no-trunc", "--format", "{{json .}}"]]
+    error_messages: list[str] = []
+    stdout = ""
+    used_cmd: list[str] = command_attempts[0]
+    for cmd in command_attempts:
+        ok, candidate_stdout, stderr, exit_code = _run_command(cmd)
+        if ok:
+            stdout = candidate_stdout
+            used_cmd = cmd
+            break
+        msg = stderr.strip() or f"docker ps failed with exit code {exit_code}"
+        error_messages.append(f"{' '.join(cmd)} -> {msg}")
+    else:
         return {
             "ok": False,
-            "command": cmd,
-            "error": stderr.strip() or f"docker ps failed with exit code {exit_code}",
+            "command": used_cmd,
+            "error": " | ".join(error_messages) if error_messages else "docker ps failed",
             "containers": [],
         }
     containers: list[dict[str, Any]] = []
@@ -374,7 +402,7 @@ def _load_docker_containers() -> dict[str, Any]:
     containers.sort(key=lambda item: str(item.get("name", "")).lower())
     return {
         "ok": True,
-        "command": cmd,
+        "command": used_cmd,
         "error": "",
         "containers": containers,
     }
@@ -396,9 +424,10 @@ def _candidate_compose_specs(app_root: Path) -> list[tuple[Path, Optional[Path]]
 def _run_compose_ps(compose_file: Path, env_file: Optional[Path]) -> dict[str, Any]:
     variants: list[list[str]] = []
     compose_file_arg = str(compose_file)
-    if env_file is not None:
-        variants.append(["docker-compose", "-f", compose_file_arg, "--env-file", str(env_file), "ps", "--format", "json"])
-    variants.append(["docker-compose", "-f", compose_file_arg, "ps", "--format", "json"])
+    for prefix in _compose_command_prefixes():
+        if env_file is not None:
+            variants.append([*prefix, "-f", compose_file_arg, "--env-file", str(env_file), "ps", "--format", "json"])
+        variants.append([*prefix, "-f", compose_file_arg, "ps", "--format", "json"])
     errors: list[str] = []
     for cmd in variants:
         ok, stdout, stderr, exit_code = _run_command(cmd, cwd=compose_file.parent)
@@ -637,6 +666,229 @@ def _list_worker_vm_docker_containers(*, log_lines: int = 0) -> dict[str, Any]:
     }
 
 
+def _ec2_log_settings_from_env() -> dict[str, Any]:
+    return {
+        "enabled": shutil.which("aws") is not None,
+        "region": str(os.getenv("AWS_REGION", "us-east-1") or "us-east-1").strip(),
+        "filter_key": str(
+            os.getenv(
+                "COORDINATOR_LOG_EC2_FILTER_KEY",
+                os.getenv("COORDINATOR_WORKER_SSM_TARGET_KEY", "tag:Name"),
+            )
+            or "tag:Name"
+        ).strip(),
+        "filter_values": str(
+            os.getenv(
+                "COORDINATOR_LOG_EC2_FILTER_VALUES",
+                "nightmare-worker*,nightmare-central*",
+            )
+            or "nightmare-worker*,nightmare-central*"
+        ).strip(),
+    }
+
+
+def _list_ec2_fleet_instances() -> dict[str, Any]:
+    settings = _ec2_log_settings_from_env()
+    if not settings.get("enabled"):
+        return {"ok": False, "error": "aws CLI is not available on this host", "instances": []}
+    region = str(settings.get("region", "us-east-1") or "us-east-1").strip()
+    filter_key = str(settings.get("filter_key", "tag:Name") or "tag:Name").strip()
+    filter_values = str(settings.get("filter_values", "nightmare-worker*,nightmare-central*") or "").strip()
+    cmd = [
+        "aws",
+        "ec2",
+        "describe-instances",
+        "--region",
+        region,
+        "--filters",
+        "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        f"Name={filter_key},Values={filter_values}",
+        "--output",
+        "json",
+    ]
+    ok, payload, error = _run_aws_json(cmd, timeout_seconds=30)
+    if not ok:
+        return {"ok": False, "error": error, "instances": []}
+    instances: list[dict[str, Any]] = []
+    for reservation in payload.get("Reservations", []) if isinstance(payload.get("Reservations"), list) else []:
+        if not isinstance(reservation, dict):
+            continue
+        for item in reservation.get("Instances", []) if isinstance(reservation.get("Instances"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            tags = item.get("Tags", []) if isinstance(item.get("Tags"), list) else []
+            name = ""
+            for tag in tags:
+                if isinstance(tag, dict) and str(tag.get("Key", "")).strip() == "Name":
+                    name = str(tag.get("Value", "") or "").strip()
+                    break
+            instances.append(
+                {
+                    "instance_id": str(item.get("InstanceId", "") or "").strip(),
+                    "state": str((item.get("State") or {}).get("Name", "") if isinstance(item.get("State"), dict) else ""),
+                    "name": name,
+                    "private_ip": str(item.get("PrivateIpAddress", "") or ""),
+                    "public_ip": str(item.get("PublicIpAddress", "") or ""),
+                }
+            )
+    instances = [row for row in instances if row.get("instance_id")]
+    instances.sort(key=lambda row: (str(row.get("name", "")).lower(), str(row.get("instance_id", "")).lower()))
+    return {"ok": True, "error": "", "instances": instances}
+
+
+def _read_ec2_console_output(instance_id: str) -> tuple[bool, str, str]:
+    iid = str(instance_id or "").strip()
+    if not iid:
+        return False, "", "instance_id is required"
+    settings = _ec2_log_settings_from_env()
+    if not settings.get("enabled"):
+        return False, "", "aws CLI is not available on this host"
+    region = str(settings.get("region", "us-east-1") or "us-east-1").strip()
+    cmd = [
+        "aws",
+        "ec2",
+        "get-console-output",
+        "--instance-id",
+        iid,
+        "--latest",
+        "--region",
+        region,
+        "--output",
+        "text",
+    ]
+    ok, stdout, error = _run_aws_text(cmd, timeout_seconds=30)
+    if not ok:
+        return False, "", error
+    return True, str(stdout or ""), ""
+
+
+def _format_est_datetime(dt: datetime) -> str:
+    try:
+        return dt.astimezone(EST_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalize_severity(value: Any) -> str:
+    sev = str(value or "").strip().lower()
+    if sev in {"debug", "info", "warning", "error", "critical"}:
+        return sev
+    if sev in {"warn"}:
+        return "warning"
+    if sev in {"fatal"}:
+        return "critical"
+    return "info"
+
+
+def _parse_log_events_from_text(text: str, *, source: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    source_id = str(source.get("source_id", "") or "")
+    source_type = str(source.get("source_type", "") or "unknown")
+    machine = str(
+        source.get("instance_id")
+        or source.get("host_label")
+        or source.get("label")
+        or source_id
+        or "unknown"
+    )
+    for raw_line in str(text or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        payload: dict[str, Any] = {}
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
+        ts = (
+            _parse_timestamp(payload.get("timestamp"))
+            or _parse_timestamp(payload.get("time"))
+            or _parse_timestamp(payload.get("ts"))
+            or datetime.now(timezone.utc)
+        )
+        severity = _normalize_severity(payload.get("level") or payload.get("severity") or payload.get("log_level"))
+        description = str(
+            payload.get("event")
+            or payload.get("message")
+            or payload.get("msg")
+            or payload.get("description")
+            or line
+        )
+        out.append(
+            {
+                "event_time_utc": ts.isoformat(),
+                "event_time_est": _format_est_datetime(ts),
+                "severity": severity,
+                "description": description,
+                "machine": str(payload.get("machine") or payload.get("host") or payload.get("worker_id") or machine),
+                "source_id": source_id,
+                "source_type": source_type,
+                "raw_line": line,
+            }
+        )
+    return out
+
+
+def _filter_and_sort_log_events(
+    events: list[dict[str, Any]],
+    *,
+    search: str = "",
+    severity: str = "",
+    machine: str = "",
+    sort_key: str = "event_time_utc",
+    sort_dir: str = "desc",
+    offset: int = 0,
+    limit: int = 500,
+) -> dict[str, Any]:
+    needle = str(search or "").strip().lower()
+    sev = _normalize_severity(severity) if str(severity or "").strip() else ""
+    machine_q = str(machine or "").strip().lower()
+    filtered: list[dict[str, Any]] = []
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        if sev and str(item.get("severity", "") or "").lower() != sev:
+            continue
+        if machine_q and machine_q not in str(item.get("machine", "") or "").lower():
+            continue
+        if needle:
+            hay = " ".join(
+                [
+                    str(item.get("event_time_est", "") or ""),
+                    str(item.get("severity", "") or ""),
+                    str(item.get("description", "") or ""),
+                    str(item.get("machine", "") or ""),
+                    str(item.get("raw_line", "") or ""),
+                ]
+            ).lower()
+            if needle not in hay:
+                continue
+        filtered.append(item)
+    total = len(filtered)
+    key = sort_key if sort_key in {"event_time_utc", "severity", "machine", "description"} else "event_time_utc"
+    reverse = str(sort_dir or "").strip().lower() != "asc"
+    filtered.sort(key=lambda item: str(item.get(key, "") or "").lower(), reverse=reverse)
+    start = max(0, int(offset or 0))
+    end = start + max(1, int(limit or 500))
+    return {"total": total, "events": filtered[start:end], "offset": start, "limit": max(1, int(limit or 500))}
+
+
 def _collect_docker_status(app_root: Path, *, include_logs: bool = False, log_lines: int = 120) -> dict[str, Any]:
     docker = _load_docker_containers()
     compose_specs = _candidate_compose_specs(app_root)
@@ -657,11 +909,13 @@ def _collect_docker_status(app_root: Path, *, include_logs: bool = False, log_li
     worker_containers = workers.get("containers", []) if isinstance(workers.get("containers"), list) else []
     all_containers = [*local_containers, *worker_containers]
     app_containers = [item for item in all_containers if bool(item.get("is_application"))]
+    ec2_instances = _list_ec2_fleet_instances()
     return {
         "generated_at_utc": _iso_now(),
         "docker": docker,
         "compose": compose,
         "workers": workers,
+        "ec2_instances": ec2_instances,
         "all_containers": all_containers,
         "summary": {
             "container_count": len(all_containers),
@@ -766,9 +1020,64 @@ def _discover_view_log_remote_docker_sources() -> list[dict[str, Any]]:
     return out
 
 
+def _discover_view_log_ec2_console_sources() -> list[dict[str, Any]]:
+    payload = _list_ec2_fleet_instances()
+    rows = payload.get("instances", []) if isinstance(payload.get("instances"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        instance_id = str(row.get("instance_id", "") or "").strip()
+        if not instance_id:
+            continue
+        label = str(row.get("name", "") or "").strip() or instance_id
+        state = str(row.get("state", "") or "").strip()
+        out.append(
+            {
+                "source_id": f"ec2-console:{instance_id}",
+                "source_type": "ec2_console",
+                "system": "aws_ec2",
+                "label": f"{label} ({instance_id})",
+                "instance_id": instance_id,
+                "status": state,
+                "is_application": True,
+            }
+        )
+    out.sort(key=lambda item: str(item.get("label", "")).lower())
+    return out
+
+
 def _collect_view_log_sources(app_root: Path, output_root: Path) -> list[dict[str, Any]]:
-    sources = _discover_view_log_docker_sources() + _discover_view_log_remote_docker_sources() + _discover_view_log_file_sources(app_root, output_root)
+    sources = (
+        _discover_view_log_docker_sources()
+        + _discover_view_log_remote_docker_sources()
+        + _discover_view_log_ec2_console_sources()
+        + _discover_view_log_file_sources(app_root, output_root)
+    )
     sources.sort(key=lambda item: (str(item.get("source_type", "")), str(item.get("label", "")).lower()))
+    if not sources:
+        sources = [
+            {
+                "source_id": "docker:nightmare-coordinator-server",
+                "source_type": "docker",
+                "system": "docker",
+                "label": "nightmare-coordinator-server",
+                "container_name": "nightmare-coordinator-server",
+                "status": "unknown",
+                "image": "",
+                "is_application": True,
+            },
+            {
+                "source_id": "docker:nightmare-postgres",
+                "source_type": "docker",
+                "system": "docker",
+                "label": "nightmare-postgres",
+                "container_name": "nightmare-postgres",
+                "status": "unknown",
+                "image": "",
+                "is_application": True,
+            },
+        ]
     return sources
 
 
@@ -791,6 +1100,16 @@ def _resolve_view_log_source(source_id: str, app_root: Path, output_root: Path) 
                     "instance_id": instance_id,
                     "is_application": True,
                 }
+    if sid.startswith("ec2-console:"):
+        instance_id = sid.split(":", 1)[1].strip()
+        if instance_id:
+            return {
+                "source_id": sid,
+                "source_type": "ec2_console",
+                "system": "aws_ec2",
+                "label": instance_id,
+                "instance_id": instance_id,
+            }
     for source in _collect_view_log_sources(app_root, output_root):
         if str(source.get("source_id", "")).strip() == sid:
             return source
@@ -804,6 +1123,16 @@ def _read_docker_log_tail(container_name: str, lines: int) -> tuple[bool, str, s
         # docker logs often writes output to stderr.
         text = "\n".join([part for part in [stdout.strip(), stderr.strip()] if part]).strip()
         return True, text, ""
+    error = stderr.strip() or f"docker logs failed with exit code {exit_code}"
+    return False, "", error
+
+
+def _read_docker_log_full(container_name: str) -> tuple[bool, str, str]:
+    cmd = ["docker", "logs", str(container_name or "").strip()]
+    ok, stdout, stderr, exit_code = _run_command(cmd, timeout_seconds=60)
+    if ok:
+        text = "\n".join([part for part in [stdout.strip(), stderr.strip()] if part]).strip()
+        return True, text[:MAX_LOG_DOWNLOAD_BYTES], ""
     error = stderr.strip() or f"docker logs failed with exit code {exit_code}"
     return False, "", error
 
@@ -827,6 +1156,69 @@ def _read_worker_vm_docker_log_tail(instance_id: str, container_name: str, lines
     if isinstance(plugin_rows, list) and plugin_rows and isinstance(plugin_rows[0], dict):
         output = str(plugin_rows[0].get("Output", "") or "")
     return True, output.strip(), ""
+
+
+def _read_worker_vm_docker_log_full(instance_id: str, container_name: str) -> tuple[bool, str, str]:
+    iid = str(instance_id or "").strip()
+    name = str(container_name or "").strip()
+    if not iid or not name:
+        return False, "", "instance_id and container_name are required"
+    settings = _worker_ssm_settings_from_env()
+    log_cmd = f"docker logs {shlex.quote(name)} 2>&1 | head -c {MAX_LOG_DOWNLOAD_BYTES}"
+    result = _run_ssm_shell(log_cmd, settings=settings, instance_ids=[iid])
+    if not result.get("ok"):
+        return False, "", str(result.get("error", "SSM log command failed") or "SSM log command failed")
+    invocations = result.get("invocations", [])
+    if not isinstance(invocations, list) or not invocations:
+        return False, "", "no SSM invocation result received"
+    inv = invocations[0] if isinstance(invocations[0], dict) else {}
+    plugin_rows = inv.get("CommandPlugins", [])
+    output = ""
+    if isinstance(plugin_rows, list) and plugin_rows and isinstance(plugin_rows[0], dict):
+        output = str(plugin_rows[0].get("Output", "") or "")
+    return True, output.strip(), ""
+
+
+def _read_log_source_text(
+    source: dict[str, Any],
+    *,
+    lines: int,
+    full: bool = False,
+    app_root: Optional[Path] = None,
+) -> tuple[bool, str, str]:
+    source_type = str(source.get("source_type", "") or "").strip().lower()
+    if source_type == "docker":
+        system = str(source.get("system", "") or "").strip().lower()
+        container_name = str(source.get("container_name", "") or "").strip()
+        if system == "worker_vm":
+            instance_id = str(source.get("instance_id", "") or "").strip()
+            if full:
+                return _read_worker_vm_docker_log_full(instance_id, container_name)
+            return _read_worker_vm_docker_log_tail(instance_id, container_name, lines)
+        if full:
+            return _read_docker_log_full(container_name)
+        return _read_docker_log_tail(container_name, lines)
+    if source_type == "ec2_console":
+        instance_id = str(source.get("instance_id", "") or "").strip()
+        ok, text, error = _read_ec2_console_output(instance_id)
+        if not ok:
+            return False, "", error
+        if full:
+            return True, text, ""
+        return True, "\n".join(str(text or "").splitlines()[-max(1, int(lines or DEFAULT_VIEW_LOG_LINES)):]), ""
+    rel = str(source.get("relative_path", "") or "")
+    root = app_root or BASE_DIR
+    resolved = _normalize_and_validate_relative_path(root, rel)
+    if resolved is None or not resolved.is_file():
+        return False, "", "file log source no longer exists"
+    if full:
+        try:
+            with resolved.open("rb") as handle:
+                data = handle.read(MAX_LOG_DOWNLOAD_BYTES)
+            return True, data.decode("utf-8", errors="replace"), ""
+        except Exception as exc:
+            return False, "", str(exc)
+    return True, _read_tail_lines(resolved, lines=lines), ""
 
 
 def collect_dashboard_data(output_root: Path, coordinator_store: CoordinatorStore | None = None) -> dict[str, Any]:
@@ -1789,6 +2181,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "coordinator_store", None)  # type: ignore[attr-defined]
 
     @property
+    def log_store(self) -> LogStore | None:
+        return getattr(self.server, "log_store", None)  # type: ignore[attr-defined]
+
+    @property
     def extractor_matches_cache(self) -> _ExtractorMatchesCache:
         return getattr(self.server, "extractor_matches_cache")  # type: ignore[attr-defined]
 
@@ -1810,7 +2206,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep server output concise.
-        sys.stdout.write("[server] " + format % args + "\n")
+        message = format % args
+        sys.stdout.write("[server] " + message + "\n")
+        try:
+            if self.log_store is not None:
+                now_utc = datetime.now(timezone.utc)
+                self.log_store.insert_events(
+                    [
+                        {
+                            "event_time_utc": now_utc.isoformat(),
+                            "event_time_est": _format_est_datetime(now_utc),
+                            "severity": "info",
+                            "description": message,
+                            "machine": "central_server",
+                            "source_id": "server:http",
+                            "source_type": "server_http",
+                            "raw_line": message,
+                        }
+                    ]
+                )
+        except Exception:
+            pass
 
     def handle(self) -> None:
         try:
@@ -2140,46 +2556,127 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if source is None:
                 self._write_json({"error": "unknown source_id"}, status=404)
                 return
-            source_type = str(source.get("source_type", "") or "")
-            if source_type == "docker":
-                system = str(source.get("system", "") or "")
-                container_name = str(source.get("container_name", "") or "").strip()
-                if system == "worker_vm":
-                    instance_id = str(source.get("instance_id", "") or "").strip()
-                    ok, tail, error = _read_worker_vm_docker_log_tail(instance_id, container_name, lines)
-                else:
-                    ok, tail, error = _read_docker_log_tail(container_name, lines)
-                if not ok:
-                    self._write_json(
-                        {
-                            "error": "docker log read failed",
-                            "detail": error,
-                            "source": source,
-                        },
-                        status=500,
-                    )
-                    return
-                self._write_json(
-                    {
-                        "generated_at_utc": _iso_now(),
-                        "source": source,
-                        "lines_requested": lines,
-                        "tail": tail,
-                    }
-                )
-                return
-            rel = str(source.get("relative_path", "") or "")
-            resolved = _normalize_and_validate_relative_path(self.app_root, rel)
-            if resolved is None or not resolved.is_file():
-                self._write_json({"error": "file log source no longer exists", "source": source}, status=404)
+            ok, tail, error = _read_log_source_text(source, lines=lines, full=False, app_root=self.app_root)
+            if not ok:
+                self._write_json({"error": "log read failed", "detail": error, "source": source}, status=500)
                 return
             self._write_json(
                 {
                     "generated_at_utc": _iso_now(),
                     "source": source,
                     "lines_requested": lines,
-                    "tail": _read_tail_lines(resolved, lines=lines),
+                    "tail": tail,
                 }
+            )
+            return
+        if path == "/api/coord/log-events":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            source_id = str((query.get("source_id") or [""])[0] or "").strip()
+            lines = max(1, min(MAX_VIEW_LOG_LINES, _safe_int((query.get("lines") or [DEFAULT_VIEW_LOG_LINES])[0], DEFAULT_VIEW_LOG_LINES)))
+            search = str((query.get("search") or [""])[0] or "").strip()
+            severity = str((query.get("severity") or [""])[0] or "").strip()
+            machine = str((query.get("machine") or [""])[0] or "").strip()
+            sort_key = str((query.get("sort_key") or ["event_time_utc"])[0] or "event_time_utc").strip()
+            sort_dir = str((query.get("sort_dir") or ["desc"])[0] or "desc").strip().lower()
+            limit = max(1, min(5000, _safe_int((query.get("limit") or [500])[0], 500)))
+            offset = max(0, _safe_int((query.get("offset") or [0])[0], 0))
+            if self.log_store is not None:
+                try:
+                    payload = self.log_store.query_events(
+                        source_id=source_id,
+                        search=search,
+                        severity=severity,
+                        machine=machine,
+                        limit=limit,
+                        offset=offset,
+                        sort_dir=sort_dir,
+                    )
+                    payload.update({"generated_at_utc": _iso_now(), "source_id": source_id or "__all__", "from_log_db": True})
+                    self._write_json(payload)
+                    return
+                except Exception as exc:
+                    self.log_message("log_store query failed: %r", exc)
+            sources: list[dict[str, Any]] = []
+            if source_id and source_id != "__all__":
+                src = _resolve_view_log_source(source_id, self.app_root, self.output_root)
+                if src is not None:
+                    sources = [src]
+            else:
+                sources = _collect_view_log_sources(self.app_root, self.output_root)[:20]
+            events: list[dict[str, Any]] = []
+            for source in sources:
+                ok, text, error = _read_log_source_text(source, lines=lines, full=False, app_root=self.app_root)
+                if not ok:
+                    events.append(
+                        {
+                            "event_time_utc": datetime.now(timezone.utc).isoformat(),
+                            "event_time_est": _format_est_datetime(datetime.now(timezone.utc)),
+                            "severity": "error",
+                            "description": f"log source read failed: {error}",
+                            "machine": str(source.get("instance_id") or source.get("label") or "unknown"),
+                            "source_id": str(source.get("source_id", "") or ""),
+                            "source_type": str(source.get("source_type", "") or ""),
+                            "raw_line": str(error or ""),
+                        }
+                    )
+                    continue
+                events.extend(_parse_log_events_from_text(text, source=source))
+            if self.log_store is not None:
+                try:
+                    self.log_store.insert_events(events)
+                except Exception as exc:
+                    self.log_message("log_store insert failed: %r", exc)
+            filtered = _filter_and_sort_log_events(
+                events,
+                search=search,
+                severity=severity,
+                machine=machine,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
+                offset=offset,
+                limit=limit,
+            )
+            self._write_json(
+                {
+                    "generated_at_utc": _iso_now(),
+                    "source_id": source_id or "__all__",
+                    "from_log_db": False,
+                    **filtered,
+                }
+            )
+            return
+        if path == "/api/coord/log-download":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            source_id = str((query.get("source_id") or [""])[0] or "").strip()
+            if not source_id:
+                self._write_json({"error": "source_id is required"}, status=400)
+                return
+            source = _resolve_view_log_source(source_id, self.app_root, self.output_root)
+            if source is None:
+                self._write_json({"error": "unknown source_id"}, status=404)
+                return
+            ok, text, error = _read_log_source_text(source, lines=MAX_VIEW_LOG_LINES, full=True, app_root=self.app_root)
+            if not ok:
+                self._write_json({"error": "log read failed", "detail": error, "source": source}, status=500)
+                return
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(source_id))
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(f"{safe_name}.log", str(text or ""))
+            self._write_bytes(
+                zip_buffer.getvalue(),
+                content_type="application/zip",
+                download_name=f"{safe_name}.zip",
             )
             return
 
@@ -3306,6 +3803,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cert-file", default=None, help="TLS certificate file for HTTPS listener")
     p.add_argument("--key-file", default=None, help="TLS private key file for HTTPS listener")
     p.add_argument("--database-url", default=None, help="Postgres DATABASE_URL for coordinator mode")
+    p.add_argument("--log-database-url", default=None, help="Optional dedicated Postgres URL for structured log events")
     p.add_argument("--coordinator-api-token", default=None, help="Bearer token required for /api/coord/* endpoints")
     p.add_argument(
         "--reset-coordinator",
@@ -3360,6 +3858,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         or ""
     ).strip()
+    log_database_url = str(
+        _merged_value(
+            args.log_database_url,
+            merged_cfg,
+            "log_database_url",
+            os.getenv("LOG_DATABASE_URL", ""),
+        )
+        or ""
+    ).strip()
     coordinator_token = str(
         _merged_value(
             args.coordinator_api_token,
@@ -3411,6 +3918,13 @@ def main(argv: list[str] | None = None) -> int:
     coordinator_store: CoordinatorStore | None = None
     if database_url:
         coordinator_store = CoordinatorStore(database_url)
+    log_store: LogStore | None = None
+    if log_database_url:
+        try:
+            log_store = LogStore(log_database_url)
+        except Exception as exc:
+            print(f"[server] log store disabled (failed to initialize): {exc}", flush=True)
+            log_store = None
 
     def _prepare_server(port_value: int) -> ThreadingHTTPServer:
         srv = ThreadingHTTPServer((host, port_value), DashboardHandler)
@@ -3423,6 +3937,7 @@ def main(argv: list[str] | None = None) -> int:
         srv.extractor_matches_cache = _ExtractorMatchesCache()  # type: ignore[attr-defined]
         srv.fuzzing_summary_cache = _FozzySummaryCache()  # type: ignore[attr-defined]
         srv.fuzzing_zip_index_cache = _ZipFileIndexCache()  # type: ignore[attr-defined]
+        srv.log_store = log_store  # type: ignore[attr-defined]
         return srv
 
     servers: list[tuple[str, ThreadingHTTPServer]] = []
@@ -3454,6 +3969,10 @@ def main(argv: list[str] | None = None) -> int:
         print("[server] coordinator mode enabled (Postgres backend)", flush=True)
     else:
         print("[server] coordinator mode disabled (database_url not set)", flush=True)
+    if log_store is not None:
+        print("[server] structured log store enabled", flush=True)
+    else:
+        print("[server] structured log store disabled (log_database_url not set)", flush=True)
     all_domains_html = _find_all_domains_report_html(output_root)
     if all_domains_html is not None:
         print(f"[server] default route / serving all-domains report: {all_domains_html}", flush=True)
