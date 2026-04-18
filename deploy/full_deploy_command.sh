@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+run_as_invoking_user() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    sudo -H -u "${SUDO_USER}" "$@"
+  else
+    "$@"
+  fi
+}
+
 chmod +x ./deploy/*.sh 2>/dev/null || true
 chmod +x ./deploy/bootstrap-central-auto.sh 2>/dev/null || true
 
@@ -40,7 +48,7 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 
-python3 register_targets.py \
+run_as_invoking_user python3 register_targets.py \
   --server-base-url "${COORDINATOR_BASE_URL}" \
   --api-token "${COORDINATOR_API_TOKEN}" \
   --targets-file "targets.txt"

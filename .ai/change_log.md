@@ -749,3 +749,9 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `deploy/bootstrap-central-auto.sh` now treats `aws` CLI as a required dependency in `install_deps_if_missing()`.
   - Added `awscli` package install for yum/dnf/apt flows.
 - Why: full deploy path provisions worker/log DB EC2 resources and was failing with `Missing required command: aws` on central VM.
+## 2026-04-18
+
+- Fixed post-bootstrap target-registration privilege mismatch in full deploy wrappers:
+  - `deploy/full_deploy_command.sh` and `full_deploy_command.sh` now run `register_targets.py` via `run_as_invoking_user`.
+  - When invoked with sudo, this forces the Python registration step to run as `$SUDO_USER` instead of root.
+- Why: `httpx` was installed in user site-packages, but wrapper executed `register_targets.py` as root and failed with `ModuleNotFoundError: No module named 'httpx'`.
