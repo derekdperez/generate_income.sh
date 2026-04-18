@@ -54,6 +54,13 @@ require_cmd() {
   fi
 }
 
+restore_invoking_user_ownership() {
+  local target_path="$1"
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    chown "${SUDO_USER}:${SUDO_USER}" "$target_path" 2>/dev/null || true
+  fi
+}
+
 gen_password() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24
@@ -86,6 +93,7 @@ set_env_key() {
   printf "%s=%s\n" "$key" "$value" >>"$tmp"
   mv "$tmp" "$file"
   chmod 600 "$file" 2>/dev/null || true
+  restore_invoking_user_ownership "$file"
 }
 
 resolve_compose_cmd() {

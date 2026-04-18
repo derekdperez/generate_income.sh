@@ -26,7 +26,11 @@ def _read_env_file(path: Path) -> dict[str, str]:
     if not path.is_file():
         return {}
     out: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+    try:
+        raw_text = path.read_text(encoding="utf-8-sig")
+    except Exception:
+        return {}
+    for raw_line in raw_text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

@@ -72,6 +72,13 @@ run_as_python_user() {
   fi
 }
 
+restore_invoking_user_ownership() {
+  local target_path="$1"
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    chown "${SUDO_USER}:${SUDO_USER}" "$target_path" 2>/dev/null || true
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-url)
@@ -630,6 +637,7 @@ COORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}
 LOG_DATABASE_URL=${LOG_DATABASE_URL}
 EOF
 chmod 600 "$ENV_FILE"
+restore_invoking_user_ownership "$ENV_FILE"
 
 cat >"$WORKER_ENV_FILE" <<EOF
 COORDINATOR_BASE_URL=${COORDINATOR_BASE_URL}
@@ -637,6 +645,7 @@ COORDINATOR_API_TOKEN=${COORDINATOR_API_TOKEN}
 COORDINATOR_INSECURE_TLS=${COORDINATOR_INSECURE_TLS}
 EOF
 chmod 600 "$WORKER_ENV_FILE"
+restore_invoking_user_ownership "$WORKER_ENV_FILE"
 
 # Host shells: export COORDINATOR_BASE_URL / token from deploy/.env (client.py also reads deploy/.env directly).
 HOST_ENV_SH="${DEPLOY_DIR}/coordinator-host-env.sh"
@@ -649,6 +658,7 @@ source "${ROOT_DIR}/deploy/.env"
 set +a
 EOF
 chmod 755 "$HOST_ENV_SH"
+restore_invoking_user_ownership "$HOST_ENV_SH"
 
 HOST_ENV_SH_ABS="$(abs_path "$HOST_ENV_SH")"
 if [[ -n "${HOME:-}" ]]; then

@@ -234,3 +234,5 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Root `full_deploy_command.sh` should delegate to `deploy/full_deploy_command.sh` to avoid duplicate logic drift.
 - Bootstrap DB-credential convention: when existing Postgres data/container is detected and `POSTGRES_PASSWORD` is absent from `.env`, bootstrap should attempt best-effort recovery from existing container env before refusing to continue.
 - Docker command convention in deploy scripts: use centralized docker access wrapper (sudo-aware) for container/volume introspection so reruns work in both docker-group and sudo-only environments.
+- File ownership convention for sudo-launched deploy scripts: any generated/updated repo env files intended for non-root Python tools (`deploy/.env`, `worker.env.generated`) must be chowned back to `$SUDO_USER` after write.
+- Env reader convention: `.env` loaders should fail-soft (return empty map) on permission/read errors rather than crashing CLI flows.

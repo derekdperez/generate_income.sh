@@ -772,3 +772,15 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Added `run_docker()` wrapper and switched existing-install detection to use docker access mode (direct vs sudo).
   - Existing-install failure message now explicitly notes container-recovery attempt.
 - Why: full deploy reruns failed when Postgres data existed but `.env` lost `POSTGRES_PASSWORD`; rerunnable deploy should preserve DB access by recovering existing credentials when possible.
+## 2026-04-18
+
+- Fixed sudo-run deploy permission break during worker rollout (`Permission denied: deploy/.env`).
+- `deploy/bootstrap-central-auto.sh` now restores ownership of generated files to invoking user (`$SUDO_USER`) after writes:
+  - `deploy/.env`
+  - `deploy/worker.env.generated`
+  - `deploy/coordinator-host-env.sh`
+- `deploy/provision-log-db-aws.sh` now restores invoking-user ownership when updating `.env` via `set_env_key`.
+- Hardened env-file reads against permission errors:
+  - `nightmare_shared/config.py::read_env_file` now returns `{}` on read exceptions.
+  - `client.py::_read_env_file` now returns `{}` on read exceptions.
+- Why: full deploy can run with sudo for docker/system actions, but post-bootstrap Python rollout executes as non-root user and must be able to read `deploy/.env`.
