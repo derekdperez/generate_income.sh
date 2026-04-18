@@ -13,10 +13,19 @@
     button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
     button.primary { background: #0ea5e9; border-color: #0284c7; color: white; }
     .muted { color: #64748b; }
+    .status-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #cbd5e1; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 600; background: #fff; color: #334155; }
+    .status-dot { width: 9px; height: 9px; border-radius: 999px; background: #94a3b8; }
+    .status-loading .status-dot { background: #0284c7; animation: pulse 1s ease-in-out infinite; }
+    .status-success .status-dot { background: #16a34a; }
+    .status-error .status-dot { background: #dc2626; }
+    .status-timeout .status-dot { background: #d97706; }
+    @keyframes pulse { 0%, 100% { transform: scale(0.8); opacity: 0.7; } 50% { transform: scale(1.2); opacity: 1; } }
     .table-wrap { max-height: 68vh; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; margin-top: 8px; }
     table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
+    #logEventsTable { table-layout: fixed; }
     th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
     th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
+    #logEventsTable th, #logEventsTable td { overflow-wrap: anywhere; word-break: break-word; }
     code { white-space: pre-wrap; word-break: break-word; }
     .sev-debug { color: #64748b; }
     .sev-info { color: #0369a1; font-weight: 600; }
@@ -52,21 +61,22 @@
       <option value="asc">Oldest first</option>
     </select>
     <button class="primary" onclick="loadEvents()">Refresh</button>
-    <button onclick="refreshSources()">Refresh Sources</button>
+    <button onclick="refreshSources(true)">Refresh Sources</button>
     <button onclick="downloadSource()">Download Zip</button>
+    <span id="loadState" class="status-pill status-idle"><span class="status-dot"></span><span id="loadStateText">Idle</span></span>
     <span id="msg" class="muted"></span>
   </div>
   <div class="table-wrap">
     <table id="logEventsTable">
       <thead>
         <tr>
-          <th>Date</th>
-          <th>Time (EST)</th>
-          <th>Severity</th>
-          <th>Description</th>
-          <th>Machine</th>
-          <th>Source</th>
-          <th>Raw</th>
+          <th data-col-key="date">Date</th>
+          <th data-col-key="time_est">Time (EST)</th>
+          <th data-col-key="severity">Severity</th>
+          <th data-col-key="description">Description</th>
+          <th data-col-key="machine">Machine</th>
+          <th data-col-key="source_id">Source</th>
+          <th data-col-key="raw_line">Raw</th>
         </tr>
       </thead>
       <tbody id="eventsRows"><tr><td colspan="7">Loading...</td></tr></tbody>
@@ -77,6 +87,8 @@
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     const SOURCE_PREF_KEY = "nightmare_view_logs_source_v2";
     const LOG_LINES = 300;
+    const SOURCE_LOAD_TIMEOUT_MS = 30000;
+    const EVENTS_LOAD_TIMEOUT_MS = 45000;
     let logGridCtrl = null;
 
     function esc(v){ return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch])); }
@@ -123,16 +135,38 @@
       if (type === "ec2_console") return `[ec2-console] ${source.label || source.instance_id || "unknown"} (${source.status || "unknown"})`;
       return `[file] ${source.relative_path || source.label || "unknown"}`;
     }
-    async function apiGet(path) {
-      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
+    function setLoadState(state, text) {
+      const pill = document.getElementById("loadState");
+      const txt = document.getElementById("loadStateText");
+      if (!pill || !txt) return;
+      pill.classList.remove("status-loading", "status-success", "status-error", "status-timeout");
+      const safeState = String(state || "idle").toLowerCase();
+      if (safeState === "loading") pill.classList.add("status-loading");
+      else if (safeState === "success") pill.classList.add("status-success");
+      else if (safeState === "error") pill.classList.add("status-error");
+      else if (safeState === "timeout") pill.classList.add("status-timeout");
+      txt.textContent = String(text || "Idle");
+    }
+    async function apiGet(path, timeoutMs) {
+      const controller = new AbortController();
+      const timeout = Math.max(1000, Number(timeoutMs || 30000));
+      const timer = setTimeout(() => controller.abort(new Error("request_timeout")), timeout);
+      let rsp;
+      try {
+        rsp = await fetch(path, { cache: "no-store", headers: authHeaders(), signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!rsp.ok) throw new Error(await rsp.text());
       return rsp.json();
     }
-    async function refreshSources() {
+    async function refreshSources(forceRefresh) {
       const msg = document.getElementById("msg");
+      setLoadState("loading", "Loading log sources...");
       msg.textContent = "Loading sources...";
       try {
-        const payload = await apiGet("/api/coord/log-sources");
+        const force = Boolean(forceRefresh);
+        const payload = await apiGet(`/api/coord/log-sources?force_refresh=${force ? "1" : "0"}`, SOURCE_LOAD_TIMEOUT_MS);
         const select = document.getElementById("sourceSelect");
         const sources = Array.isArray(payload.sources) ? payload.sources : [];
         const prior = loadSelectedSource();
@@ -143,8 +177,11 @@
         if (!select.value && options.length) select.value = String(options[0].source_id || "__all__");
         if (select.value) saveSelectedSource(select.value);
         msg.textContent = `Loaded ${sources.length} sources.`;
+        setLoadState("success", `Loaded ${sources.length} source(s)`);
       } catch (e) {
-        msg.textContent = `Source load failed: ${e.message || e}`;
+        const isTimeout = String(e && (e.name || "")).toLowerCase() === "aborterror";
+        msg.textContent = isTimeout ? "Source load timed out." : `Source load failed: ${e.message || e}`;
+        setLoadState(isTimeout ? "timeout" : "error", isTimeout ? "Source load timed out" : "Source load failed");
       }
     }
     function renderEvents(payload) {
@@ -176,6 +213,27 @@
           prefKey: "log_events_table_v1",
           tokenInputId: "token",
           mode: "columnsOnly",
+          allowReorder: true,
+          minColumnWidth: 80,
+          maxColumnWidth: 2200,
+          defaultWidths: {
+            date: 120,
+            time_est: 130,
+            severity: 100,
+            description: 880,
+            machine: 240,
+            source_id: 300,
+            raw_line: 700,
+          },
+          maxWidths: {
+            date: 220,
+            time_est: 240,
+            severity: 180,
+            description: 1600,
+            machine: 600,
+            source_id: 900,
+            raw_line: 1800,
+          },
         });
       } else {
         logGridCtrl.refresh();
@@ -185,6 +243,7 @@
       const msg = document.getElementById("msg");
       const sourceId = String(document.getElementById("sourceSelect").value || "__all__").trim() || "__all__";
       saveSelectedSource(sourceId);
+      setLoadState("loading", "Loading log events...");
       msg.textContent = "Loading log events...";
       try {
         const params = new URLSearchParams();
@@ -201,12 +260,15 @@
         params.set("sort_key", sortKey);
         params.set("sort_dir", sortDir);
         params.set("limit", "1000");
-        const payload = await apiGet(`/api/coord/log-events?${params.toString()}`);
+        const payload = await apiGet(`/api/coord/log-events?${params.toString()}`, EVENTS_LOAD_TIMEOUT_MS);
         renderEvents(payload);
         msg.textContent = `Loaded ${rowsCount(payload.events)} / ${payload.total || 0} log event(s).`;
+        setLoadState("success", `Loaded ${rowsCount(payload.events)} event(s)`);
       } catch (e) {
         document.getElementById("eventsRows").innerHTML = `<tr><td colspan="7">Failed to load events: ${esc(e.message || e)}</td></tr>`;
-        msg.textContent = `Event load failed: ${e.message || e}`;
+        const isTimeout = String(e && (e.name || "")).toLowerCase() === "aborterror";
+        msg.textContent = isTimeout ? "Event load timed out." : `Event load failed: ${e.message || e}`;
+        setLoadState(isTimeout ? "timeout" : "error", isTimeout ? "Event load timed out" : "Event load failed");
       }
     }
     function rowsCount(rows) {

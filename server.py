@@ -84,6 +84,7 @@ DEFAULT_VIEW_LOG_LINES = 300
 MAX_VIEW_LOG_LINES = 2000
 MAX_VIEW_LOG_FILE_SOURCES = 1000
 MAX_LOG_DOWNLOAD_BYTES = 25 * 1024 * 1024
+VIEW_LOG_SOURCES_CACHE_TTL_SECONDS = 30
 EST_TZ = timezone(timedelta(hours=-5), name="EST")
 
 
@@ -583,8 +584,10 @@ def _parse_docker_log_sections(raw: str) -> dict[str, str]:
     return {name: "\n".join(lines).strip() for name, lines in sections.items()}
 
 
-def _list_worker_vm_docker_containers(*, log_lines: int = 0) -> dict[str, Any]:
-    settings = _worker_ssm_settings_from_env()
+def _list_worker_vm_docker_containers(*, log_lines: int = 0, timeout_seconds_override: Optional[int] = None) -> dict[str, Any]:
+    settings = dict(_worker_ssm_settings_from_env())
+    if timeout_seconds_override is not None:
+        settings["timeout_seconds"] = max(10, int(timeout_seconds_override))
     ps_cmd = (
         "if docker compose version >/dev/null 2>&1; then COMPOSE_CMD='docker compose'; "
         "elif command -v docker-compose >/dev/null 2>&1; then COMPOSE_CMD='docker-compose'; "
@@ -930,26 +933,52 @@ def _collect_docker_status(app_root: Path, *, include_logs: bool = False, log_li
     }
 
 
+def _iter_log_files_limited(root: Path, *, max_depth: int, max_files: int) -> list[Path]:
+    resolved_root = root.resolve()
+    if not resolved_root.is_dir():
+        return []
+    out: list[Path] = []
+    root_depth = len(resolved_root.parts)
+    for dirpath, _dirnames, filenames in os.walk(resolved_root):
+        current_path = Path(dirpath)
+        current_depth = len(current_path.parts) - root_depth
+        if current_depth > max_depth:
+            continue
+        for filename in filenames:
+            if not str(filename or "").lower().endswith(".log"):
+                continue
+            full_path = (current_path / filename).resolve()
+            if not full_path.is_file():
+                continue
+            out.append(full_path)
+            if len(out) >= max_files:
+                return out
+    return out
+
+
 def _discover_view_log_file_sources(app_root: Path, output_root: Path) -> list[dict[str, Any]]:
     candidates: list[Path] = []
     seen: set[str] = set()
-    roots = [output_root.resolve(), app_root.resolve()]
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for path in root.glob("**/*.log"):
-            if not path.is_file():
-                continue
-            resolved = path.resolve()
-            key = str(resolved).lower()
+    app_root_resolved = app_root.resolve()
+    output_root_resolved = output_root.resolve()
+    roots_with_depth = [
+        (output_root_resolved, 6),
+        (app_root_resolved / "output", 6),
+        (app_root_resolved / "logs", 4),
+        (app_root_resolved / "deploy", 3),
+    ]
+    for root, max_depth in roots_with_depth:
+        if len(candidates) >= MAX_VIEW_LOG_FILE_SOURCES:
+            break
+        remaining = max(1, MAX_VIEW_LOG_FILE_SOURCES - len(candidates))
+        for path in _iter_log_files_limited(root, max_depth=max_depth, max_files=remaining):
+            key = str(path).lower()
             if key in seen:
                 continue
             seen.add(key)
-            candidates.append(resolved)
+            candidates.append(path)
             if len(candidates) >= MAX_VIEW_LOG_FILE_SOURCES:
                 break
-        if len(candidates) >= MAX_VIEW_LOG_FILE_SOURCES:
-            break
     candidates.sort(key=lambda p: str(p).lower())
     out: list[dict[str, Any]] = []
     for path in candidates:
@@ -995,7 +1024,7 @@ def _discover_view_log_docker_sources() -> list[dict[str, Any]]:
 
 
 def _discover_view_log_remote_docker_sources() -> list[dict[str, Any]]:
-    worker = _list_worker_vm_docker_containers(log_lines=0)
+    worker = _list_worker_vm_docker_containers(log_lines=0, timeout_seconds_override=15)
     rows = worker.get("containers", []) if isinstance(worker.get("containers"), list) else []
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -1047,6 +1076,14 @@ def _discover_view_log_ec2_console_sources() -> list[dict[str, Any]]:
     return out
 
 
+_view_log_sources_cache_lock = threading.Lock()
+_view_log_sources_cache: dict[str, Any] = {
+    "expires_at_epoch": 0.0,
+    "cache_key": "",
+    "sources": [],
+}
+
+
 def _collect_view_log_sources(app_root: Path, output_root: Path) -> list[dict[str, Any]]:
     sources = (
         _discover_view_log_docker_sources()
@@ -1081,6 +1118,37 @@ def _collect_view_log_sources(app_root: Path, output_root: Path) -> list[dict[st
     return sources
 
 
+def _collect_view_log_sources_cached(
+    app_root: Path,
+    output_root: Path,
+    *,
+    force_refresh: bool = False,
+    cache_ttl_seconds: int = VIEW_LOG_SOURCES_CACHE_TTL_SECONDS,
+) -> list[dict[str, Any]]:
+    now = time.time()
+    resolved_app = str(app_root.resolve())
+    resolved_output = str(output_root.resolve())
+    cache_key = f"{resolved_app}|{resolved_output}"
+    ttl = max(1, int(cache_ttl_seconds or VIEW_LOG_SOURCES_CACHE_TTL_SECONDS))
+    if not force_refresh:
+        with _view_log_sources_cache_lock:
+            current_key = str(_view_log_sources_cache.get("cache_key", "") or "")
+            expires_at = float(_view_log_sources_cache.get("expires_at_epoch", 0.0) or 0.0)
+            cached_sources = _view_log_sources_cache.get("sources")
+            if (
+                current_key == cache_key
+                and now < expires_at
+                and isinstance(cached_sources, list)
+            ):
+                return [dict(item) for item in cached_sources if isinstance(item, dict)]
+    sources = _collect_view_log_sources(app_root, output_root)
+    with _view_log_sources_cache_lock:
+        _view_log_sources_cache["cache_key"] = cache_key
+        _view_log_sources_cache["expires_at_epoch"] = now + ttl
+        _view_log_sources_cache["sources"] = [dict(item) for item in sources if isinstance(item, dict)]
+    return sources
+
+
 def _resolve_view_log_source(source_id: str, app_root: Path, output_root: Path) -> Optional[dict[str, Any]]:
     sid = str(source_id or "").strip()
     if not sid:
@@ -1110,7 +1178,7 @@ def _resolve_view_log_source(source_id: str, app_root: Path, output_root: Path) 
                 "label": instance_id,
                 "instance_id": instance_id,
             }
-    for source in _collect_view_log_sources(app_root, output_root):
+    for source in _collect_view_log_sources_cached(app_root, output_root):
         if str(source.get("source_id", "")).strip() == sid:
             return source
     return None
@@ -2528,7 +2596,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            sources = _collect_view_log_sources(self.app_root, self.output_root)
+            force_refresh = str((query.get("force_refresh") or ["0"])[0] or "0").strip().lower() in {"1", "true", "yes"}
+            sources = _collect_view_log_sources_cached(self.app_root, self.output_root, force_refresh=force_refresh)
             self._write_json(
                 {
                     "generated_at_utc": _iso_now(),
@@ -2607,7 +2676,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if src is not None:
                     sources = [src]
             else:
-                sources = _collect_view_log_sources(self.app_root, self.output_root)[:20]
+                sources = _collect_view_log_sources_cached(self.app_root, self.output_root)[:20]
             events: list[dict[str, Any]] = []
             for source in sources:
                 ok, text, error = _read_log_source_text(source, lines=lines, full=False, app_root=self.app_root)

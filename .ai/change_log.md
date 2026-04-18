@@ -641,3 +641,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Added `deploy/docker-compose.log-store.yml` for a dedicated log Postgres stack.
   - Updated `deploy/full_deploy_command.sh` worker default from 6 to 5.
 - Why: fix empty log-source experience and provide fleet-wide centralized log visibility with structured query capability and download/export.
+## 2026-04-18
+
+- Improved View Logs UX and persistence:
+  - Added explicit loading-state indicator with status transitions (`loading`, `success`, `error`, `timeout`).
+  - Added request timeouts for source/event fetches so UI can report timeout vs generic failure.
+  - Set log-events grid defaults so the message/description columns are widest and easier to read.
+  - Enabled persisted column reordering for column-only grids (including View Logs) and saved `column_order` with widths/hidden columns via `/api/coord/ui-preferences`.
+- Improved log source performance:
+  - Added short TTL cache for collected view-log sources to avoid repeated expensive discovery on every refresh.
+  - Added `force_refresh` support to `/api/coord/log-sources`.
+  - Reduced worker source discovery stall risk by using a shorter SSM timeout in source discovery path.
+  - Replaced broad recursive file-log discovery over entire app root with bounded-depth targeted directories.
+- Why: log source loading and layout usability were bottlenecks for operators; this keeps refreshes responsive and makes logs readable without repeated manual table setup.

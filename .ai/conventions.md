@@ -205,3 +205,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Optional dedicated log DB convention:
   - Configure `log_database_url` / `LOG_DATABASE_URL` for structured event persistence in separate Postgres.
   - Keep coordinator DB (`database_url`) and log DB (`log_database_url`) distinct.
+- View Logs convention: use explicit client-side request states and timeout-aware fetch wrappers so long backend calls show deterministic UI status (`loading`/`success`/`error`/`timeout`) instead of appearing stalled.
+- Grid preference convention update: persist `column_order` alongside `hidden_columns` and `column_widths` in `coordinator_ui_preferences` for grids using `_grid_controls.html.j2` in `columnsOnly` mode.
+- Log source discovery convention: avoid unbounded recursive file scans on source listing APIs; use bounded-depth targeted roots and short-lived server-side caching, with optional force-refresh when operators explicitly request a fresh probe.

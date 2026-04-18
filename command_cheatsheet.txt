@@ -49,6 +49,10 @@ This project standard is `docker-compose` on central/worker Linux hosts.
 - Worker service status:
   sudo docker-compose -f deploy/docker-compose.worker.yml --env-file deploy/.env ps
   Description: Shows current worker container state on that VM.
+  
+- Apply code changes to workers (from central server):
+python3 client.py rollout --insecure-tls --aws-region us-east-1 --ssm-target-key tag:Name --ssm-target-values "nightmare-worker*" --branch main --repo-dir /opt/nightmare
+
 
 
 4) AWS VM Status / Fleet Checks
@@ -157,3 +161,21 @@ This project standard is `docker-compose` on central/worker Linux hosts.
 - Watch EC2 instance states:
   watch -n 10 'aws ec2 describe-instances --filters "Name=tag:Name,Values=nightmare-worker*" --query "Reservations[].Instances[].{id:InstanceId,state:State.Name,private_ip:PrivateIpAddress}" --output table'
   Description: Live VM lifecycle visibility.
+
+
+
+-- APPLY ALL CODE CHANGES FROM GIT TO AWS VMs:
+
+Central redeploy:
+
+sudo docker-compose -f deploy/docker-compose.central.yml --env-file deploy/.env up -d --build server
+sudo docker-compose -f deploy/docker-compose.central.yml --env-file deploy/.env logs --tail=200 -f server
+
+Worker rollout:
+
+python3 client.py rollout --insecure-tls --aws-region us-east-1 --ssm-target-key tag:Name --ssm-target-values "nightmare-worker*" --branch main --repo-dir /opt/nightmare
+
+Verify:
+
+python3 client.py status --insecure-tls --aws-region us-east-1
+python3 client.py progress --insecure-tls

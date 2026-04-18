@@ -4,7 +4,12 @@
   .ngc-colmenu-wrap { position: relative; display: inline-block; }
   .ngc-colmenu { position: absolute; right: 0; top: calc(100% + 4px); width: 320px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,0.12); padding: 8px; z-index: 30; display: none; }
   .ngc-colmenu.open { display: block; }
-  .ngc-colmenu-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 4px 0; }
+  .ngc-colmenu-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; margin: 4px 0; }
+  .ngc-colmenu-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .ngc-colmenu-main span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ngc-colmenu-move { display: inline-flex; align-items: center; gap: 4px; }
+  .ngc-colmenu-move button { padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc; cursor: pointer; font-size: 11px; line-height: 1; }
+  .ngc-colmenu-move button:disabled { opacity: 0.45; cursor: default; }
   .ngc-filter-row th { background: #f1f5f9; z-index: 2; }
   .ngc-filter-row input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border: 1px solid #94a3b8; border-radius: 4px; }
   th.ngc-sortable { cursor: pointer; user-select: none; }
@@ -94,6 +99,12 @@
     const prefKey = String(options.prefKey || table.id || "table");
     const tokenInputId = String(options.tokenInputId || "");
     const mode = String(options.mode || "full");
+    const minColumnWidth = Math.max(60, Number(options.minColumnWidth || 80));
+    const globalMaxColumnWidth = Math.max(minColumnWidth, Number(options.maxColumnWidth || 1800));
+    const defaultWidths = (options.defaultWidths && typeof options.defaultWidths === "object") ? options.defaultWidths : {};
+    const maxWidths = (options.maxWidths && typeof options.maxWidths === "object") ? options.maxWidths : {};
+    const allowReorder = options.allowReorder !== false;
+    const reorderEnabled = mode === "columnsOnly" && allowReorder;
     const headerRow = table.tHead.rows[0];
     if (!headerRow) return null;
     const headers = Array.from(headerRow.cells).map((th, index) => {
@@ -102,9 +113,44 @@
       th.setAttribute("data-col-key", key);
       return { th, key, label: String(text).trim() || `Column ${index + 1}`, index };
     });
+    const defaultOrder = headers.map((h) => h.key);
+    const headersByKey = new Map(headers.map((h) => [h.key, h]));
     ensureColgroup(table, headers);
 
     const tbody = table.tBodies[0];
+    function clampWidth(key, rawValue) {
+      const numeric = Number(rawValue || 0);
+      const keyMaxRaw = Number(maxWidths[key] || 0);
+      const keyMax = Number.isFinite(keyMaxRaw) && keyMaxRaw >= minColumnWidth ? keyMaxRaw : globalMaxColumnWidth;
+      if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+      return Math.max(minColumnWidth, Math.min(Math.round(keyMax), Math.round(numeric)));
+    }
+    function sanitizeOrder(rawOrder) {
+      const incoming = Array.isArray(rawOrder) ? rawOrder : [];
+      const seen = new Set();
+      const keys = [];
+      incoming.forEach((key) => {
+        const clean = String(key || "");
+        if (!clean || seen.has(clean) || !headersByKey.has(clean)) return;
+        seen.add(clean);
+        keys.push(clean);
+      });
+      defaultOrder.forEach((key) => {
+        if (seen.has(key)) return;
+        seen.add(key);
+        keys.push(key);
+      });
+      return keys;
+    }
+    function ensureBodyCellKeys() {
+      Array.from(tbody.rows).forEach((row) => {
+        headers.forEach(({ key, index }) => {
+          const cell = row.cells[index];
+          if (cell && !cell.getAttribute("data-col-key")) cell.setAttribute("data-col-key", key);
+        });
+      });
+    }
+    ensureBodyCellKeys();
     if (!state.originalRows || state.originalRows.length !== tbody.rows.length) {
       state.originalRows = Array.from(tbody.rows);
     }
@@ -128,13 +174,28 @@
       state.prefLoaded = true;
       loadPrefs(page, prefKey, tokenInputId).then((pref) => {
         state.hidden = Array.isArray(pref.hidden_columns) ? pref.hidden_columns : [];
-        state.widths = pref.column_widths && typeof pref.column_widths === "object" ? pref.column_widths : {};
+        const incomingWidths = pref.column_widths && typeof pref.column_widths === "object" ? pref.column_widths : {};
+        const nextWidths = {};
+        headers.forEach(({ key }) => {
+          const fromPref = clampWidth(key, incomingWidths[key]);
+          const fromDefault = clampWidth(key, defaultWidths[key]);
+          if (fromPref >= minColumnWidth) nextWidths[key] = fromPref;
+          else if (fromDefault >= minColumnWidth) nextWidths[key] = fromDefault;
+        });
+        state.widths = nextWidths;
+        state.order = sanitizeOrder(pref.column_order || defaultOrder);
         applyColumnPrefs();
         applySortFilter();
       });
     }
     if (!state.hidden) state.hidden = [];
     if (!state.widths) state.widths = {};
+    headers.forEach(({ key }) => {
+      if (state.widths[key]) return;
+      const fallback = clampWidth(key, defaultWidths[key]);
+      if (fallback >= minColumnWidth) state.widths[key] = fallback;
+    });
+    if (!state.order) state.order = defaultOrder.slice();
     if (!state.sortKey) state.sortKey = "";
     if (!state.sortDir) state.sortDir = "asc";
     if (!state.colFilters) state.colFilters = {};
@@ -145,28 +206,57 @@
       if (state.saveTimer) clearTimeout(state.saveTimer);
       state.saveTimer = setTimeout(() => {
         state.saveTimer = null;
-        savePrefs(page, prefKey, { hidden_columns: state.hidden, column_widths: state.widths, sort_key: state.sortKey, sort_dir: state.sortDir }, tokenInputId);
+        savePrefs(page, prefKey, { hidden_columns: state.hidden, column_widths: state.widths, column_order: state.order, sort_key: state.sortKey, sort_dir: state.sortDir }, tokenInputId);
       }, 220);
     }
 
     function applyColumnPrefs() {
+      const order = sanitizeOrder(state.order || defaultOrder);
+      state.order = order;
+      if (reorderEnabled) {
+        const colgroup = table.querySelector("colgroup");
+        order.forEach((key) => {
+          const header = headersByKey.get(key);
+          if (header && header.th.parentElement === headerRow) headerRow.appendChild(header.th);
+          if (state.filterRow) {
+            const filterCell = state.filterRow.querySelector(`th[data-ngc-col-key="${CSS.escape(key)}"]`);
+            if (filterCell) state.filterRow.appendChild(filterCell);
+          }
+          if (colgroup) {
+            const col = colgroup.querySelector(`col[data-ngc-key="${CSS.escape(key)}"]`);
+            if (col) colgroup.appendChild(col);
+          }
+        });
+        Array.from(tbody.rows).forEach((row) => {
+          order.forEach((key) => {
+            const cell = row.querySelector(`td[data-col-key="${CSS.escape(key)}"],th[data-col-key="${CSS.escape(key)}"]`);
+            if (cell) row.appendChild(cell);
+          });
+        });
+      }
       const hidden = new Set(state.hidden || []);
       headers.forEach(({ key, th }) => {
         const col = table.querySelector(`colgroup col[data-ngc-key="${CSS.escape(key)}"]`);
-        const width = Number(state.widths[key] || 0);
-        if (col && Number.isFinite(width) && width >= 80) {
+        const width = clampWidth(key, state.widths[key] || 0);
+        const maxWidth = Math.round(Number(maxWidths[key] || globalMaxColumnWidth));
+        if (col && Number.isFinite(width) && width >= minColumnWidth) {
           col.style.width = `${Math.round(width)}px`;
           col.style.minWidth = `${Math.round(width)}px`;
+          col.style.maxWidth = `${maxWidth}px`;
         }
         const isHidden = hidden.has(key);
         th.style.display = isHidden ? "none" : "";
+        th.style.maxWidth = `${maxWidth}px`;
         if (state.filterRow) {
           const filterTh = state.filterRow.cells[th.cellIndex];
           if (filterTh) filterTh.style.display = isHidden ? "none" : "";
         }
         Array.from(tbody.rows).forEach((row) => {
           const cell = row.cells[th.cellIndex];
-          if (cell) cell.style.display = isHidden ? "none" : "";
+          if (cell) {
+            cell.style.display = isHidden ? "none" : "";
+            cell.style.maxWidth = `${maxWidth}px`;
+          }
         });
       });
     }
@@ -233,7 +323,7 @@
         const width = textWidthPx(text.slice(0, 300), cell) + 24;
         if (width > maxW) maxW = width;
       });
-      state.widths[key] = Math.max(80, Math.min(1800, Math.round(maxW)));
+      state.widths[key] = clampWidth(key, maxW);
       applyColumnPrefs();
       scheduleSave();
     }
@@ -271,20 +361,52 @@
       state.toolbar = toolbar;
     }
 
-    state.menu.innerHTML = headers.map(({ key, label }) => {
-      const checked = !(state.hidden || []).includes(key);
-      return `<label class="ngc-colmenu-row"><input type="checkbox" data-ngc-col="${escAttr(key)}" ${checked ? "checked" : ""}>${escAttr(label)}</label>`;
-    }).join("");
-    state.menu.querySelectorAll("input[data-ngc-col]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const key = String(input.getAttribute("data-ngc-col") || "");
-        const hidden = new Set(state.hidden || []);
-        if (input.checked) hidden.delete(key); else hidden.add(key);
-        state.hidden = headers.map((h) => h.key).filter((k) => hidden.has(k));
-        applyColumnPrefs();
-        scheduleSave();
+    function renderColumnMenu() {
+      const order = sanitizeOrder(state.order || defaultOrder);
+      state.order = order;
+      state.menu.innerHTML = order.map((key, idx) => {
+        const header = headersByKey.get(key);
+        const label = header ? header.label : key;
+        const checked = !(state.hidden || []).includes(key);
+        const moveDisabledUp = idx <= 0 ? "disabled" : "";
+        const moveDisabledDown = idx >= order.length - 1 ? "disabled" : "";
+        const moveControls = reorderEnabled
+          ? `<span class="ngc-colmenu-move"><button type="button" data-ngc-move="up" data-ngc-col="${escAttr(key)}" ${moveDisabledUp} title="Move up">↑</button><button type="button" data-ngc-move="down" data-ngc-col="${escAttr(key)}" ${moveDisabledDown} title="Move down">↓</button></span>`
+          : "";
+        return `<label class="ngc-colmenu-row"><span class="ngc-colmenu-main"><input type="checkbox" data-ngc-col="${escAttr(key)}" ${checked ? "checked" : ""}><span>${escAttr(label)}</span></span>${moveControls}</label>`;
+      }).join("");
+      state.menu.querySelectorAll("input[data-ngc-col]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const key = String(input.getAttribute("data-ngc-col") || "");
+          const hidden = new Set(state.hidden || []);
+          if (input.checked) hidden.delete(key); else hidden.add(key);
+          state.hidden = headers.map((h) => h.key).filter((k) => hidden.has(k));
+          applyColumnPrefs();
+          scheduleSave();
+        });
       });
-    });
+      state.menu.querySelectorAll("button[data-ngc-move]").forEach((button) => {
+        button.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const direction = String(button.getAttribute("data-ngc-move") || "");
+          const key = String(button.getAttribute("data-ngc-col") || "");
+          const orderList = sanitizeOrder(state.order || defaultOrder);
+          const index = orderList.indexOf(key);
+          if (index < 0) return;
+          const swapIndex = direction === "up" ? index - 1 : index + 1;
+          if (swapIndex < 0 || swapIndex >= orderList.length) return;
+          const next = orderList.slice();
+          const tmp = next[index];
+          next[index] = next[swapIndex];
+          next[swapIndex] = tmp;
+          state.order = next;
+          applyColumnPrefs();
+          renderColumnMenu();
+          scheduleSave();
+        });
+      });
+    }
+    renderColumnMenu();
 
     if (mode === "full" && !state.filterRow) {
       const fr = document.createElement("tr");
@@ -300,6 +422,7 @@
           applySortFilter();
         });
         th.appendChild(inp);
+        th.setAttribute("data-ngc-col-key", key);
         fr.appendChild(th);
       });
       table.tHead.appendChild(fr);
@@ -329,7 +452,7 @@
           const col = table.querySelector(`colgroup col[data-ngc-key="${CSS.escape(key)}"]`);
           const startW = Number(state.widths[key] || (col ? col.getBoundingClientRect().width : th.getBoundingClientRect().width || 120));
           const onMove = (mv) => {
-            const next = Math.max(80, Math.min(1800, Math.round(startW + (Number(mv.clientX || 0) - startX))));
+            const next = clampWidth(key, Math.round(startW + (Number(mv.clientX || 0) - startX)));
             state.widths[key] = next;
             applyColumnPrefs();
           };
@@ -373,6 +496,7 @@
     state.configured = true;
     return {
       refresh() {
+        ensureBodyCellKeys();
         state.originalRows = Array.from(tbody.rows);
         state.valuesByRow = new WeakMap();
         applyColumnPrefs();
