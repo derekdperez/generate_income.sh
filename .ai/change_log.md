@@ -533,3 +533,7 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - 2026-04-17: Fuzzing table UX upgrade: added horizontal scrolling, per-column resize handles, and column hide/show menu with persisted prefs in Postgres via /api/coord/ui-preferences (GET/POST).
 
 - 2026-04-17: Standardized sticky/frozen headers for scrollable web tables (fuzzing, extractor matches, database, workers, crawl progress, dashboard). Added scroll containers to pages that previously had plain tables so header rows stay visible during scrolling.
+
+- 2026-04-17: Expanded Fozzy eflection_alert_ignore_exact defaults and normalization to suppress low-signal reflection values (e.g., 0/1, true/false, null-like/common tokens). Updated config/fozzy.json defaults to match.
+
+- 2026-04-17: Reworked /fuzzing grid to operator layout (URL, Parameter, Payload, Code, Response/Diff actions, Size Diff, Time Diff, Notes placeholder). Added full-screen response modal (stacked headers/body) and side-by-side diff modal with synchronized scrolling and line-level highlighting.

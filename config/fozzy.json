@@ -15,7 +15,21 @@
   "live_report_interval_seconds": 5.0,
   "body_preview_limit": 50000,
   "reflection_alert_ignore_exact": [
-    "test"
+    "test",
+    "0",
+    "1",
+    "true",
+    "false",
+    "null",
+    "none",
+    "undefined",
+    "yes",
+    "no",
+    "on",
+    "off",
+    "ok",
+    "n/a",
+    "na"
   ],
   "default_generic_by_type": {
     "bool": "true",

@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -19,58 +20,55 @@
     .v { font-size: 20px; font-weight: 700; margin-top: 4px; word-break: break-word; }
     .muted { color: #64748b; }
     .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 14px; }
-    .table-wrap { max-height: 520px; overflow-y: auto; overflow-x: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
-    .table-wrap.files { max-height: 360px; }
-    table { width: max-content; min-width: 2600px; border-collapse: collapse; background: #fff; border: 0; table-layout: fixed; }
-    .table-wrap.files table { width: 100%; min-width: 0; table-layout: auto; }
+    .table-wrap { max-height: 680px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    table { width: max-content; min-width: 1450px; border-collapse: collapse; background: #fff; border: 0; table-layout: fixed; }
     th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
     th { background: #e2e8f0; cursor: pointer; user-select: none; position: sticky; top: 0; z-index: 6; }
-    td pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
-    .col-url { width: 180px; max-width: 180px; word-break: break-all; }
-    .col-note { width: 340px; max-width: 340px; }
-    .filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 10px; }
-    .pager { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .sort-ind { color: #0f172a; font-weight: 700; margin-left: 4px; }
-    .col-resize-handle {
-      position: absolute;
-      right: -1px;
-      top: 0;
-      width: 8px;
-      height: 100%;
-      cursor: col-resize;
-      user-select: none;
-      touch-action: none;
-      background: transparent;
-    }
+    .col-url { width: 420px; max-width: 420px; word-break: break-all; }
+    .col-parameter { width: 140px; max-width: 140px; }
+    .col-payload { width: 320px; max-width: 320px; word-break: break-all; }
+    .col-code { width: 90px; max-width: 90px; }
+    .col-actions { width: 260px; max-width: 260px; }
+    .col-size-diff { width: 140px; max-width: 140px; }
+    .col-time-diff { width: 140px; max-width: 140px; }
+    .col-notes { width: 200px; max-width: 200px; }
+    .mini-btn { padding: 4px 8px; font-size: 12px; }
+    .diff-pos { color: #15803d; font-weight: 700; }
+    .diff-neg { color: #b91c1c; font-weight: 700; }
+    .col-resize-handle { position: absolute; right: -1px; top: 0; width: 8px; height: 100%; cursor: col-resize; user-select: none; touch-action: none; background: transparent; }
     .col-resize-handle:hover { background: rgba(14, 165, 233, 0.15); }
     .colmenu-wrap { position: relative; display: inline-block; }
-    .colmenu {
-      position: absolute;
-      right: 0;
-      top: calc(100% + 4px);
-      width: 320px;
-      max-height: 340px;
-      overflow: auto;
-      background: #fff;
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
-      padding: 8px;
-      z-index: 20;
-      display: none;
-    }
+    .colmenu { position: absolute; right: 0; top: calc(100% + 4px); width: 300px; max-height: 340px; overflow: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 8px; z-index: 20; display: none; }
     .colmenu.open { display: block; }
     .colmenu-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 4px 0; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.55); display: none; align-items: center; justify-content: center; z-index: 50; }
+    .modal-backdrop.open { display: flex; }
+    .modal-window { width: 94vw; height: 90vh; max-width: 1700px; background: #fff; border: 1px solid #94a3b8; border-radius: 10px; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.28); display: flex; flex-direction: column; overflow: hidden; }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #cbd5e1; background: #e2e8f0; gap: 12px; }
+    .modal-title { font-weight: 700; }
+    .modal-body { flex: 1; min-height: 0; padding: 10px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+    .stack-box { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+    .stack-box textarea { width: 100%; resize: none; border: 1px solid #cbd5e1; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; padding: 8px; background: #f8fafc; color: #0f172a; min-height: 210px; overflow: auto; }
+    .diff-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; height: 100%; min-height: 0; }
+    .diff-pane { display: flex; flex-direction: column; border: 1px solid #cbd5e1; border-radius: 6px; min-height: 0; overflow: hidden; background: #fff; }
+    .diff-pane h4 { margin: 0; padding: 8px; border-bottom: 1px solid #cbd5e1; background: #f1f5f9; font-size: 13px; }
+    .diff-scroll { flex: 1; min-height: 0; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35; background: #f8fafc; }
+    .diff-line { white-space: pre-wrap; word-break: break-word; padding: 0 8px; border-bottom: 1px solid #e2e8f0; }
+    .diff-line.same { background: #f8fafc; }
+    .diff-line.changed { background: #fef3c7; }
+    .diff-line.added { background: #dcfce7; }
+    .diff-line.removed { background: #fee2e2; }
+    .diff-line.pad { background: #f1f5f9; color: #94a3b8; }
   </style>
 </head>
 <body>
   <h1>Fuzzing</h1>
   <div class="meta">Fozzy run findings from coordinator artifacts (anomalies + reflections). <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/extractor-matches">Extractor Matches</a></div>
-
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <select id="domainSelect" style="min-width: 320px;"></select>
-    <input id="searchText" type="text" placeholder="Global search (all fields)">
+    <input id="searchText" type="text" placeholder="Global search">
     <input id="limit" type="number" min="1" max="2000" value="250" title="Rows per page">
     <button class="primary" onclick="refreshDomainsAndRows()">Refresh</button>
     <div class="colmenu-wrap">
@@ -80,344 +78,116 @@
     <a id="downloadZip" href="#" target="_blank" rel="noopener noreferrer"><button type="button">Download Results Zip</button></a>
     <span id="msg" class="muted"></span>
   </div>
-
   <div id="cards" class="cards"></div>
-
-    <div class="panel">
-      <strong>Findings</strong>
-      <div class="filters-grid">
-        <input id="colRootDomain" type="text" placeholder="Domain contains">
-        <input id="colResultType" type="text" placeholder="Type contains">
-        <input id="colAnomalyNote" type="text" placeholder="Note contains">
-        <input id="colUrl" type="text" placeholder="URL contains">
-        <input id="colBaselineRequestContent" type="text" placeholder="Baseline request contains">
-        <input id="colBaselineResponseContent" type="text" placeholder="Baseline response contains">
-        <input id="colFuzzingRequestContent" type="text" placeholder="Fuzzing request contains">
-        <input id="colFuzzingResponseContent" type="text" placeholder="Fuzzing response contains">
-        <input id="colBaselineStatus" type="text" placeholder="Baseline status contains">
-        <input id="colFuzzingStatus" type="text" placeholder="Fuzzing status contains">
-        <input id="colStatusDiff" type="text" placeholder="Status diff contains">
-        <input id="colBaselineSize" type="text" placeholder="Baseline size contains">
-        <input id="colFuzzingSize" type="text" placeholder="Fuzzing size contains">
-        <input id="colSizeDiff" type="text" placeholder="Size diff contains">
-        <input id="colBaselineDuration" type="text" placeholder="Baseline duration contains">
-        <input id="colFuzzingDuration" type="text" placeholder="Fuzzing duration contains">
-        <input id="colDurationDiff" type="text" placeholder="Duration diff contains">
-      </div>
-    <div class="pager">
-      <button id="prevPageBtn" type="button">Prev</button>
-      <button id="nextPageBtn" type="button">Next</button>
-      <span class="muted" id="pageInfo">Page 1</span>
-      <span class="muted" id="pagingTotals"></span>
-    </div>
+  <div class="panel">
     <div class="table-wrap">
       <table id="findingsTable">
         <colgroup>
-          <col id="col_root_domain">
-          <col id="col_result_type">
-          <col id="col_anomaly_note">
-          <col id="col_url">
-          <col id="col_baseline_request_content">
-          <col id="col_baseline_response_content">
-          <col id="col_baseline_status">
-          <col id="col_baseline_size">
-          <col id="col_baseline_duration_ms">
-          <col id="col_fuzzing_request_content">
-          <col id="col_fuzzing_response_content">
-          <col id="col_new_status">
-          <col id="col_new_size">
-          <col id="col_fuzzing_duration_ms">
-          <col id="col_status_difference">
-          <col id="col_size_difference">
-          <col id="col_duration_difference_ms">
+          <col id="col_url"><col id="col_mutated_parameter"><col id="col_mutated_value"><col id="col_new_status">
+          <col id="col_response_actions"><col id="col_size_difference"><col id="col_duration_difference_ms"><col id="col_notes_placeholder">
         </colgroup>
         <thead>
           <tr>
-            <th data-key="root_domain" data-col-key="root_domain">Domain <span class="sort-ind" id="sort_root_domain"></span></th>
-            <th data-key="result_type" data-col-key="result_type">Type <span class="sort-ind" id="sort_result_type"></span></th>
-            <th data-key="anomaly_note" data-col-key="anomaly_note" class="col-note">Note <span class="sort-ind" id="sort_anomaly_note"></span></th>
             <th data-key="url" data-col-key="url" class="col-url">URL <span class="sort-ind" id="sort_url"></span></th>
-            <th data-key="baseline_request_content" data-col-key="baseline_request_content">Baseline Request Content <span class="sort-ind" id="sort_baseline_request_content"></span></th>
-            <th data-key="baseline_response_content" data-col-key="baseline_response_content">Baseline Response Content <span class="sort-ind" id="sort_baseline_response_content"></span></th>
-            <th data-key="baseline_status" data-col-key="baseline_status">Baseline Response Code <span class="sort-ind" id="sort_baseline_status"></span></th>
-            <th data-key="baseline_size" data-col-key="baseline_size">Baseline Response Size <span class="sort-ind" id="sort_baseline_size"></span></th>
-            <th data-key="baseline_duration_ms" data-col-key="baseline_duration_ms">Baseline Response Duration (ms) <span class="sort-ind" id="sort_baseline_duration_ms"></span></th>
-            <th data-key="fuzzing_request_content" data-col-key="fuzzing_request_content">Fuzzing Request Content <span class="sort-ind" id="sort_fuzzing_request_content"></span></th>
-            <th data-key="fuzzing_response_content" data-col-key="fuzzing_response_content">Fuzzing Response Content <span class="sort-ind" id="sort_fuzzing_response_content"></span></th>
-            <th data-key="new_status" data-col-key="new_status">Fuzzing Response Code <span class="sort-ind" id="sort_new_status"></span></th>
-            <th data-key="new_size" data-col-key="new_size">Fuzzing Response Size <span class="sort-ind" id="sort_new_size"></span></th>
-            <th data-key="fuzzing_duration_ms" data-col-key="fuzzing_duration_ms">Fuzzing Response Duration (ms) <span class="sort-ind" id="sort_fuzzing_duration_ms"></span></th>
-            <th data-key="status_difference" data-col-key="status_difference">Status Diff <span class="sort-ind" id="sort_status_difference"></span></th>
-            <th data-key="size_difference" data-col-key="size_difference">Size Diff <span class="sort-ind" id="sort_size_difference"></span></th>
-            <th data-key="duration_difference_ms" data-col-key="duration_difference_ms">Duration Diff (ms) <span class="sort-ind" id="sort_duration_difference_ms"></span></th>
+            <th data-key="mutated_parameter" data-col-key="mutated_parameter" class="col-parameter">Parameter <span class="sort-ind" id="sort_mutated_parameter"></span></th>
+            <th data-key="mutated_value" data-col-key="mutated_value" class="col-payload">Payload <span class="sort-ind" id="sort_mutated_value"></span></th>
+            <th data-key="new_status" data-col-key="new_status" class="col-code">Code <span class="sort-ind" id="sort_new_status"></span></th>
+            <th data-col-key="response_actions" class="col-actions">Full Response | Diff</th>
+            <th data-key="size_difference" data-col-key="size_difference" class="col-size-diff">Size Diff (bytes) <span class="sort-ind" id="sort_size_difference"></span></th>
+            <th data-key="duration_difference_ms" data-col-key="duration_difference_ms" class="col-time-diff">Time Diff (ms) <span class="sort-ind" id="sort_duration_difference_ms"></span></th>
+            <th data-col-key="notes_placeholder" class="col-notes">Notes</th>
           </tr>
         </thead>
-        <tbody id="rows"><tr><td colspan="17">Loading...</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="8">Loading...</td></tr></tbody>
       </table>
     </div>
   </div>
-
-  <div class="panel">
-    <strong>Fozzy Result Files (Selected Domain)</strong>
-    <div class="filters-grid">
-      <input id="fileSearch" type="text" placeholder="Global file search">
-      <input id="filePathFilter" type="text" placeholder="Path contains">
-      <input id="fileSizeFilter" type="text" placeholder="Size contains">
-    </div>
-    <div class="table-wrap files">
-      <table>
-        <thead>
-          <tr>
-            <th data-files-key="path">Path <span class="sort-ind" id="files_sort_path"></span></th>
-            <th data-files-key="size">Size <span class="sort-ind" id="files_sort_size"></span></th>
-            <th>View</th>
-            <th>Download</th>
-          </tr>
-        </thead>
-        <tbody id="fileRows"><tr><td colspan="4">Select a single domain to view files.</td></tr></tbody>
-      </table>
+  <div class="modal-backdrop" id="responseModal">
+    <div class="modal-window">
+      <div class="modal-head">
+        <div class="modal-title" id="responseModalTitle">Response</div>
+        <button type="button" id="responseModalCloseBtn">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="stack-box"><strong>Headers</strong><textarea id="responseHeadersBox" readonly></textarea></div>
+        <div class="stack-box"><strong>Body</strong><textarea id="responseBodyBox" readonly></textarea></div>
+      </div>
     </div>
   </div>
-
+  <div class="modal-backdrop" id="diffModal">
+    <div class="modal-window">
+      <div class="modal-head">
+        <div class="modal-title" id="diffModalTitle">Baseline vs Fuzzing Diff</div>
+        <button type="button" id="diffModalCloseBtn">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="diff-layout">
+          <section class="diff-pane"><h4>Baseline</h4><div id="diffLeft" class="diff-scroll"></div></section>
+          <section class="diff-pane"><h4>Fuzzing</h4><div id="diffRight" class="diff-scroll"></div></section>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     const PREFS_PAGE = "fuzzing";
-    const PREFS_KEY = "table_columns_v1";
+    const PREFS_KEY = "table_columns_v2";
     const DEFAULT_LIMIT = 250;
-    const DEFAULT_COLUMN_WIDTHS = {
-      root_domain: 180,
-      result_type: 110,
-      anomaly_note: 360,
-      url: 190,
-      baseline_request_content: 260,
-      baseline_response_content: 260,
-      baseline_status: 130,
-      baseline_size: 130,
-      baseline_duration_ms: 170,
-      fuzzing_request_content: 260,
-      fuzzing_response_content: 260,
-      new_status: 130,
-      new_size: 130,
-      fuzzing_duration_ms: 170,
-      status_difference: 110,
-      size_difference: 110,
-      duration_difference_ms: 130,
-    };
-    const ALL_COLUMN_KEYS = [
-      "root_domain", "result_type", "anomaly_note", "url",
-      "baseline_request_content", "baseline_response_content", "baseline_status", "baseline_size", "baseline_duration_ms",
-      "fuzzing_request_content", "fuzzing_response_content", "new_status", "new_size", "fuzzing_duration_ms",
-      "status_difference", "size_difference", "duration_difference_ms",
-    ];
-    let columnPrefs = {
-      hidden_columns: [],
-      column_widths: { ...DEFAULT_COLUMN_WIDTHS },
-    };
+    const DEFAULT_COLUMN_WIDTHS = { url: 420, mutated_parameter: 140, mutated_value: 320, new_status: 90, response_actions: 260, size_difference: 140, duration_difference_ms: 140, notes_placeholder: 200 };
+    const ALL_COLUMN_KEYS = ["url", "mutated_parameter", "mutated_value", "new_status", "response_actions", "size_difference", "duration_difference_ms", "notes_placeholder"];
+    let columnPrefs = { hidden_columns: [], column_widths: { ...DEFAULT_COLUMN_WIDTHS } };
     let prefsSaveHandle = null;
-    let currentOffset = 0;
+    let debounceHandle = null;
     let currentRows = [];
-    let currentFiles = [];
+    let currentOffset = 0;
     let sortKey = "size_difference";
     let sortDir = "desc";
-    let filesSortKey = "path";
-    let filesSortDir = "asc";
-    let debounceHandle = null;
+    const resultPayloadCache = new Map();
 
-    function readCookie(name) {
-      const needle = `${name}=`;
-      const cookies = String(document.cookie || "").split(";");
-      for (const part of cookies) {
-        const item = part.trim();
-        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
-      }
-      return "";
-    }
-    function writeCookie(name, value, days) {
-      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
-      const secure = location.protocol === "https:" ? "; Secure" : "";
-      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
-    }
-    function deleteCookie(name) {
-      const secure = location.protocol === "https:" ? "; Secure" : "";
-      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
-    }
-    function esc(v) {
-      return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({
-        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
-      }[ch]));
-    }
-    function persistTokenCookie() {
-      const token = document.getElementById("token").value.trim();
-      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
-      else deleteCookie(TOKEN_COOKIE_NAME);
-    }
-    function hydrateTokenFromCookie() {
-      const token = readCookie(TOKEN_COOKIE_NAME);
-      if (token) document.getElementById("token").value = token;
-    }
-    function authHeaders() {
-      const token = document.getElementById("token").value.trim();
-      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
-      return token ? { Authorization: `Bearer ${token}` } : {};
-    }
-    async function apiGet(path) {
-      const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() });
-      if (!rsp.ok) throw new Error(await rsp.text());
-      const ct = String(rsp.headers.get("content-type") || "");
-      if (ct.includes("application/json")) return rsp.json();
-      return rsp.text();
-    }
-    function selectedDomain() {
-      return String(document.getElementById("domainSelect").value || "__all__");
-    }
+    function readCookie(name) { const needle = `${name}=`; const cookies = String(document.cookie || "").split(";"); for (const part of cookies) { const item = part.trim(); if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length)); } return ""; }
+    function writeCookie(name, value, days) { const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60; const secure = location.protocol === "https:" ? "; Secure" : ""; document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`; }
+    function deleteCookie(name) { const secure = location.protocol === "https:" ? "; Secure" : ""; document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`; }
+    function persistTokenCookie() { const token = document.getElementById("token").value.trim(); if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30); else deleteCookie(TOKEN_COOKIE_NAME); }
+    function hydrateTokenFromCookie() { const token = readCookie(TOKEN_COOKIE_NAME); if (token) document.getElementById("token").value = token; }
+    function esc(v) { return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch])); }
+    function authHeaders() { const token = document.getElementById("token").value.trim(); if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30); return token ? { Authorization: `Bearer ${token}` } : {}; }
+    async function apiGet(path) { const rsp = await fetch(path, { cache: "no-store", headers: authHeaders() }); if (!rsp.ok) throw new Error(await rsp.text()); const ct = String(rsp.headers.get("content-type") || ""); if (ct.includes("application/json")) return rsp.json(); return rsp.text(); }
+
+    function selectedDomain() { return String(document.getElementById("domainSelect").value || "__all__"); }
     function updateDownloadLink() {
       const domain = selectedDomain();
       const link = document.getElementById("downloadZip");
-      if (!domain || domain === "__all__") {
-        link.style.pointerEvents = "none";
-        link.style.opacity = "0.5";
-        link.href = "#";
-        return;
-      }
+      if (!domain || domain === "__all__") { link.style.pointerEvents = "none"; link.style.opacity = "0.5"; link.href = "#"; return; }
       link.href = `/api/coord/fuzzing/download?artifact_type=fozzy_results_zip&root_domain=${encodeURIComponent(domain)}`;
-      link.style.pointerEvents = "auto";
-      link.style.opacity = "1";
+      link.style.pointerEvents = "auto"; link.style.opacity = "1";
     }
-    function setSortIndicators() {
-      document.querySelectorAll("[id^='sort_']").forEach((el) => { el.textContent = ""; });
-      const node = document.getElementById(`sort_${sortKey}`);
-      if (node) node.textContent = sortDir === "asc" ? "▲" : "▼";
-      document.getElementById("files_sort_path").textContent = filesSortKey === "path" ? (filesSortDir === "asc" ? "▲" : "▼") : "";
-      document.getElementById("files_sort_size").textContent = filesSortKey === "size" ? (filesSortDir === "asc" ? "▲" : "▼") : "";
-    }
+    function setSortIndicators() { document.querySelectorAll("[id^='sort_']").forEach((el) => { el.textContent = ""; }); const node = document.getElementById(`sort_${sortKey}`); if (node) node.textContent = sortDir === "asc" ? "?" : "?"; }
     function renderCards(payload) {
       const counts = payload.counts || {};
       const page = Math.floor((Number(payload.offset || 0)) / Math.max(1, Number(payload.limit || DEFAULT_LIMIT))) + 1;
-      const cards = [
-        ["Domain", payload.root_domain || "__all__"],
-        ["Page", page],
-        ["Page Size", payload.limit || DEFAULT_LIMIT],
-        ["Rows (Page)", payload.rows_returned || 0],
-        ["Rows (Filtered)", payload.total_rows || 0],
-        ["Anomalies", counts.filtered_anomalies || 0],
-        ["Reflections", counts.filtered_reflections || 0],
-      ];
+      const cards = [["Domain", payload.root_domain || "__all__"], ["Page", page], ["Page Size", payload.limit || DEFAULT_LIMIT], ["Rows (Page)", payload.rows_returned || 0], ["Rows (Filtered)", payload.total_rows || 0], ["Anomalies", counts.filtered_anomalies || 0], ["Reflections", counts.filtered_reflections || 0]];
       document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
     }
-    function updatePager(payload) {
-      const offset = Number(payload.offset || 0);
-      const limit = Math.max(1, Number(payload.limit || DEFAULT_LIMIT));
-      const total = Number(payload.total_rows || 0);
-      const page = Math.floor(offset / limit) + 1;
-      const pageCount = Math.max(1, Math.ceil(total / limit));
-      document.getElementById("pageInfo").textContent = `Page ${page} of ${pageCount}`;
-      document.getElementById("pagingTotals").textContent = `${payload.rows_returned || 0} shown / ${total} total`;
-      document.getElementById("prevPageBtn").disabled = !(offset > 0);
-      document.getElementById("nextPageBtn").disabled = !Boolean(payload.has_more);
-    }
-    function getColumnFilters() {
-      return {
-        root_domain: String(document.getElementById("colRootDomain").value || "").trim(),
-        result_type: String(document.getElementById("colResultType").value || "").trim(),
-        anomaly_note: String(document.getElementById("colAnomalyNote").value || "").trim(),
-        url: String(document.getElementById("colUrl").value || "").trim(),
-        baseline_request_content: String(document.getElementById("colBaselineRequestContent").value || "").trim(),
-        baseline_response_content: String(document.getElementById("colBaselineResponseContent").value || "").trim(),
-        fuzzing_request_content: String(document.getElementById("colFuzzingRequestContent").value || "").trim(),
-        fuzzing_response_content: String(document.getElementById("colFuzzingResponseContent").value || "").trim(),
-        baseline_status: String(document.getElementById("colBaselineStatus").value || "").trim(),
-        new_status: String(document.getElementById("colFuzzingStatus").value || "").trim(),
-        status_difference: String(document.getElementById("colStatusDiff").value || "").trim(),
-        baseline_size: String(document.getElementById("colBaselineSize").value || "").trim(),
-        new_size: String(document.getElementById("colFuzzingSize").value || "").trim(),
-        size_difference: String(document.getElementById("colSizeDiff").value || "").trim(),
-        baseline_duration_ms: String(document.getElementById("colBaselineDuration").value || "").trim(),
-        fuzzing_duration_ms: String(document.getElementById("colFuzzingDuration").value || "").trim(),
-        duration_difference_ms: String(document.getElementById("colDurationDiff").value || "").trim(),
-      };
-    }
-    function scheduleLoad(resetOffset = true) {
-      if (debounceHandle) clearTimeout(debounceHandle);
-      debounceHandle = setTimeout(() => {
-        debounceHandle = null;
-        if (resetOffset) currentOffset = 0;
-        loadRows();
-      }, 250);
-    }
-    async function loadColumnPrefs() {
-      try {
-        const payload = await apiGet(`/api/coord/ui-preferences?page=${encodeURIComponent(PREFS_PAGE)}&key=${encodeURIComponent(PREFS_KEY)}`);
-        const value = (payload && typeof payload.pref_value === "object" && payload.pref_value) ? payload.pref_value : {};
-        const hidden = Array.isArray(value.hidden_columns) ? value.hidden_columns.map((v) => String(v || "").trim()).filter(Boolean) : [];
-        const widthsRaw = (value && typeof value.column_widths === "object" && value.column_widths) ? value.column_widths : {};
-        const widths = { ...DEFAULT_COLUMN_WIDTHS };
-        Object.entries(widthsRaw).forEach(([key, raw]) => {
-          const w = Number(raw || 0);
-          if (ALL_COLUMN_KEYS.includes(key) && Number.isFinite(w) && w >= 80 && w <= 1400) widths[key] = Math.round(w);
-        });
-        columnPrefs = {
-          hidden_columns: hidden.filter((k) => ALL_COLUMN_KEYS.includes(k)),
-          column_widths: widths,
-        };
-      } catch (_) {
-        columnPrefs = {
-          hidden_columns: [],
-          column_widths: { ...DEFAULT_COLUMN_WIDTHS },
-        };
-      }
-    }
-    async function saveColumnPrefs() {
-      const body = {
-        page: PREFS_PAGE,
-        key: PREFS_KEY,
-        value: {
-          hidden_columns: columnPrefs.hidden_columns.slice(),
-          column_widths: { ...columnPrefs.column_widths },
-        },
-      };
-      try {
-        await fetch("/api/coord/ui-preferences", {
-          method: "POST",
-          cache: "no-store",
-          headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify(body),
-        });
-      } catch (_) {}
-    }
-    function scheduleSaveColumnPrefs() {
-      if (prefsSaveHandle) clearTimeout(prefsSaveHandle);
-      prefsSaveHandle = setTimeout(() => {
-        prefsSaveHandle = null;
-        saveColumnPrefs();
-      }, 250);
-    }
+    function formatSignedInt(value) { const n = Number(value || 0); if (!Number.isFinite(n) || n === 0) return { text: "0", cls: "" }; return { text: (n > 0 ? `+${Math.round(n)}` : String(Math.round(n))), cls: n > 0 ? "diff-pos" : "diff-neg" }; }
+
     function applyColumnPrefs() {
       const hidden = new Set(columnPrefs.hidden_columns || []);
       ALL_COLUMN_KEYS.forEach((key) => {
         const width = Number((columnPrefs.column_widths || {})[key] || DEFAULT_COLUMN_WIDTHS[key] || 140);
         const col = document.getElementById(`col_${key}`);
-        if (col) {
-          col.style.width = `${width}px`;
-          col.style.minWidth = `${width}px`;
-        }
+        if (col) { col.style.width = `${width}px`; col.style.minWidth = `${width}px`; }
         const hide = hidden.has(key);
-        document.querySelectorAll(`[data-col-key="${key}"]`).forEach((el) => {
-          el.style.display = hide ? "none" : "";
-        });
+        document.querySelectorAll(`[data-col-key="${key}"]`).forEach((el) => { el.style.display = hide ? "none" : ""; });
       });
     }
     function buildColumnMenu() {
       const menu = document.getElementById("columnMenu");
-      menu.innerHTML = ALL_COLUMN_KEYS.map((key) => {
-        const checked = !(columnPrefs.hidden_columns || []).includes(key);
-        return `<label class="colmenu-row"><input type="checkbox" data-colmenu-key="${esc(key)}" ${checked ? "checked" : ""}>${esc(key)}</label>`;
-      }).join("");
+      menu.innerHTML = ALL_COLUMN_KEYS.map((key) => { const checked = !(columnPrefs.hidden_columns || []).includes(key); return `<label class="colmenu-row"><input type="checkbox" data-colmenu-key="${esc(key)}" ${checked ? "checked" : ""}>${esc(key)}</label>`; }).join("");
       menu.querySelectorAll("input[data-colmenu-key]").forEach((input) => {
         input.addEventListener("change", () => {
           const key = String(input.getAttribute("data-colmenu-key") || "");
           const hidden = new Set(columnPrefs.hidden_columns || []);
-          if (input.checked) hidden.delete(key);
-          else hidden.add(key);
+          if (input.checked) hidden.delete(key); else hidden.add(key);
           columnPrefs.hidden_columns = ALL_COLUMN_KEYS.filter((k) => hidden.has(k));
           applyColumnPrefs();
           scheduleSaveColumnPrefs();
@@ -431,147 +201,186 @@
         if (!key) return;
         const handle = document.createElement("span");
         handle.className = "col-resize-handle";
-        handle.setAttribute("data-col-resize-key", key);
         th.appendChild(handle);
         handle.addEventListener("mousedown", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
+          ev.preventDefault(); ev.stopPropagation();
           const startX = Number(ev.clientX || 0);
           const col = document.getElementById(`col_${key}`);
           const startW = Number((columnPrefs.column_widths || {})[key] || (col ? col.getBoundingClientRect().width : DEFAULT_COLUMN_WIDTHS[key] || 140));
-          const onMove = (mv) => {
-            const delta = Number(mv.clientX || 0) - startX;
-            const next = Math.max(80, Math.min(1400, Math.round(startW + delta)));
-            columnPrefs.column_widths[key] = next;
-            applyColumnPrefs();
-          };
-          const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
-            scheduleSaveColumnPrefs();
-          };
-          window.addEventListener("mousemove", onMove);
-          window.addEventListener("mouseup", onUp);
+          const onMove = (mv) => { const next = Math.max(80, Math.min(1600, Math.round(startW + (Number(mv.clientX || 0) - startX)))); columnPrefs.column_widths[key] = next; applyColumnPrefs(); };
+          const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); scheduleSaveColumnPrefs(); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
         });
       });
     }
+    async function loadColumnPrefs() {
+      try {
+        const payload = await apiGet(`/api/coord/ui-preferences?page=${encodeURIComponent(PREFS_PAGE)}&key=${encodeURIComponent(PREFS_KEY)}`);
+        const value = (payload && typeof payload.pref_value === "object" && payload.pref_value) ? payload.pref_value : {};
+        const hidden = Array.isArray(value.hidden_columns) ? value.hidden_columns.map((v) => String(v || "").trim()).filter(Boolean) : [];
+        const widthsRaw = (value && typeof value.column_widths === "object" && value.column_widths) ? value.column_widths : {};
+        const widths = { ...DEFAULT_COLUMN_WIDTHS };
+        Object.entries(widthsRaw).forEach(([key, raw]) => {
+          const w = Number(raw || 0);
+          if (ALL_COLUMN_KEYS.includes(key) && Number.isFinite(w) && w >= 80 && w <= 1600) widths[key] = Math.round(w);
+        });
+        columnPrefs = { hidden_columns: hidden.filter((k) => ALL_COLUMN_KEYS.includes(k)), column_widths: widths };
+      } catch (_) { columnPrefs = { hidden_columns: [], column_widths: { ...DEFAULT_COLUMN_WIDTHS } }; }
+    }
+    async function saveColumnPrefs() {
+      const body = { page: PREFS_PAGE, key: PREFS_KEY, value: { hidden_columns: columnPrefs.hidden_columns.slice(), column_widths: { ...columnPrefs.column_widths } } };
+      try { await fetch("/api/coord/ui-preferences", { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(body) }); } catch (_) {}
+    }
+    function scheduleSaveColumnPrefs() { if (prefsSaveHandle) clearTimeout(prefsSaveHandle); prefsSaveHandle = setTimeout(() => { prefsSaveHandle = null; saveColumnPrefs(); }, 250); }
+    function scheduleLoad(resetOffset = true) { if (debounceHandle) clearTimeout(debounceHandle); debounceHandle = setTimeout(() => { debounceHandle = null; if (resetOffset) currentOffset = 0; loadRows(); }, 220); }
+
     function renderRows(rows) {
-      if (!rows.length) {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='17'>No findings found.</td></tr>";
-        return;
-      }
-      document.getElementById("rows").innerHTML = rows.map((r) => {
+      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No findings found.</td></tr>"; return; }
+      document.getElementById("rows").innerHTML = rows.map((r, idx) => {
+        const sizeDiff = formatSignedInt(r.size_difference || 0);
+        const timeDiff = formatSignedInt(r.duration_difference_ms || 0);
         return `<tr>
-          <td data-col-key="root_domain">${esc(r.root_domain || "")}</td>
-          <td data-col-key="result_type">${esc(r.result_type || "")}</td>
-          <td data-col-key="anomaly_note" class="col-note"><pre>${esc(r.anomaly_note || "")}</pre></td>
           <td data-col-key="url" class="col-url">${esc(r.url || "")}</td>
-          <td data-col-key="baseline_request_content"><pre>${esc(r.baseline_request_content || "")}</pre></td>
-          <td data-col-key="baseline_response_content"><pre>${esc(r.baseline_response_content || "")}</pre></td>
-          <td data-col-key="baseline_status">${esc(r.baseline_status || 0)}</td>
-          <td data-col-key="baseline_size">${esc(r.baseline_size || 0)}</td>
-          <td data-col-key="baseline_duration_ms">${esc(r.baseline_duration_ms || 0)}</td>
-          <td data-col-key="fuzzing_request_content"><pre>${esc(r.fuzzing_request_content || "")}</pre></td>
-          <td data-col-key="fuzzing_response_content"><pre>${esc(r.fuzzing_response_content || "")}</pre></td>
-          <td data-col-key="new_status">${esc(r.new_status || 0)}</td>
-          <td data-col-key="new_size">${esc(r.new_size || 0)}</td>
-          <td data-col-key="fuzzing_duration_ms">${esc(r.fuzzing_duration_ms || 0)}</td>
-          <td data-col-key="status_difference">${esc(r.status_difference || 0)}</td>
-          <td data-col-key="size_difference">${esc(r.size_difference || 0)}</td>
-          <td data-col-key="duration_difference_ms">${esc(r.duration_difference_ms || 0)}</td>
+          <td data-col-key="mutated_parameter" class="col-parameter">${esc(r.mutated_parameter || "")}</td>
+          <td data-col-key="mutated_value" class="col-payload">${esc(r.mutated_value || "")}</td>
+          <td data-col-key="new_status" class="col-code">${esc(r.new_status || 0)}</td>
+          <td data-col-key="response_actions" class="col-actions"><button type="button" class="mini-btn view-response-btn" data-row-index="${idx}">View Response</button> | <button type="button" class="mini-btn view-diff-btn" data-row-index="${idx}">View Diff</button></td>
+          <td data-col-key="size_difference" class="col-size-diff"><span class="${sizeDiff.cls}">${esc(sizeDiff.text)}</span></td>
+          <td data-col-key="duration_difference_ms" class="col-time-diff"><span class="${timeDiff.cls}">${esc(timeDiff.text)}</span></td>
+          <td data-col-key="notes_placeholder" class="col-notes"></td>
         </tr>`;
       }).join("");
       applyColumnPrefs();
-    }
-    function renderFiles() {
-      const domain = selectedDomain();
-      if (!domain || domain === "__all__") {
-        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>Select a single domain to view files.</td></tr>";
-        return;
-      }
-      const qAll = String(document.getElementById("fileSearch").value || "").trim().toLowerCase();
-      const qPath = String(document.getElementById("filePathFilter").value || "").trim().toLowerCase();
-      const qSize = String(document.getElementById("fileSizeFilter").value || "").trim().toLowerCase();
-      const filtered = currentFiles.filter((f) => {
-        const p = String(f.path || "");
-        const size = String(f.size || 0);
-        const blob = `${p} ${size}`.toLowerCase();
-        if (qAll && !blob.includes(qAll)) return false;
-        if (qPath && !p.toLowerCase().includes(qPath)) return false;
-        if (qSize && !size.toLowerCase().includes(qSize)) return false;
-        return true;
-      });
-      filtered.sort((a, b) => {
-        if (filesSortKey === "size") {
-          const diff = Number(a.size || 0) - Number(b.size || 0);
-          return filesSortDir === "asc" ? diff : -diff;
-        }
-        const diff = String(a.path || "").localeCompare(String(b.path || ""));
-        return filesSortDir === "asc" ? diff : -diff;
-      });
-      if (!filtered.length) {
-        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>No files found for current filters.</td></tr>";
-        return;
-      }
-      document.getElementById("fileRows").innerHTML = filtered.map((f) => {
-        const p = String(f.path || "");
-        const viewHref = `/api/coord/fuzzing/file?root_domain=${encodeURIComponent(domain)}&path=${encodeURIComponent(p)}`;
-        const dlHref = `${viewHref}&download=1`;
-        return `<tr>
-          <td>${esc(p)}</td>
-          <td>${esc(f.size || 0)}</td>
-          <td><a href="${viewHref}" target="_blank" rel="noopener noreferrer">View</a></td>
-          <td><a href="${dlHref}" target="_blank" rel="noopener noreferrer">Download</a></td>
-        </tr>`;
-      }).join("");
     }
     async function loadDomains() {
       const payload = await apiGet("/api/coord/fuzzing/domains?limit=20000");
       const domains = Array.isArray(payload.domains) ? payload.domains : [];
       const select = document.getElementById("domainSelect");
       const current = String(select.value || "__all__");
-      select.innerHTML = `<option value="__all__">All domains (${esc(domains.length)} domains)</option>` +
-        domains.map((d) => `<option value="${esc(d.root_domain)}">${esc(d.root_domain)} (A:${esc(d.anomalies || 0)} R:${esc(d.reflections || 0)})</option>`).join("");
+      select.innerHTML = `<option value="__all__">All domains (${esc(domains.length)} domains)</option>` + domains.map((d) => `<option value="${esc(d.root_domain)}">${esc(d.root_domain)} (A:${esc(d.anomalies || 0)} R:${esc(d.reflections || 0)})</option>`).join("");
       if ([...select.options].some((o) => o.value === current)) select.value = current;
       updateDownloadLink();
     }
     async function loadRows() {
-      const msg = document.getElementById("msg");
-      msg.textContent = "Loading...";
-      const domain = selectedDomain();
-      const q = String(document.getElementById("searchText").value || "").trim();
-      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
-      const params = new URLSearchParams();
-      params.set("limit", String(limit));
-      params.set("offset", String(Math.max(0, currentOffset)));
-      params.set("sort_key", sortKey);
-      params.set("sort_dir", sortDir);
-      if (domain && domain !== "__all__") params.set("root_domain", domain);
-      if (q) params.set("q", q);
-      const filters = getColumnFilters();
-      Object.entries(filters).forEach(([k, v]) => { if (v) params.set(`f_${k}`, v); });
-      const path = `/api/coord/fuzzing?${params.toString()}`;
+      const msg = document.getElementById("msg"); msg.textContent = "Loading...";
+      const domain = selectedDomain(); const q = String(document.getElementById("searchText").value || "").trim(); const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
+      const params = new URLSearchParams(); params.set("limit", String(limit)); params.set("offset", String(Math.max(0, currentOffset))); params.set("sort_key", sortKey); params.set("sort_dir", sortDir); if (domain && domain !== "__all__") params.set("root_domain", domain); if (q) params.set("q", q);
       try {
-        const payload = await apiGet(path);
+        const payload = await apiGet(`/api/coord/fuzzing?${params.toString()}`);
         currentRows = Array.isArray(payload.rows) ? payload.rows : [];
-        currentFiles = Array.isArray(payload.files) ? payload.files : [];
         currentOffset = Number(payload.offset || 0);
-        renderCards(payload);
-        renderRows(currentRows);
-        renderFiles();
-        updatePager(payload);
-        setSortIndicators();
+        renderCards(payload); renderRows(currentRows); setSortIndicators();
         msg.textContent = `Loaded ${payload.rows_returned || 0} row(s) from offset ${payload.offset || 0}.`;
       } catch (e) {
-        document.getElementById("rows").innerHTML = `<tr><td colspan='17'>Failed to load fuzzing results: ${esc(e.message)}</td></tr>`;
-        document.getElementById("fileRows").innerHTML = "<tr><td colspan='4'>Load failed.</td></tr>";
+        document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load fuzzing results: ${esc(e.message)}</td></tr>`;
         msg.textContent = "Load failed.";
       }
     }
-    async function refreshDomainsAndRows() {
-      try { await loadDomains(); } catch (_) {}
-      currentOffset = 0;
-      await loadRows();
+    async function refreshDomainsAndRows() { try { await loadDomains(); } catch (_) {} currentOffset = 0; await loadRows(); }
+
+    function normalizeResponseRecord(payload) {
+      const baseline = (payload && typeof payload.baseline === "object" && payload.baseline) ? payload.baseline : {};
+      let fuzzing = (payload && typeof payload.anomaly === "object" && payload.anomaly) ? payload.anomaly : {};
+      if (!fuzzing || !Object.keys(fuzzing).length) fuzzing = (payload && typeof payload.response === "object" && payload.response) ? payload.response : {};
+      return { baseline, fuzzing };
+    }
+    function formatHeadersText(responseObj) {
+      if (!responseObj || typeof responseObj !== "object") return "";
+      if (responseObj.response_headers && typeof responseObj.response_headers === "object") {
+        const lines = Object.entries(responseObj.response_headers).map(([k, v]) => `${String(k)}: ${String(v ?? "")}`);
+        if (lines.length) return lines.join("\n");
+      }
+      const names = Array.isArray(responseObj.response_header_names) ? responseObj.response_header_names : [];
+      if (names.length) return names.map((name) => `${String(name)}:`).join("\n");
+      return "";
+    }
+    function formatBodyText(responseObj) { if (!responseObj || typeof responseObj !== "object") return ""; return String(responseObj.body_preview || ""); }
+    async function fetchResultPayloadForRow(row) {
+      const domain = String(row.root_domain || "").trim().toLowerCase(); const resultPath = String(row.result_file || "").trim();
+      if (!domain || !resultPath) throw new Error("result file metadata missing");
+      const cacheKey = `${domain}::${resultPath}`; if (resultPayloadCache.has(cacheKey)) return resultPayloadCache.get(cacheKey);
+      const data = await apiGet(`/api/coord/fuzzing/file?root_domain=${encodeURIComponent(domain)}&path=${encodeURIComponent(resultPath)}`);
+      let payload = data; if (typeof data === "string") { try { payload = JSON.parse(data); } catch { payload = {}; } }
+      if (!payload || typeof payload !== "object") payload = {};
+      resultPayloadCache.set(cacheKey, payload);
+      return payload;
+    }
+    function openResponseModal(title, headersText, bodyText) {
+      document.getElementById("responseModalTitle").textContent = title;
+      document.getElementById("responseHeadersBox").value = headersText;
+      document.getElementById("responseBodyBox").value = bodyText;
+      document.getElementById("responseModal").classList.add("open");
+    }
+    function closeResponseModal() { document.getElementById("responseModal").classList.remove("open"); }
+    function renderDiffLines(leftText, rightText) {
+      const a = String(leftText || "").split("\n");
+      const b = String(rightText || "").split("\n");
+      const outA = []; const outB = []; let i = 0; let j = 0;
+      while (i < a.length || j < b.length) {
+        const left = i < a.length ? a[i] : null;
+        const right = j < b.length ? b[j] : null;
+        if (left !== null && right !== null && left === right) { outA.push({ text: left, cls: "same" }); outB.push({ text: right, cls: "same" }); i += 1; j += 1; continue; }
+        const nextLeftInB = left === null ? -1 : b.indexOf(left, j + 1);
+        const nextRightInA = right === null ? -1 : a.indexOf(right, i + 1);
+        if (right !== null && (nextLeftInB === -1 || (nextRightInA !== -1 && (nextRightInA - i) < (nextLeftInB - j)))) { outA.push({ text: "", cls: "pad" }); outB.push({ text: right, cls: "added" }); j += 1; continue; }
+        if (left !== null && (nextRightInA === -1 || (nextLeftInB !== -1 && (nextLeftInB - j) < (nextRightInA - i)))) { outA.push({ text: left, cls: "removed" }); outB.push({ text: "", cls: "pad" }); i += 1; continue; }
+        outA.push({ text: left ?? "", cls: "changed" }); outB.push({ text: right ?? "", cls: "changed" });
+        i += left === null ? 0 : 1; j += right === null ? 0 : 1;
+      }
+      return { outA, outB };
+    }
+    function renderDiffPane(node, lines) { node.innerHTML = lines.map((line) => `<div class="diff-line ${line.cls}">${esc(line.text)}</div>`).join(""); }
+    function enableSyncedScroll(leftEl, rightEl) {
+      let syncing = false;
+      function sync(source, target) {
+        if (syncing) return;
+        syncing = true;
+        const sourceRange = Math.max(1, source.scrollHeight - source.clientHeight);
+        const ratio = source.scrollTop / sourceRange;
+        const targetRange = Math.max(1, target.scrollHeight - target.clientHeight);
+        target.scrollTop = ratio * targetRange;
+        syncing = false;
+      }
+      leftEl.onscroll = () => sync(leftEl, rightEl);
+      rightEl.onscroll = () => sync(rightEl, leftEl);
+    }
+    function openDiffModal(title, leftText, rightText) {
+      document.getElementById("diffModalTitle").textContent = title;
+      const leftNode = document.getElementById("diffLeft");
+      const rightNode = document.getElementById("diffRight");
+      const diff = renderDiffLines(leftText, rightText);
+      renderDiffPane(leftNode, diff.outA);
+      renderDiffPane(rightNode, diff.outB);
+      enableSyncedScroll(leftNode, rightNode);
+      leftNode.scrollTop = 0; rightNode.scrollTop = 0;
+      document.getElementById("diffModal").classList.add("open");
+    }
+    function closeDiffModal() { document.getElementById("diffModal").classList.remove("open"); }
+
+    async function handleViewResponse(rowIndex) {
+      const row = currentRows[rowIndex]; if (!row) return;
+      const title = `Response: ${String(row.url || "")}`;
+      try {
+        const payload = await fetchResultPayloadForRow(row);
+        const rec = normalizeResponseRecord(payload);
+        openResponseModal(title, formatHeadersText(rec.fuzzing), formatBodyText(rec.fuzzing));
+      } catch (err) {
+        openResponseModal(title, "", `Failed to load response: ${String((err && err.message) || err || "unknown error")}`);
+      }
+    }
+    async function handleViewDiff(rowIndex) {
+      const row = currentRows[rowIndex]; if (!row) return;
+      const title = `Diff: ${String(row.url || "")}`;
+      try {
+        const payload = await fetchResultPayloadForRow(row);
+        const rec = normalizeResponseRecord(payload);
+        const leftText = `Headers\n${formatHeadersText(rec.baseline)}\n\nBody\n${formatBodyText(rec.baseline)}`;
+        const rightText = `Headers\n${formatHeadersText(rec.fuzzing)}\n\nBody\n${formatBodyText(rec.fuzzing)}`;
+        openDiffModal(title, leftText, rightText);
+      } catch (err) {
+        const failed = `Failed to load diff: ${String((err && err.message) || err || "unknown error")}`;
+        openDiffModal(title, failed, failed);
+      }
     }
 
     hydrateTokenFromCookie();
@@ -580,82 +389,31 @@
     document.getElementById("domainSelect").addEventListener("change", () => { updateDownloadLink(); scheduleLoad(true); });
     document.getElementById("searchText").addEventListener("input", () => scheduleLoad(true));
     document.getElementById("limit").addEventListener("change", () => scheduleLoad(true));
-    [
-      "colRootDomain", "colResultType", "colAnomalyNote", "colUrl",
-      "colBaselineRequestContent", "colBaselineResponseContent", "colFuzzingRequestContent", "colFuzzingResponseContent",
-      "colBaselineStatus", "colFuzzingStatus", "colStatusDiff",
-      "colBaselineSize", "colFuzzingSize", "colSizeDiff",
-      "colBaselineDuration", "colFuzzingDuration", "colDurationDiff",
-    ].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => scheduleLoad(true));
-    });
-    document.getElementById("prevPageBtn").addEventListener("click", () => {
-      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
-      currentOffset = Math.max(0, currentOffset - limit);
-      loadRows();
-    });
-    document.getElementById("nextPageBtn").addEventListener("click", () => {
-      const limit = Math.max(1, Math.min(2000, Number(document.getElementById("limit").value || DEFAULT_LIMIT)));
-      currentOffset = currentOffset + limit;
-      loadRows();
-    });
     document.querySelectorAll("th[data-key]").forEach((th) => {
       th.addEventListener("click", () => {
         const key = String(th.getAttribute("data-key") || "");
         if (!key) return;
         if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
-        else {
-          sortKey = key;
-          sortDir = (
-            key === "size_difference"
-            || key === "status_difference"
-            || key === "duration_difference_ms"
-            || key === "baseline_status"
-            || key === "new_status"
-            || key === "baseline_size"
-            || key === "new_size"
-            || key === "baseline_duration_ms"
-            || key === "fuzzing_duration_ms"
-          ) ? "desc" : "asc";
-        }
+        else { sortKey = key; sortDir = (key === "new_status" || key === "size_difference" || key === "duration_difference_ms") ? "desc" : "asc"; }
         scheduleLoad(true);
       });
     });
-    document.querySelectorAll("th[data-files-key]").forEach((th) => {
-      th.addEventListener("click", () => {
-        const key = String(th.getAttribute("data-files-key") || "");
-        if (!key) return;
-        if (filesSortKey === key) filesSortDir = filesSortDir === "asc" ? "desc" : "asc";
-        else {
-          filesSortKey = key;
-          filesSortDir = key === "size" ? "desc" : "asc";
-        }
-        setSortIndicators();
-        renderFiles();
-      });
+    document.getElementById("rows").addEventListener("click", (ev) => {
+      const responseBtn = ev.target.closest(".view-response-btn");
+      if (responseBtn) { const idx = Number(responseBtn.getAttribute("data-row-index") || "-1"); if (idx >= 0) handleViewResponse(idx); return; }
+      const diffBtn = ev.target.closest(".view-diff-btn");
+      if (diffBtn) { const idx = Number(diffBtn.getAttribute("data-row-index") || "-1"); if (idx >= 0) handleViewDiff(idx); }
     });
-    document.getElementById("fileSearch").addEventListener("input", renderFiles);
-    document.getElementById("filePathFilter").addEventListener("input", renderFiles);
-    document.getElementById("fileSizeFilter").addEventListener("input", renderFiles);
-    document.getElementById("columnToggleBtn").addEventListener("click", (ev) => {
-      ev.preventDefault();
-      const menu = document.getElementById("columnMenu");
-      menu.classList.toggle("open");
-    });
-    document.addEventListener("click", (ev) => {
-      const wrap = document.querySelector(".colmenu-wrap");
-      const menu = document.getElementById("columnMenu");
-      if (!wrap || !menu) return;
-      if (!wrap.contains(ev.target)) menu.classList.remove("open");
-    });
-    setSortIndicators();
+    document.getElementById("responseModalCloseBtn").addEventListener("click", closeResponseModal);
+    document.getElementById("diffModalCloseBtn").addEventListener("click", closeDiffModal);
+    document.getElementById("responseModal").addEventListener("click", (ev) => { if (ev.target === document.getElementById("responseModal")) closeResponseModal(); });
+    document.getElementById("diffModal").addEventListener("click", (ev) => { if (ev.target === document.getElementById("diffModal")) closeDiffModal(); });
+    document.getElementById("columnToggleBtn").addEventListener("click", (ev) => { ev.preventDefault(); const menu = document.getElementById("columnMenu"); menu.classList.toggle("open"); });
+    document.addEventListener("click", (ev) => { const wrap = document.querySelector(".colmenu-wrap"); const menu = document.getElementById("columnMenu"); if (!wrap || !menu) return; if (!wrap.contains(ev.target)) menu.classList.remove("open"); });
+
     installColumnResizers();
-    loadColumnPrefs()
-      .then(() => {
-        buildColumnMenu();
-        applyColumnPrefs();
-      })
-      .finally(() => refreshDomainsAndRows());
+    setSortIndicators();
+    loadColumnPrefs().then(() => { buildColumnMenu(); applyColumnPrefs(); }).finally(() => refreshDomainsAndRows());
   </script>
 </body>
 </html>

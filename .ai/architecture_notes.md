@@ -93,3 +93,5 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 
 
 - Added coordinator_ui_preferences table for durable operator UI state. Server routes own auth + HTTP handling; store layer owns upsert/query of JSON preference payloads by page/key.
+
+- Fozzy response payload now includes esponse_headers (normalized map) in addition to header names, enabling rich modal rendering in coordinator web UI without extra network requests.

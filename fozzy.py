@@ -118,6 +118,23 @@ FOZZY_BASE_DIR = Path(__file__).resolve().parent
 FOZZY_DEFAULT_CONFIG_PATH = FOZZY_BASE_DIR / "config" / "fozzy.json"
 
 _FOZZY_CONFIG_NESTED_MERGE_KEYS = frozenset({"request_headers", "default_generic_by_type"})
+_DEFAULT_REFLECTION_IGNORE_EXACT = [
+    "test",
+    "0",
+    "1",
+    "true",
+    "false",
+    "null",
+    "none",
+    "undefined",
+    "yes",
+    "no",
+    "on",
+    "off",
+    "ok",
+    "n/a",
+    "na",
+]
 
 
 def default_fozzy_config() -> dict[str, Any]:
@@ -137,7 +154,7 @@ def default_fozzy_config() -> dict[str, Any]:
         "max_requests_per_endpoint": None,
         "live_report_interval_seconds": 5.0,
         "body_preview_limit": 50000,
-        "reflection_alert_ignore_exact": ["test"," ",""],
+        "reflection_alert_ignore_exact": list(_DEFAULT_REFLECTION_IGNORE_EXACT),
         "default_generic_by_type": {
             "bool": "true",
             "int": "1",
@@ -219,12 +236,23 @@ def normalize_fozzy_config(cfg: dict[str, Any]) -> None:
             cfg["max_requests_per_endpoint"] = None if mre <= 0 else mre
     cfg["live_report_interval_seconds"] = max(0.5, float(cfg.get("live_report_interval_seconds", 5.0)))
     cfg["body_preview_limit"] = max(256, int(cfg.get("body_preview_limit", 2048)))
-    raw_ign = cfg.get("reflection_alert_ignore_exact", ["test"])
+    raw_ign = cfg.get("reflection_alert_ignore_exact", list(_DEFAULT_REFLECTION_IGNORE_EXACT))
     if not isinstance(raw_ign, list):
-        raw_ign = ["test"]
-    cfg["reflection_alert_ignore_exact"] = [str(x) for x in raw_ign if str(x).strip() != ""]
+        raw_ign = list(_DEFAULT_REFLECTION_IGNORE_EXACT)
+    normalized_ignore_exact: list[str] = []
+    seen: set[str] = set()
+    for item in raw_ign:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_ignore_exact.append(value)
+    cfg["reflection_alert_ignore_exact"] = normalized_ignore_exact
     if not cfg["reflection_alert_ignore_exact"]:
-        cfg["reflection_alert_ignore_exact"] = ["test"]
+        cfg["reflection_alert_ignore_exact"] = list(_DEFAULT_REFLECTION_IGNORE_EXACT)
     if not isinstance(cfg.get("type_priority"), list) or not cfg["type_priority"]:
         cfg["type_priority"] = list(default_fozzy_config()["type_priority"])
     else:
@@ -385,7 +413,7 @@ def is_low_signal_reflection_fuzz_value(fuzz_value: Any) -> bool:
     text = str(fuzz_value).strip()
     if not text:
         return True
-    ignored = active_fozzy_config().get("reflection_alert_ignore_exact", ["test"])
+    ignored = active_fozzy_config().get("reflection_alert_ignore_exact", list(_DEFAULT_REFLECTION_IGNORE_EXACT))
     lowered = {str(x).strip().lower() for x in ignored if isinstance(x, str) and str(x).strip()}
     if text.lower() in lowered:
         return True
@@ -1089,6 +1117,36 @@ def _extract_response_header_names(headers_obj: Any) -> list[str]:
     return deduped
 
 
+def _normalize_response_headers(headers_obj: Any) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if headers_obj is None:
+        return out
+    try:
+        items = list(headers_obj.items())
+    except Exception:
+        items = []
+    for key, value in items:
+        name = str(key or "").strip()
+        if not name:
+            continue
+        if isinstance(value, (list, tuple)):
+            norm_val = ", ".join(str(part) for part in value if str(part).strip())
+        else:
+            norm_val = str(value or "")
+        out[name] = norm_val
+    if out:
+        return out
+    try:
+        for key in headers_obj.keys():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            out[name] = str(headers_obj.get(key, "") or "")
+    except Exception:
+        pass
+    return out
+
+
 def perform_fozzy_http_request(
     *,
     method: str,
@@ -1127,6 +1185,7 @@ def perform_fozzy_http_request(
             "body_preview": body_preview,
             "elapsed_ms": elapsed_ms,
             "response_header_names": header_names,
+            "response_headers": _normalize_response_headers(response.get("headers")),
             "request_body_size": len(body or b""),
         }
         if not bool(result.get("ok", False)):
@@ -1151,6 +1210,7 @@ def perform_fozzy_http_request(
             "body_preview": response.body.decode("utf-8", errors="replace"),
             "elapsed_ms": int(response.elapsed_ms or 0),
             "response_header_names": _extract_response_header_names(response.headers),
+            "response_headers": _normalize_response_headers(response.headers),
             "request_body_size": len(body or b""),
         }
     except Exception as exc:
@@ -1162,6 +1222,7 @@ def perform_fozzy_http_request(
             "body_preview": "",
             "elapsed_ms": 0,
             "response_header_names": [],
+            "response_headers": {},
             "request_body_size": len(body or b""),
             "error": str(exc),
         }
