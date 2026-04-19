@@ -957,3 +957,25 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m pytest -q tests/test_http_client_unit.py tests/test_runtime_unit.py tests/test_client_and_cli_unit.py` -> 31 passed.
   - `py_compile` check on changed runtime files passed.
 - Why: operator needed substantially richer worker diagnostics (full request/response context + clear worker action state + explicit error severity) and direct compatibility with View Logs ingestion/search.
+- Removed server-side byte truncation paths for log viewing/download:
+  - Tail readers now collect complete lines from file end without cutting entries mid-line.
+  - `/api/coord/log-download` and `/api/coord/worker-log-download` now package full source content.
+  - Worker VM docker full-read command no longer uses `head -c`.
+- Updated UI truncation behavior to presentation-only:
+  - `templates/view_logs.html.j2` clamps long text cells with fixed-height scrollable controls and adds double-click copy for full cell text.
+  - `templates/server_dashboard.html.j2` no longer slices log tails in JS.
+- Validation: `python -m py_compile server.py` and `python -m pytest -q tests/test_refactor_modules.py tests/test_reporting_and_store_helpers.py tests/test_server_auth_cookie.py tests/test_server_disconnect_handling.py` (47 passed).
+- Why: preserve full log fidelity in API/download payloads while preventing oversized UI controls from expanding row height.
+- Fixed immediate worker crawl startup failure caused by malformed JSON in `config/page_existence_criteria_config.json` (`"Page Not Found""no such page"` typo).
+- Hardened `nightmare.py` page-existence criteria loading:
+  - Invalid criteria config now logs a warning and falls back to defaults instead of aborting the run.
+  - Applied both in startup config read path and lazy-load helper.
+- Hardened subprocess startup diagnostics in `coordinator_app/runtime.py::run_subprocess(...)`:
+  - Writes startup failure details into per-domain coordinator logs.
+  - Adds automatic fallback from `python`/`python3` command names to `sys.executable` when command lookup fails.
+- Validation:
+  - `python -m json.tool config/page_existence_criteria_config.json`
+  - `python -m py_compile nightmare.py coordinator_app/runtime.py`
+  - `python nightmare.py --status --config config/nightmare.json`
+  - `python -m pytest -q tests/test_runtime_unit.py tests/test_client_and_cli_unit.py tests/test_reporting_and_store_helpers.py tests/test_refactor_modules.py` -> 62 passed.
+- Why: workers were claiming targets then failing before artifacts were produced; malformed criteria config was causing fatal startup exceptions.

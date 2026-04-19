@@ -131,7 +131,7 @@
           <td>unique=${esc(d.unique_urls)}<br>requested=${esc(d.requested_urls)}</td>
           <td>anomalies=${esc(d.anomalies)}<br>reflections=${esc(d.reflections)}</td>
           <td class="rowlinks">${links || "<span class='muted'>none</span>"}</td>
-          <td><pre class="log">${esc((d.latest_log_tail || "").slice(-4000))}</pre></td>
+          <td><pre class="log">${esc(d.latest_log_tail || "")}</pre></td>
         </tr>`;
       }).join("");
       if (!dashboardGridCtrl) {

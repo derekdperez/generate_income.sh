@@ -1066,7 +1066,17 @@ def ensure_page_existence_criteria_loaded() -> None:
     global _PAGE_EXISTENCE_CRITERIA_LOADED
     if _PAGE_EXISTENCE_CRITERIA_LOADED:
         return
-    raw = read_json_file(PAGE_EXISTENCE_CRITERIA_CONFIG_PATH) if PAGE_EXISTENCE_CRITERIA_CONFIG_PATH.exists() else {}
+    raw: dict[str, Any] = {}
+    if PAGE_EXISTENCE_CRITERIA_CONFIG_PATH.exists():
+        try:
+            raw = read_json_file(PAGE_EXISTENCE_CRITERIA_CONFIG_PATH)
+        except Exception as exc:
+            print(
+                f"[nightmare] warning: failed to parse page existence criteria config "
+                f"{PAGE_EXISTENCE_CRITERIA_CONFIG_PATH}: {exc}; using defaults",
+                file=sys.stderr,
+                flush=True,
+            )
     apply_page_existence_criteria_config(raw)
 
 
@@ -6328,7 +6338,16 @@ def main() -> None:
     page_existence_criteria_path = resolve_config_path(
         page_existence_criteria_path_raw or PAGE_EXISTENCE_CRITERIA_CONFIG_PATH.name
     )
-    page_existence_criteria_config = read_json_file(page_existence_criteria_path)
+    try:
+        page_existence_criteria_config = read_json_file(page_existence_criteria_path)
+    except Exception as exc:
+        print(
+            f"[nightmare] warning: invalid page existence criteria config "
+            f"{page_existence_criteria_path}: {exc}; using defaults",
+            file=sys.stderr,
+            flush=True,
+        )
+        page_existence_criteria_config = {}
     apply_page_existence_criteria_config(page_existence_criteria_config)
 
     if bool(getattr(args, "status", False)):

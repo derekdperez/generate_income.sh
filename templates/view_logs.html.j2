@@ -28,6 +28,8 @@
     th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
     #logEventsTable th, #logEventsTable td { overflow-wrap: anywhere; word-break: break-word; }
     code { white-space: pre-wrap; word-break: break-word; }
+    .cell-clamp { display: block; max-height: 8.5em; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .copyable-cell { cursor: copy; }
     .sev-debug { color: #64748b; }
     .sev-info { color: #0369a1; font-weight: 600; }
     .sev-warning { color: #b45309; font-weight: 600; }
@@ -335,10 +337,10 @@
             <td>${esc(datePart)}</td>
             <td>${esc(timePart)}</td>
             <td><span class="sev-${esc(sev)}">${esc(sev)}</span></td>
-            <td>${esc(row.description || "")}</td>
+            <td><div class="cell-clamp copyable-cell" title="Double-click to copy full text">${esc(row.description || "")}</div></td>
             <td>${esc(row.machine || "")}</td>
             <td>${esc(row.source_id || "")}</td>
-            <td><code>${esc(row.raw_line || "")}</code></td>
+            <td><code class="cell-clamp copyable-cell" title="Double-click to copy full text">${esc(row.raw_line || "")}</code></td>
           </tr>`;
         }).join("");
       }
@@ -397,8 +399,8 @@
           <td>${esc(row.container_name || "")}</td>
           <td>${esc(row.instance_id || "")}</td>
           <td>${esc(row.line_count || 0)}</td>
-          <td>${esc(row.error || "")}</td>
-          <td><code>${esc(row.preview || "")}</code></td>
+          <td><div class="cell-clamp copyable-cell" title="Double-click to copy full text">${esc(row.error || "")}</div></td>
+          <td><code class="cell-clamp copyable-cell" title="Double-click to copy full text">${esc(row.preview || "")}</code></td>
         </tr>`;
       }).join("");
     }
@@ -483,6 +485,19 @@
     document.getElementById("machineFilter").addEventListener("keydown", (e) => { if (e.key === "Enter") loadEvents({ useCacheFirst: true }); });
     document.getElementById("sortKey").addEventListener("change", () => loadEvents({ useCacheFirst: true }));
     document.getElementById("sortDir").addEventListener("change", () => loadEvents({ useCacheFirst: true }));
+    document.addEventListener("dblclick", async (event) => {
+      const origin = event ? event.target : null;
+      const target = origin instanceof Element ? origin.closest(".copyable-cell") : null;
+      if (!target) return;
+      const text = String(target.textContent || "");
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById("msg").textContent = "Copied full cell text.";
+      } catch (_e) {
+        document.getElementById("msg").textContent = "Copy failed.";
+      }
+    });
     (async () => {
       await refreshSources(false, { useCacheFirst: true });
       await loadEvents({ useCacheFirst: true });

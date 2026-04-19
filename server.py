@@ -69,7 +69,6 @@ DEFAULT_OUTPUT_ROOT = BASE_DIR / "output"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 443
 DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "server.json"
-MAX_LOG_TAIL_BYTES = 64 * 1024
 DEFAULT_COORDINATOR_LEASE_SECONDS = 120
 RESET_COORDINATOR_CONFIRM = "RESET_COORDINATOR_DATA"
 DEFAULT_EXTRACTOR_MATCH_LIMIT = 250
@@ -254,24 +253,35 @@ def _discover_domain_log_files(domain_dir: Path, domain: str) -> list[Path]:
     return sorted(out, key=lambda p: p.name.lower())
 
 
-def _read_tail_text(path: Path, max_bytes: int = MAX_LOG_TAIL_BYTES) -> str:
+def _read_tail_lines(path: Path, *, lines: int = DEFAULT_VIEW_LOG_LINES) -> str:
+    line_count = max(1, int(lines or DEFAULT_VIEW_LOG_LINES))
     try:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - max_bytes), os.SEEK_SET)
-            data = handle.read()
-        return data.decode("utf-8", errors="replace")
+            cursor = handle.tell()
+            if cursor <= 0:
+                return ""
+            newline_target = line_count + 1
+            chunk_size = 64 * 1024
+            newline_count = 0
+            chunks: list[bytes] = []
+            while cursor > 0 and newline_count < newline_target:
+                read_size = min(chunk_size, cursor)
+                cursor -= read_size
+                handle.seek(cursor, os.SEEK_SET)
+                chunk = handle.read(read_size)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+        data = b"".join(reversed(chunks))
+        text = data.decode("utf-8", errors="replace")
     except Exception:
         return ""
-
-
-def _read_tail_lines(path: Path, *, lines: int = DEFAULT_VIEW_LOG_LINES, max_bytes: int = MAX_LOG_TAIL_BYTES) -> str:
-    text = _read_tail_text(path, max_bytes=max_bytes)
-    if not text:
-        return ""
-    line_count = max(1, int(lines or DEFAULT_VIEW_LOG_LINES))
-    return "\n".join(text.splitlines()[-line_count:])
+    rows = text.splitlines()
+    if len(rows) <= line_count:
+        return "\n".join(rows)
+    return "\n".join(rows[-line_count:])
 
 
 def _run_command(command: list[str], *, cwd: Optional[Path] = None, timeout_seconds: int = 20) -> tuple[bool, str, str, int]:
@@ -951,13 +961,14 @@ def _parse_log_events_from_text(text: str, *, source: dict[str, Any]) -> list[di
         or "unknown"
     )
     for raw_line in str(text or "").splitlines():
-        line = str(raw_line or "").strip()
-        if not line:
+        line = str(raw_line or "")
+        if not line.strip():
             continue
         payload: dict[str, Any] = {}
-        if line.startswith("{") and line.endswith("}"):
+        json_line = line.strip()
+        if json_line.startswith("{") and json_line.endswith("}"):
             try:
-                parsed = json.loads(line)
+                parsed = json.loads(json_line)
                 if isinstance(parsed, dict):
                     payload = parsed
             except Exception:
@@ -1459,8 +1470,6 @@ def _run_compose_logs_for_service(
             errors.append(f"{' '.join(cmd)} -> {msg}")
             continue
         text = "\n".join([part for part in [stdout.strip(), stderr.strip()] if part]).strip()
-        if full:
-            text = text[:MAX_LOG_DOWNLOAD_BYTES]
         return True, text, ""
     return False, "", " | ".join(errors) if errors else "compose logs command failed"
 
@@ -1498,7 +1507,7 @@ def _read_docker_log_full(container_name: str, *, app_root: Optional[Path] = Non
     ok, stdout, stderr, exit_code = _run_command(cmd, timeout_seconds=60)
     if ok:
         text = "\n".join([part for part in [stdout.strip(), stderr.strip()] if part]).strip()
-        return True, text[:MAX_LOG_DOWNLOAD_BYTES], ""
+        return True, text, ""
     docker_error = stderr.strip() or f"docker logs failed with exit code {exit_code}"
     errors: list[str] = [docker_error]
 
@@ -1545,7 +1554,7 @@ def _read_worker_vm_docker_log_full(instance_id: str, container_name: str) -> tu
     if not iid or not name:
         return False, "", "instance_id and container_name are required"
     settings = _worker_ssm_settings_from_env()
-    log_cmd = f"docker logs {shlex.quote(name)} 2>&1 | head -c {MAX_LOG_DOWNLOAD_BYTES}"
+    log_cmd = f"docker logs {shlex.quote(name)} 2>&1 || true"
     result = _run_ssm_shell(log_cmd, settings=settings, instance_ids=[iid])
     if not result.get("ok"):
         return False, "", str(result.get("error", "SSM log command failed") or "SSM log command failed")
@@ -1595,7 +1604,7 @@ def _read_log_source_text(
     if full:
         try:
             with resolved.open("rb") as handle:
-                data = handle.read(MAX_LOG_DOWNLOAD_BYTES)
+                data = handle.read()
             return True, data.decode("utf-8", errors="replace"), ""
         except Exception as exc:
             return False, "", str(exc)
@@ -1664,7 +1673,7 @@ def collect_dashboard_data(output_root: Path, coordinator_store: CoordinatorStor
                     "fozzy_results_html": _to_repo_relative_path(fozzy_results_html) if fozzy_results_html else None,
                 },
                 "logs": [str(p) for p in log_files],
-                "latest_log_tail": _read_tail_text(log_files[-1]) if log_files else "",
+                "latest_log_tail": _read_tail_lines(log_files[-1], lines=120) if log_files else "",
             }
         )
 
@@ -2867,7 +2876,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if resolved is None or not resolved.is_file():
                 self._write_json({"error": "invalid log path"}, status=400)
                 return
-            self._write_json({"path": str(resolved), "tail": _read_tail_text(resolved)})
+            self._write_json({"path": str(resolved), "tail": _read_tail_lines(resolved, lines=DEFAULT_VIEW_LOG_LINES)})
             return
         if path == "/api/coord/database-status":
             if self.coordinator_store is None:
@@ -3759,7 +3768,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "no log files found for worker", "worker_id": worker_id}, status=404)
                 return
             zip_buffer = io.BytesIO()
-            total_bytes = 0
             with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
                 for idx, link in enumerate(links, start=1):
                     rel = str(link.get("relative", "") or "").strip()
@@ -3774,15 +3782,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         continue
                     if not data:
                         continue
-                    if total_bytes >= MAX_LOG_DOWNLOAD_BYTES:
-                        break
-                    remaining = MAX_LOG_DOWNLOAD_BYTES - total_bytes
-                    chunk = bytes(data[:remaining])
-                    if not chunk:
-                        continue
-                    total_bytes += len(chunk)
                     entry_name = f"{idx:02d}_{Path(rel).name}"
-                    zf.writestr(entry_name, chunk)
+                    zf.writestr(entry_name, data)
             payload = zip_buffer.getvalue()
             if not payload:
                 self._write_json({"error": "no readable log content found for worker", "worker_id": worker_id}, status=404)

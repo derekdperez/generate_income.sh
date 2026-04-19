@@ -266,3 +266,8 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Use structured request/response events from `http_client.request_json(...)` (method/url/status/elapsed + payloads).
   - Keep tracing configurable by env (`COORDINATOR_HTTP_LOG_DETAILS`, `COORDINATOR_HTTP_LOG_PAYLOADS`, `COORDINATOR_HTTP_LOG_MAX_CHARS`, `COORDINATOR_HTTP_REDACT_AUTH_HEADER`).
   - Suppress default httpx/httpcore info chatter so logs remain queryable and non-duplicative in View Logs.
+- Log fidelity convention: server log APIs/downloads must not truncate individual entries or file content by fixed byte caps; truncate/clamp only in the UI layer.
+- Tailing convention: when returning tail lines, use line-aware readers that avoid cutting entries mid-line.
+- View Logs UI convention: long `description`/`raw_line`/diagnostic cells should use fixed-size scrollable controls, and copy interactions should expose full underlying text.
+- Nightmare startup resilience convention: non-critical auxiliary config parse failures (page existence criteria) should degrade to defaults with explicit warnings rather than crash worker runs.
+- Worker subprocess convention: `run_subprocess` should persist startup failures into coordinator per-domain log files, and python command invocation should tolerate missing `python` aliases by retrying with `sys.executable`.

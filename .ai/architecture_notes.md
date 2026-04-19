@@ -122,3 +122,9 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Worker execution (`coordinator.py`) now emits structured state/action logs directly in runtime (claim->execute->artifact->complete).
   - Coordinator API transport logging is centralized in `http_client.request_json(...)` and invoked by `CoordinatorClient`, so request/response tracing behavior stays consistent across all coordinator endpoints.
   - Logging backend (`nightmare_shared/logging_utils.py`) suppresses default httpx/httpcore info logs to preserve a single structured telemetry stream for View Logs and downstream parsing.
+- Log delivery boundary refinement:
+  - Backend log endpoints now prioritize full-fidelity payloads (no byte-slicing in source/download paths).
+  - Presentation constraints (row/cell size control) are handled in templates/JS (`view_logs`, dashboard), keeping transport data complete for copy/export workflows.
+- Crawl startup fault-tolerance refinement:
+  - `nightmare.py` now treats page-existence criteria parse errors as recoverable configuration faults and continues with sanitized defaults.
+  - Coordinator subprocess wrapper now records pre-exec failures in log artifacts and performs interpreter fallback for command-name portability.

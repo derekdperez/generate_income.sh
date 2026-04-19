@@ -386,13 +386,40 @@ def run_subprocess(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
     with log_path.open("a", encoding="utf-8") as log_handle:
         log_handle.write(f"\n=== RUN {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n$ {' '.join(cmd)}\n")
         log_handle.flush()
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(cwd),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        run_cmd = list(cmd)
+        try:
+            proc = subprocess.Popen(
+                run_cmd,
+                cwd=str(cwd),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            command_name = str(run_cmd[0] if run_cmd else "").strip().lower()
+            if command_name in {"python", "python3"} and str(sys.executable or "").strip():
+                fallback_cmd = [sys.executable, *run_cmd[1:]]
+                log_handle.write(
+                    f"[coordinator] startup fallback: command '{run_cmd[0]}' was not found; "
+                    f"retrying with sys.executable '{sys.executable}'\n"
+                )
+                log_handle.write(f"$ {' '.join(fallback_cmd)}\n")
+                log_handle.flush()
+                proc = subprocess.Popen(
+                    fallback_cmd,
+                    cwd=str(cwd),
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            else:
+                log_handle.write(f"[coordinator] subprocess failed to start: {exc}\n")
+                log_handle.flush()
+                raise
+        except Exception as exc:
+            log_handle.write(f"[coordinator] subprocess failed to start: {exc}\n")
+            log_handle.flush()
+            raise
         return int(proc.wait())
 
 def load_config(args: argparse.Namespace) -> CoordinatorConfig:
