@@ -253,3 +253,5 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Bootstrap package-manager convention: `deploy/bootstrap-central-auto.sh` should detect distro via `/etc/os-release` and prefer `apt-get` on Ubuntu/Debian even if yum/dnf binaries exist.
 - Apt compatibility convention: dependency install should gracefully fallback when `docker-compose-plugin` package is unavailable by installing core docker/aws packages and then relying on standalone compose install path.
 - Debug default fleet size convention: deploy wrappers should default to 2 worker VMs during active debugging.
+- Script permission convention: tracked shell scripts (`*.sh`) must be committed with executable mode (`100755`) so Linux hosts can run them immediately after pull without manual chmod.
+- Ubuntu bootstrap dependency convention: when apt repositories do not provide `awscli` or `docker-compose-plugin`, bootstrap should still proceed by installing core docker/curl/openssl/git packages, then installing AWS CLI v2 via the official installer and Compose via existing standalone fallback.

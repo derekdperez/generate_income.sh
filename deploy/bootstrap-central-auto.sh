@@ -382,6 +382,61 @@ install_standalone_compose_if_needed() {
   fi
 }
 
+install_aws_cli_if_missing() {
+  local sudo_cmd=("$@")
+  if command -v aws >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "AWS CLI not found after package install; attempting AWS CLI v2 installer..."
+
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      echo "Unsupported architecture for AWS CLI v2 installer: $arch" >&2
+      return 1
+      ;;
+  esac
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  if [[ -z "$tmp_dir" || ! -d "$tmp_dir" ]]; then
+    echo "Failed to create temp directory for AWS CLI install." >&2
+    return 1
+  fi
+
+  if ! command -v unzip >/dev/null 2>&1; then
+    "${sudo_cmd[@]}" apt-get update
+    "${sudo_cmd[@]}" apt-get install -y unzip
+  fi
+
+  if ! curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o "${tmp_dir}/awscliv2.zip"; then
+    rm -rf "$tmp_dir"
+    echo "Failed to download AWS CLI v2 installer." >&2
+    return 1
+  fi
+  if ! unzip -q "${tmp_dir}/awscliv2.zip" -d "$tmp_dir"; then
+    rm -rf "$tmp_dir"
+    echo "Failed to extract AWS CLI v2 installer." >&2
+    return 1
+  fi
+  if ! "${sudo_cmd[@]}" "${tmp_dir}/aws/install" --update; then
+    rm -rf "$tmp_dir"
+    echo "AWS CLI v2 installer failed." >&2
+    return 1
+  fi
+  rm -rf "$tmp_dir"
+
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "AWS CLI is still unavailable after installer run." >&2
+    return 1
+  fi
+  return 0
+}
+
 install_deps_if_missing() {
   local missing=()
   local needs_compose=0
@@ -425,8 +480,9 @@ install_deps_if_missing() {
   elif [[ "$pkg_manager" == "apt" ]]; then
     "${sudo_cmd[@]}" apt-get update
     if ! "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io docker-compose-plugin awscli; then
-      "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io awscli
+      "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io
     fi
+    install_aws_cli_if_missing "${sudo_cmd[@]}"
   else
     echo "No supported package manager found (yum/dnf/apt-get)." >&2
     return 1

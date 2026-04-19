@@ -884,3 +884,11 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `deploy/deploy-central-with-logdb.sh`: `AUTO_PROVISION_WORKERS` default `5 -> 2`.
   - `deploy/full_deploy_command.sh`: `DEFAULT_WORKER_COUNT` default `5 -> 2`.
 - Why: ensure bootstrap succeeds on Ubuntu hosts and keep worker fleet smaller while diagnosing deployment issues.
+- Set executable Git mode on tracked shell scripts so Linux deploy hosts do not require manual `chmod +x` after pull.
+- Updated file modes from `100644` to `100755` for root/deploy helper scripts (for example bootstrap/deploy wrappers, docker entrypoint, diagnostics helpers).
+- Why: prevent recurring deploy friction from non-executable scripts after code updates.
+- Fixed Ubuntu bootstrap dependency failure in `deploy/bootstrap-central-auto.sh`.
+  - Apt fallback no longer requires `awscli` package availability.
+  - Added `install_aws_cli_if_missing()` to install AWS CLI v2 from the official AWS installer when `aws` is missing after apt installs.
+  - Kept compose fallback behavior so missing `docker-compose-plugin` in apt repos does not block bootstrap.
+- Why: Ubuntu hosts with limited/default repos failed bootstrap due unavailable `awscli` and `docker-compose-plugin` packages.
