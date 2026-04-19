@@ -75,6 +75,40 @@ run_as_python_user() {
   fi
 }
 
+detect_package_manager() {
+  local os_id=""
+  local os_like=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_like="${ID_LIKE:-}"
+  fi
+
+  # On Ubuntu/Debian, prefer apt-get even if yum/dnf are present.
+  if [[ "$os_id" == "ubuntu" || "$os_id" == "debian" || "$os_like" == *debian* ]]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "apt"
+      return 0
+    fi
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    echo "yum"
+    return 0
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    echo "dnf"
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "apt"
+    return 0
+  fi
+  echo "none"
+  return 1
+}
+
 resolve_invoking_identity() {
   if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     INVOKING_USER="${SUDO_USER}"
@@ -366,6 +400,12 @@ install_deps_if_missing() {
   fi
 
   echo "Installing missing dependencies (docker/curl/openssl/aws/docker compose)..."
+  local pkg_manager
+  pkg_manager="$(detect_package_manager || true)"
+  if [[ -z "$pkg_manager" || "$pkg_manager" == "none" ]]; then
+    echo "No supported package manager found (yum/dnf/apt-get)." >&2
+    return 1
+  fi
   local sudo_cmd=()
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
@@ -376,15 +416,17 @@ install_deps_if_missing() {
     fi
   fi
 
-  if command -v yum >/dev/null 2>&1; then
+  if [[ "$pkg_manager" == "yum" ]]; then
     "${sudo_cmd[@]}" yum makecache -y || true
     "${sudo_cmd[@]}" yum install -y ca-certificates curl-minimal openssl git docker awscli
-  elif command -v dnf >/dev/null 2>&1; then
+  elif [[ "$pkg_manager" == "dnf" ]]; then
     "${sudo_cmd[@]}" dnf makecache -y || true
     "${sudo_cmd[@]}" dnf install -y ca-certificates curl-minimal openssl git docker awscli
-  elif command -v apt-get >/dev/null 2>&1; then
+  elif [[ "$pkg_manager" == "apt" ]]; then
     "${sudo_cmd[@]}" apt-get update
-    "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io docker-compose-plugin awscli
+    if ! "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io docker-compose-plugin awscli; then
+      "${sudo_cmd[@]}" apt-get install -y ca-certificates curl openssl git docker.io awscli
+    fi
   else
     echo "No supported package manager found (yum/dnf/apt-get)." >&2
     return 1
@@ -416,13 +458,15 @@ install_local_python_requirements() {
 
   if [[ "$need_pkgs" -eq 1 ]]; then
     echo "Installing Python 3 and pip (for client.py and other CLI tools on this host)..."
-    if command -v yum >/dev/null 2>&1; then
+    local pkg_manager
+    pkg_manager="$(detect_package_manager || true)"
+    if [[ "$pkg_manager" == "yum" ]]; then
       "${sudo_cmd[@]}" yum makecache -y || true
       "${sudo_cmd[@]}" yum install -y python3 python3-pip || true
-    elif command -v dnf >/dev/null 2>&1; then
+    elif [[ "$pkg_manager" == "dnf" ]]; then
       "${sudo_cmd[@]}" dnf makecache -y || true
       "${sudo_cmd[@]}" dnf install -y python3 python3-pip || true
-    elif command -v apt-get >/dev/null 2>&1; then
+    elif [[ "$pkg_manager" == "apt" ]]; then
       "${sudo_cmd[@]}" apt-get update
       "${sudo_cmd[@]}" apt-get install -y python3 python3-pip python3-venv
     else

@@ -248,3 +248,8 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Log-source discovery convention: never add local docker log sources or synthetic compose probes unless local `docker`/`docker-compose` commands are actually available in the runtime.
 - EC2 provisioning convention: deploy scripts default to `m7i-flex.large` for worker and dedicated log-DB VM provisioning unless explicitly overridden.
 - EC2 storage convention: provisioned worker VMs must launch with at least 50 GB root EBS (`gp3`), and dedicated log DB VMs must launch with at least 100 GB root EBS (`gp3`) using explicit `--block-device-mappings` in provisioning scripts.
+- Full deploy readiness convention: after waiting for `/api/coord/database-status`, scripts must fail fast if coordinator API never reaches HTTP 200 and must not continue into `register_targets.py`.
+- On readiness failure in full deploy, emit best-effort compose diagnostics (`ps` and recent `server`/`postgres` logs) to surface root-cause quickly.
+- Bootstrap package-manager convention: `deploy/bootstrap-central-auto.sh` should detect distro via `/etc/os-release` and prefer `apt-get` on Ubuntu/Debian even if yum/dnf binaries exist.
+- Apt compatibility convention: dependency install should gracefully fallback when `docker-compose-plugin` package is unavailable by installing core docker/aws packages and then relying on standalone compose install path.
+- Debug default fleet size convention: deploy wrappers should default to 2 worker VMs during active debugging.

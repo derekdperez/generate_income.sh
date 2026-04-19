@@ -4,7 +4,7 @@ set -euo pipefail
 # Edit these values, then run this script from repo root:
 #   ./deploy/deploy-central-with-logdb.sh
 
-AUTO_PROVISION_WORKERS="${AUTO_PROVISION_WORKERS:-5}"
+AUTO_PROVISION_WORKERS="${AUTO_PROVISION_WORKERS:-2}"
 AWS_AMI_ID="${AWS_AMI_ID:-ami-REPLACE_ME}"
 AWS_INSTANCE_TYPE="${AWS_INSTANCE_TYPE:-m7i-flex.large}"
 AWS_SUBNET_ID="${AWS_SUBNET_ID:-subnet-REPLACE_ME}"

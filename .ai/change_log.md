@@ -871,3 +871,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Workers: 50 GB (`gp3`, delete on termination)
   - Dedicated log DB VM: 100 GB (`gp3`, delete on termination)
 - Why: enforce consistent compute class and minimum disk capacity for worker and DB fleet provisioning.
+- Hardened `deploy/full_deploy_command.sh` coordinator readiness gate.
+  - Added explicit readiness success flag for `/api/coord/database-status` wait loop.
+  - Script now exits before target registration if API is still unreachable after timeout.
+  - Added best-effort compose diagnostics (`docker compose ps` + `logs --tail 120 server postgres`) on failure.
+- Why: previous flow continued to `register_targets.py` even when readiness never succeeded, causing noisy late `ConnectError` crashes.
+- Updated `deploy/bootstrap-central-auto.sh` to improve Ubuntu compatibility.
+  - Added distro-aware package-manager detection (`detect_package_manager`) using `/etc/os-release`.
+  - Ubuntu/Debian now explicitly prefer `apt-get` package flow over yum/dnf probing.
+  - Added apt fallback path when `docker-compose-plugin` package is unavailable.
+- Reduced default worker VM counts for debugging:
+  - `deploy/deploy-central-with-logdb.sh`: `AUTO_PROVISION_WORKERS` default `5 -> 2`.
+  - `deploy/full_deploy_command.sh`: `DEFAULT_WORKER_COUNT` default `5 -> 2`.
+- Why: ensure bootstrap succeeds on Ubuntu hosts and keep worker fleet smaller while diagnosing deployment issues.

@@ -15,13 +15,35 @@ AWS_REGION="us-east-1"
 REPO_URL="https://github.com/derekdperez/nightmare.git"
 REPO_BRANCH="main"
 WORKER_TAG_FILTER="nightmare-worker*"
-DEFAULT_WORKER_COUNT=5
+DEFAULT_WORKER_COUNT=2
 
 run_as_invoking_user() {
   if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     sudo -H -u "${SUDO_USER}" "$@"
   else
     "$@"
+  fi
+}
+
+resolve_compose_cmd() {
+  if run_as_invoking_user docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+    return 0
+  fi
+  if run_as_invoking_user which docker-compose >/dev/null 2>&1; then
+    echo "docker-compose"
+    return 0
+  fi
+  return 1
+}
+
+run_compose() {
+  local compose_cmd="$1"
+  shift
+  if [[ "$compose_cmd" == "docker compose" ]]; then
+    run_as_invoking_user docker compose "$@"
+  else
+    run_as_invoking_user docker-compose "$@"
   fi
 }
 
@@ -66,13 +88,31 @@ if [[ -z "${COORDINATOR_BASE_URL:-}" || -z "${COORDINATOR_API_TOKEN:-}" ]]; then
 fi
 
 echo "Waiting for coordinator API readiness..."
+api_ready=0
+last_code=""
 for _ in $(seq 1 45); do
   code="$(curl -k -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${COORDINATOR_API_TOKEN}" "${COORDINATOR_BASE_URL%/}/api/coord/database-status" || true)"
+  last_code="$code"
   if [[ "$code" == "200" ]]; then
+    api_ready=1
     break
   fi
   sleep 2
 done
+
+if [[ "$api_ready" -ne 1 ]]; then
+  echo "Coordinator API did not become ready after 90 seconds (last HTTP code: ${last_code:-none})." >&2
+  compose_cmd="$(resolve_compose_cmd || true)"
+  if [[ -n "$compose_cmd" ]]; then
+    echo "Central compose service status:" >&2
+    run_compose "$compose_cmd" -f deploy/docker-compose.central.yml --env-file deploy/.env ps >&2 || true
+    echo >&2
+    echo "Recent central service logs (tail):" >&2
+    run_compose "$compose_cmd" -f deploy/docker-compose.central.yml --env-file deploy/.env logs --tail 120 server postgres >&2 || true
+  fi
+  echo "Refusing to continue with target registration because coordinator is unreachable." >&2
+  exit 1
+fi
 
 run_as_invoking_user python3 register_targets.py \
   --server-base-url "${COORDINATOR_BASE_URL}" \
