@@ -40,3 +40,7 @@ def render_view_logs_html() -> str:
 
 def render_discovered_targets_html() -> str:
     return render_template("discovered_targets.html.j2")
+
+
+def render_discovered_files_html() -> str:
+    return render_template("discovered_files.html.j2")

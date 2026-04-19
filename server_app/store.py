@@ -1910,6 +1910,111 @@ WHERE root_domain = %s;
             payload=payload,
         )
 
+
+    def list_discovered_files(self, *, limit: int = 5000) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(50000, int(limit or 5000)))
+        sql = """
+SELECT a.root_domain, COALESCE(s.start_url, ''), a.artifact_type, a.content_size_bytes, a.updated_at_utc
+FROM coordinator_artifacts a
+LEFT JOIN coordinator_sessions s
+  ON s.root_domain = a.root_domain
+ORDER BY a.updated_at_utc DESC NULLS LAST, a.root_domain ASC, a.artifact_type ASC
+LIMIT %s;
+"""
+        out: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (safe_limit,))
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            out.append(
+                {
+                    "root_domain": str(row[0] or "").strip().lower(),
+                    "source_url": str(row[1] or ""),
+                    "artifact_type": str(row[2] or "").strip().lower(),
+                    "content_size_bytes": int(row[3] or 0),
+                    "updated_at_utc": row[4].isoformat() if row[4] else None,
+                }
+            )
+        return out
+
+    def list_high_value_items(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(50000, int(limit or 10000)))
+        sql = """
+SELECT a.root_domain, COALESCE(s.start_url, ''), a.content
+FROM coordinator_artifacts a
+LEFT JOIN coordinator_sessions s
+  ON s.root_domain = a.root_domain
+WHERE a.artifact_type = 'nightmare_high_value_zip'
+ORDER BY a.updated_at_utc DESC NULLS LAST, a.root_domain ASC
+LIMIT %s;
+"""
+        out: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (safe_limit,))
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            root_domain = str(row[0] or "").strip().lower()
+            start_url = str(row[1] or "")
+            blob = bytes(row[2] or b"")
+            if not root_domain or not blob:
+                continue
+            try:
+                with zipfile.ZipFile(io.BytesIO(blob), mode="r") as zf:
+                    file_sizes = {info.filename: int(info.file_size or 0) for info in zf.infolist() if not info.is_dir()}
+                    for name in sorted(file_sizes.keys()):
+                        if not name.lower().endswith(".json"):
+                            continue
+                        try:
+                            payload = json.loads(zf.read(name).decode("utf-8"))
+                        except Exception:
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        saved_relative = str(payload.get("saved_relative", "") or "").strip()
+                        if not saved_relative:
+                            continue
+                        out.append(
+                            {
+                                "root_domain": root_domain,
+                                "source_url": str(payload.get("url", "") or "") or start_url,
+                                "captured_at_utc": str(payload.get("captured_at_utc", "") or ""),
+                                "content_size_bytes": int(file_sizes.get(saved_relative, 0) or 0),
+                                "saved_relative": saved_relative,
+                            }
+                        )
+            except Exception:
+                continue
+        out.sort(key=lambda item: (str(item.get("captured_at_utc", "") or ""), str(item.get("root_domain", "") or ""), str(item.get("saved_relative", "") or "")), reverse=True)
+        return out
+
+    def get_high_value_item_content(self, root_domain: str, saved_relative: str) -> Optional[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        member = str(saved_relative or "").strip().lstrip("/")
+        if not rd or not member:
+            return None
+        artifact = self.get_artifact(rd, "nightmare_high_value_zip")
+        if artifact is None:
+            return None
+        try:
+            with zipfile.ZipFile(io.BytesIO(bytes(artifact.get("content", b"") or b"")), mode="r") as zf:
+                normalized_names = {str(info.filename or ""): info for info in zf.infolist() if not info.is_dir()}
+                if member not in normalized_names:
+                    return None
+                data = zf.read(member)
+        except Exception:
+            return None
+        return {
+            "root_domain": rd,
+            "saved_relative": member,
+            "download_name": member.rsplit("/", 1)[-1] or "download.bin",
+            "content": data,
+            "content_size_bytes": len(data),
+        }
+
     def list_extractor_match_domains(self, *, limit: int = 5000) -> list[dict[str, Any]]:
         safe_limit = max(1, min(20000, int(limit or 5000)))
         sql = """

@@ -56,6 +56,7 @@ from reporting.server_pages import (
     render_dashboard_html,
     render_database_html,
     render_docker_status_html,
+    render_discovered_files_html,
     render_discovered_targets_html,
     render_extractor_matches_html,
     render_fuzzing_html,
@@ -2870,6 +2871,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/discovered-targets":
             self._write_text(render_discovered_targets_html(), content_type="text/html; charset=utf-8")
             return
+        if path == "/discovered-files":
+            self._write_text(render_discovered_files_html(), content_type="text/html; charset=utf-8")
+            return
         if path == "/api/summary":
             payload = collect_dashboard_data(self.output_root, self.coordinator_store)
             self._write_json(payload)
@@ -3162,6 +3166,123 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "crawl progress query failed", "detail": str(exc)}, status=500)
                 return
             self._write_json(payload)
+            return
+
+        if path == "/api/coord/discovered-files":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            try:
+                rows = self.coordinator_store.list_discovered_files(limit=limit)
+            except Exception as exc:
+                self.log_message("list_discovered_files failed: %r", exc)
+                self._write_json({"error": "discovered files query failed", "detail": str(exc)}, status=500)
+                return
+            if search_text:
+                rows = [
+                    item for item in rows
+                    if search_text in " ".join(
+                        [
+                            str(item.get("root_domain", "") or ""),
+                            str(item.get("source_url", "") or ""),
+                            str(item.get("artifact_type", "") or ""),
+                            str(item.get("updated_at_utc", "") or ""),
+                            str(item.get("content_size_bytes", 0) or 0),
+                        ]
+                    ).lower()
+                ]
+            self._write_json({"generated_at_utc": _iso_now(), "total_files": len(rows), "files": rows})
+            return
+        if path == "/api/coord/high-value-files":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = _safe_int((query.get("limit") or [10000])[0], 10000)
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            try:
+                rows = self.coordinator_store.list_high_value_items(limit=limit)
+            except Exception as exc:
+                self.log_message("list_high_value_items failed: %r", exc)
+                self._write_json({"error": "high-value files query failed", "detail": str(exc)}, status=500)
+                return
+            if search_text:
+                rows = [
+                    item for item in rows
+                    if search_text in " ".join(
+                        [
+                            str(item.get("root_domain", "") or ""),
+                            str(item.get("source_url", "") or ""),
+                            str(item.get("captured_at_utc", "") or ""),
+                            str(item.get("saved_relative", "") or ""),
+                            str(item.get("content_size_bytes", 0) or 0),
+                        ]
+                    ).lower()
+                ]
+            self._write_json({"generated_at_utc": _iso_now(), "total_files": len(rows), "files": rows})
+            return
+        if path == "/api/coord/artifact/download":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            artifact_type = str((query.get("artifact_type") or [""])[0] or "").strip().lower()
+            if not root_domain or not artifact_type:
+                self._write_json({"error": "root_domain and artifact_type are required"}, status=400)
+                return
+            artifact = self.coordinator_store.get_artifact(root_domain, artifact_type)
+            if artifact is None:
+                self._write_json({"error": "artifact not found"}, status=404)
+                return
+            extension = {
+                "nightmare_high_value_zip": ".zip",
+                "extractor_matches_zip": ".zip",
+                "fozzy_results_zip": ".zip",
+                "extractor_summary_json": ".json",
+                "fozzy_summary_json": ".json",
+                "nightmare_session_json": ".json",
+                "nightmare_url_inventory_json": ".json",
+                "nightmare_requests_json": ".json",
+                "nightmare_parameters_json": ".json",
+                "nightmare_post_requests_json": ".json",
+                "nightmare_source_of_truth_json": ".json",
+                "nightmare_report_html": ".html",
+                "nightmare_log": ".log",
+                "nightmare_scrapy_log": ".log",
+            }.get(artifact_type, "")
+            download_name = f"{root_domain}_{artifact_type}{extension}"
+            content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+            self._write_bytes(bytes(artifact.get("content", b"") or b""), content_type=content_type, download_name=download_name)
+            return
+        if path == "/api/coord/high-value-item/download":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            saved_relative = str((query.get("saved_relative") or [""])[0] or "").strip()
+            if not root_domain or not saved_relative:
+                self._write_json({"error": "root_domain and saved_relative are required"}, status=400)
+                return
+            payload = self.coordinator_store.get_high_value_item_content(root_domain, saved_relative)
+            if payload is None:
+                self._write_json({"error": "high-value item not found"}, status=404)
+                return
+            download_name = str(payload.get("download_name", "download.bin") or "download.bin")
+            content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+            self._write_bytes(bytes(payload.get("content", b"") or b""), content_type=content_type, download_name=download_name)
             return
         if path == "/api/coord/discovered-targets":
             if self.coordinator_store is None:

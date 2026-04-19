@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discovered Files</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin: 16px 0 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 14px; flex-wrap: wrap; }
+    input { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+    .k { font-size: 12px; color: #64748b; }
+    .v { font-size: 20px; font-weight: 700; margin-top: 4px; word-break: break-word; }
+    .muted { color: #64748b; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 14px; }
+    .table-wrap { max-height: 460px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    table { width: max-content; min-width: 100%; border-collapse: collapse; background: #fff; border: 0; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
+    th { background: #e2e8f0; position: sticky; top: 0; z-index: 4; }
+    .col-domain { min-width: 180px; max-width: 180px; }
+    .col-url { min-width: 460px; max-width: 460px; word-break: break-all; }
+    .col-size { min-width: 120px; max-width: 120px; }
+    .col-type { min-width: 220px; max-width: 220px; }
+    .col-dl { min-width: 130px; max-width: 130px; }
+  </style>
+</head>
+<body>
+  <h1>Discovered Files</h1>
+  <div class="meta">Artifacts stored in the coordinator database, plus extracted High Value items from crawl output. <a href="/dashboard">Dashboard</a> | <a href="/workers">Workers</a> | <a href="/database">Database</a> | <a href="/crawl-progress">Crawl Progress</a> | <a href="/discovered-targets">Discovered Targets</a> | <a href="/extractor-matches">Extractor Matches</a> | <a href="/fuzzing">Fuzzing</a> | <a href="/docker-status">Docker Status</a> | <a href="/view-logs">View Logs</a></div>
+
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <input id="searchText" type="text" placeholder="Search artifacts and high value files">
+    <input id="limit" type="number" min="1" max="50000" value="5000" style="max-width: 120px;" title="Max rows">
+    <button class="primary" onclick="refreshPage()">Refresh</button>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <div id="cards" class="cards"></div>
+
+  <div class="panel">
+    <strong>Stored Artifacts</strong>
+    <div class="table-wrap">
+      <table id="discoveredFilesTable">
+        <thead>
+          <tr>
+            <th>Date/Time</th>
+            <th class="col-domain">Domain</th>
+            <th class="col-url">URL</th>
+            <th class="col-type">Artifact Type</th>
+            <th class="col-size">File Size</th>
+            <th class="col-dl">Download</th>
+          </tr>
+        </thead>
+        <tbody id="artifactRows"><tr><td colspan="6">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <strong>High Value Items</strong>
+    <div class="table-wrap">
+      <table id="highValueFilesTable">
+        <thead>
+          <tr>
+            <th>Date/Time</th>
+            <th class="col-domain">Domain</th>
+            <th class="col-url">URL</th>
+            <th class="col-size">File Size</th>
+            <th class="col-dl">Download</th>
+          </tr>
+        </thead>
+        <tbody id="highValueRows"><tr><td colspan="5">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  {% include '_grid_controls.html.j2' %}
+  <script>
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    const ARTIFACT_PAGE_KEY = "discovered_files_artifacts_table_v1";
+    const HIGH_VALUE_PAGE_KEY = "discovered_files_high_value_table_v1";
+    let artifactGridCtrl = null;
+    let highValueGridCtrl = null;
+    let artifactRowsCache = [];
+    let highValueRowsCache = [];
+
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch]));
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function bindGridControls() {
+      if (!window.NightmareGridControls) return;
+      if (!artifactGridCtrl) {
+        artifactGridCtrl = window.NightmareGridControls.enhance({
+          table: "discoveredFilesTable",
+          page: "discovered_files",
+          prefKey: ARTIFACT_PAGE_KEY,
+          tokenInputId: "token",
+          mode: "full",
+          globalSearchInputId: "searchText"
+        });
+      }
+      if (!highValueGridCtrl) {
+        highValueGridCtrl = window.NightmareGridControls.enhance({
+          table: "highValueFilesTable",
+          page: "discovered_files",
+          prefKey: HIGH_VALUE_PAGE_KEY,
+          tokenInputId: "token",
+          mode: "full",
+          globalSearchInputId: "searchText"
+        });
+      }
+      artifactGridCtrl?.refresh?.();
+      highValueGridCtrl?.refresh?.();
+    }
+    function renderCards() {
+      const artifactBytes = artifactRowsCache.reduce((sum, row) => sum + Number(row.content_size_bytes || 0), 0);
+      const highValueBytes = highValueRowsCache.reduce((sum, row) => sum + Number(row.content_size_bytes || 0), 0);
+      document.getElementById("cards").innerHTML = `
+        <div class="card"><div class="k">Stored Artifacts</div><div class="v">${artifactRowsCache.length}</div></div>
+        <div class="card"><div class="k">Artifact Bytes</div><div class="v">${artifactBytes}</div></div>
+        <div class="card"><div class="k">High Value Items</div><div class="v">${highValueRowsCache.length}</div></div>
+        <div class="card"><div class="k">High Value Bytes</div><div class="v">${highValueBytes}</div></div>
+      `;
+    }
+    function renderArtifacts(rows) {
+      artifactRowsCache = Array.isArray(rows) ? rows.slice() : [];
+      const tbody = document.getElementById("artifactRows");
+      if (!artifactRowsCache.length) {
+        tbody.innerHTML = '<tr><td colspan="6">No stored artifacts found.</td></tr>';
+        renderCards();
+        bindGridControls();
+        return;
+      }
+      tbody.innerHTML = artifactRowsCache.map((row) => `
+        <tr>
+          <td>${esc(row.updated_at_utc || "")}</td>
+          <td class="col-domain">${esc(row.root_domain || "")}</td>
+          <td class="col-url">${esc(row.source_url || "")}</td>
+          <td class="col-type">${esc(row.artifact_type || "")}</td>
+          <td class="col-size" data-raw="${Number(row.content_size_bytes || 0)}">${Number(row.content_size_bytes || 0)}</td>
+          <td class="col-dl"><a href="/api/coord/artifact/download?root_domain=${encodeURIComponent(row.root_domain || "")}&artifact_type=${encodeURIComponent(row.artifact_type || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
+        </tr>
+      `).join("");
+      renderCards();
+      bindGridControls();
+    }
+    function renderHighValue(rows) {
+      highValueRowsCache = Array.isArray(rows) ? rows.slice() : [];
+      const tbody = document.getElementById("highValueRows");
+      if (!highValueRowsCache.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No high value items found.</td></tr>';
+        renderCards();
+        bindGridControls();
+        return;
+      }
+      tbody.innerHTML = highValueRowsCache.map((row) => `
+        <tr>
+          <td>${esc(row.captured_at_utc || "")}</td>
+          <td class="col-domain">${esc(row.root_domain || "")}</td>
+          <td class="col-url">${esc(row.source_url || "")}</td>
+          <td class="col-size" data-raw="${Number(row.content_size_bytes || 0)}">${Number(row.content_size_bytes || 0)}</td>
+          <td class="col-dl"><a href="/api/coord/high-value-item/download?root_domain=${encodeURIComponent(row.root_domain || "")}&saved_relative=${encodeURIComponent(row.saved_relative || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
+        </tr>
+      `).join("");
+      renderCards();
+      bindGridControls();
+    }
+    async function refreshPage() {
+      const msg = document.getElementById("msg");
+      msg.textContent = "Loading…";
+      const limit = Math.max(1, Math.min(50000, Number(document.getElementById("limit").value || 5000)));
+      const q = document.getElementById("searchText").value.trim();
+      const headers = authHeaders();
+      const [artifactRsp, highValueRsp] = await Promise.all([
+        fetch(`/api/coord/discovered-files?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}`, { cache: "no-store", headers }),
+        fetch(`/api/coord/high-value-files?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}`, { cache: "no-store", headers })
+      ]);
+      if (!artifactRsp.ok) throw new Error(await artifactRsp.text());
+      if (!highValueRsp.ok) throw new Error(await highValueRsp.text());
+      const artifactPayload = await artifactRsp.json();
+      const highValuePayload = await highValueRsp.json();
+      renderArtifacts(Array.isArray(artifactPayload.files) ? artifactPayload.files : []);
+      renderHighValue(Array.isArray(highValuePayload.files) ? highValuePayload.files : []);
+      msg.textContent = `Loaded ${artifactRowsCache.length} artifacts and ${highValueRowsCache.length} high value items.`;
+    }
+    function hydrateTokenFromCookie() {
+      const token = readCookie(TOKEN_COOKIE_NAME);
+      if (token) document.getElementById("token").value = token;
+    }
+    document.getElementById("token").addEventListener("change", refreshPage);
+    document.getElementById("searchText").addEventListener("keydown", (ev) => { if (ev.key === "Enter") refreshPage(); });
+    document.getElementById("limit").addEventListener("change", refreshPage);
+    hydrateTokenFromCookie();
+    refreshPage().catch((err) => {
+      document.getElementById("msg").textContent = `Error: ${err.message || err}`;
+      document.getElementById("artifactRows").innerHTML = `<tr><td colspan="6">${esc(err.message || err)}</td></tr>`;
+      document.getElementById("highValueRows").innerHTML = `<tr><td colspan="5">${esc(err.message || err)}</td></tr>`;
+    });
+  </script>
+</body>
+</html>
