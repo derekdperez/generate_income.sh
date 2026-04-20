@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from auth0r.policy import ReplayPolicy
+
 
 @dataclass
 class AuthVerificationMarker:
@@ -33,6 +35,7 @@ class AuthIdentity:
     denial_markers: list[AuthVerificationMarker] = field(default_factory=list)
     authenticated_probe_url: str = ""
     logout_url: str = ""
+    replay_policy: ReplayPolicy = field(default_factory=ReplayPolicy)
 
 
 @dataclass

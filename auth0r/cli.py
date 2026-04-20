@@ -10,10 +10,12 @@ from urllib.parse import urlparse
 from auth0r.canonicalize import canonicalize_url, likely_state_changing
 from auth0r.differential_analyzer import compare_responses
 from auth0r.lifecycle_analyzer import assess_login_rotation, assess_logout_invalidation, assess_parallel_sessions
-from auth0r.login_orchestrator import establish_session, verify_authenticated
+from auth0r.login_orchestrator import establish_session
+from auth0r.policy import evaluate_action, should_verify_side_effects
 from auth0r.profile_store import Auth0rProfileStore
 from auth0r.replay_engine import DomainThrottle, replay_variants
 from auth0r.reporting import write_summary
+from auth0r.side_effect_verifier import verify_side_effect
 
 
 def _read_json_dict(path: Path) -> dict:
@@ -23,13 +25,14 @@ def _read_json_dict(path: Path) -> dict:
         return {}
 
 
+
 def _discover_seed_actions(root_domain: str, nightmare_session_path: Path) -> list[dict]:
     payload = _read_json_dict(nightmare_session_path)
     state = payload.get("state", {}) if isinstance(payload, dict) else {}
     out = []
     seen = set()
 
-    def add_action(url: str, method: str = "GET", source: str = "nightmare_seed", metadata: dict | None = None):
+    def add_action(url: str, method: str = "GET", source: str = "nightmare_seed", metadata: dict | None = None, body=None, content_type: str = "", headers: dict | None = None):
         text = str(url or "").strip()
         if not text:
             return
@@ -46,6 +49,9 @@ def _discover_seed_actions(root_domain: str, nightmare_session_path: Path) -> li
             "url": text,
             "method": method.upper(),
             "source": source,
+            "body": body,
+            "headers": dict(headers or {}),
+            "content_type": content_type or "",
             "metadata": {"canonical_url": canon, **(metadata or {})},
         })
 
@@ -68,6 +74,34 @@ def _discover_seed_actions(root_domain: str, nightmare_session_path: Path) -> li
         for target in targets or []:
             add_action(target, "GET", "nightmare_link_graph", {"linked_from": src})
 
+    def walk(node, source: str = "nightmare_structured"):
+        if isinstance(node, dict):
+            raw_url = node.get("url") or node.get("action") or node.get("endpoint") or node.get("request_url")
+            raw_method = node.get("method") or node.get("http_method") or "GET"
+            if raw_url:
+                metadata = {}
+                for key in ("form_name", "field_names", "source_file", "linked_from", "discovered_via"):
+                    if key in node:
+                        metadata[key] = node.get(key)
+                add_action(
+                    str(raw_url),
+                    str(raw_method).upper(),
+                    source,
+                    metadata=metadata,
+                    body=node.get("body") or node.get("request_body"),
+                    content_type=str(node.get("content_type", "") or ""),
+                    headers=(node.get("headers") if isinstance(node.get("headers"), dict) else {}),
+                )
+            for key, value in node.items():
+                next_source = source
+                if str(key).lower() in {"forms", "requests", "api_calls", "graphql_operations", "actions"}:
+                    next_source = f"nightmare_{str(key).lower()}"
+                walk(value, next_source)
+        elif isinstance(node, list):
+            for item in node[:500]:
+                walk(item, source)
+
+    walk(state)
     return out
 
 
@@ -102,6 +136,7 @@ def run(
     throttle = DomainThrottle(min_delay_seconds=min_delay_seconds)
     findings = []
     lifecycle_findings = []
+    skipped_actions = []
     session_count = 0
     replay_count = 0
 
@@ -160,6 +195,10 @@ def run(
 
             for action in seed_actions:
                 action["likely_state_changing"] = likely_state_changing(action.get("method"))
+                allowed, reason = evaluate_action(identity.replay_policy, action)
+                if not allowed:
+                    skipped_actions.append({"identity_label": identity.identity_label, "url": action.get("url"), "method": action.get("method"), "reason": reason})
+                    continue
                 recorded_action_id = store.save_recorded_action(root_domain, identity.id, runtime_session_id, action)
 
                 throttle.wait()
@@ -187,6 +226,10 @@ def run(
                         baseline_authenticated_hits=baseline_auth_hits,
                     )
                     replay_count += 1
+                    side_effect = verify_side_effect(action, baseline, candidate, comparison=summary) if should_verify_side_effects(identity.replay_policy, action) else {"checked": False, "reason": "policy_disabled_or_not_state_changing"}
+                    summary["side_effect_verification"] = side_effect
+                    if side_effect.get("suspicious_side_effect_equivalence"):
+                        summary["suspicious"] = True
                     replay_id = store.save_replay_attempt(
                         root_domain,
                         identity.id,
@@ -212,6 +255,10 @@ def run(
                     )
                     if summary.get("suspicious") and variant != "original":
                         title = f"Possible authorization bypass via {variant}"
+                        if variant == "cross_identity":
+                            title = "Possible cross-identity authorization boundary failure"
+                        elif side_effect.get("suspicious_side_effect_equivalence"):
+                            title = f"Possible state-changing authorization bypass via {variant}"
                         finding_summary = {
                             "identity_label": identity.identity_label,
                             "role_label": identity.role_label,
@@ -220,6 +267,10 @@ def run(
                             "observed_behavior": "response remained materially equivalent to authenticated baseline",
                             "comparison": summary,
                             "source_session_type": source_type,
+                            "replay_policy": {
+                                "read_only_mode": identity.replay_policy.read_only_mode,
+                                "verify_state_changes": identity.replay_policy.verify_state_changes,
+                            },
                         }
                         store.save_finding(root_domain, identity.id, "authorization", "high", title, action["url"], variant, 0.88, finding_summary)
                         findings.append({"title": title, "endpoint": action["url"], "variant": variant, "identity_label": identity.identity_label, "comparison": summary})
@@ -257,6 +308,8 @@ def run(
         "findings": findings[:100],
         "lifecycle_findings": lifecycle_findings[:100],
         "minimum_delay_seconds": min_delay_seconds,
+        "skipped_action_count": len(skipped_actions),
+        "skipped_actions": skipped_actions[:100],
     }
     write_summary(summary_path, payload)
     return 0

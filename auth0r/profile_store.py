@@ -11,6 +11,7 @@ except Exception:  # pragma: no cover
     psycopg = None
 
 from auth0r.crypto import decrypt_text, encrypt_text
+from auth0r.policy import ReplayPolicy
 from auth0r.types import AuthIdentity, AuthVerificationMarker
 
 
@@ -171,7 +172,8 @@ SELECT
   i.custom_headers_json_encrypted,
   i.success_markers_json,
   i.denial_markers_json,
-  p.allowed_hosts_json
+  p.allowed_hosts_json,
+  p.replay_policy_json
 FROM auth0r_profiles p
 JOIN auth0r_identities i ON i.profile_id = p.id
 WHERE p.root_domain = %s
@@ -217,6 +219,7 @@ ORDER BY i.created_at_utc ASC
                         denial_markers=denial_markers,
                         authenticated_probe_url=str(login_cfg.get("authenticated_probe_url", "") or ""),
                         logout_url=str(login_cfg.get("logout_url", "") or ""),
+                        replay_policy=ReplayPolicy.from_dict(_json_load(row[13], {})),
                     )
                     identity.imported_cookies = self._load_cookie_jar(identity.id)
                     identities.append(identity)
