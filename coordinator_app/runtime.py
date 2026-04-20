@@ -21,6 +21,25 @@ from urllib.parse import urlencode
 from http_client import request_json
 from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
 from nightmare_shared.error_reporting import report_error
+
+
+def _read_log_tail(log_path: Path, *, lines: int = 120, max_chars: int = 16000) -> str:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as reader:
+            tail = "".join(reader.readlines()[-lines:])
+    except Exception:
+        return ""
+    tail = str(tail or "").strip()
+    if max_chars > 0 and len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
+def summarize_subprocess_failure(program_name: str, log_path: Path, exit_code: int) -> str:
+    tail = _read_log_tail(log_path)
+    if tail:
+        return f"{program_name} exit code {int(exit_code)}\n\n{tail}"
+    return f"{program_name} exit code {int(exit_code)}"
 from nightmare_shared.logging_utils import get_logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -436,16 +455,13 @@ def run_subprocess(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
         exit_code = int(proc.wait())
         if exit_code != 0:
             try:
-                tail = ""
-                with log_path.open("r", encoding="utf-8", errors="ignore") as reader:
-                    lines = reader.readlines()[-40:]
-                    tail = "".join(lines)
+                tail = _read_log_tail(log_path)
                 report_error(
                     f"Subprocess exited with non-zero status {exit_code}",
                     program_name="coordinator",
                     component_name="run_subprocess",
                     source_type="worker",
-                    raw_line=tail[-4000:],
+                    raw_line=tail,
                     metadata={"command": run_cmd, "log_path": str(log_path), "exit_code": exit_code},
                 )
             except Exception:
