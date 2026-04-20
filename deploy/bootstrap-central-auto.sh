@@ -65,6 +65,57 @@ ensure_executable() {
   fi
 }
 
+
+ensure_log_database_url() {
+  local current_log_database_url="$1"
+  if [[ -n "$current_log_database_url" ]]; then
+    echo "$current_log_database_url"
+    return 0
+  fi
+
+  local log_db_provision_script="${DEPLOY_DIR}/provision-log-db-aws.sh"
+  ensure_executable "$log_db_provision_script"
+
+  if [[ -z "$AWS_AMI_ID" || -z "$AWS_SUBNET_ID" || -z "$AWS_SECURITY_GROUP_IDS" ]]; then
+    echo "LOG_DATABASE_URL is not set and log DB VM must be provisioned." >&2
+    echo "Provide AWS provisioning parameters: --aws-ami-id, --aws-subnet-id, --aws-security-group-ids" >&2
+    exit 2
+  fi
+
+  local -a log_db_cmd=(
+    "$log_db_provision_script"
+    --ami-id "$AWS_AMI_ID"
+    --instance-type "$AWS_INSTANCE_TYPE"
+    --subnet-id "$AWS_SUBNET_ID"
+    --security-group-ids "$AWS_SECURITY_GROUP_IDS"
+    --env-file "$ENV_FILE"
+    --skip-rebuild-central
+  )
+  if [[ -n "$AWS_KEY_NAME" ]]; then
+    log_db_cmd+=(--key-name "$AWS_KEY_NAME")
+  fi
+  if [[ -n "$AWS_IAM_INSTANCE_PROFILE" ]]; then
+    log_db_cmd+=(--iam-instance-profile "$AWS_IAM_INSTANCE_PROFILE")
+  fi
+  if [[ -n "$AWS_REGION" ]]; then
+    log_db_cmd+=(--region "$AWS_REGION")
+  fi
+
+  "${log_db_cmd[@]}"
+
+  local refreshed_log_database_url=""
+  refreshed_log_database_url="$(read_env_value "$ENV_FILE" LOG_DATABASE_URL)"
+  if [[ -z "$refreshed_log_database_url" ]]; then
+    refreshed_log_database_url="$(recover_env_value_from_container nightmare-coordinator-server LOG_DATABASE_URL)"
+  fi
+  if [[ -z "$refreshed_log_database_url" ]]; then
+    echo "Log DB provisioning completed but LOG_DATABASE_URL is still missing." >&2
+    exit 1
+  fi
+
+  echo "$refreshed_log_database_url"
+}
+
 run_as_python_user() {
   # Always run Python/pip commands as the original invoking user when script was launched with sudo.
   # This prevents accidental root-owned site/user packages.
@@ -843,34 +894,8 @@ fi
 
 cd "$DEPLOY_DIR"
 
-if [[ -z "$LOG_DATABASE_URL" ]]; then
-  LOG_DB_PROVISION_SCRIPT="${DEPLOY_DIR}/provision-log-db-aws.sh"
-  ensure_executable "$LOG_DB_PROVISION_SCRIPT"
-  if [[ -z "$AWS_AMI_ID" || -z "$AWS_SUBNET_ID" || -z "$AWS_SECURITY_GROUP_IDS" ]]; then
-    echo "LOG_DATABASE_URL is not set and log DB VM must be provisioned." >&2
-    echo "Provide AWS provisioning parameters: --aws-ami-id, --aws-subnet-id, --aws-security-group-ids" >&2
-    exit 2
-  fi
-  log_db_cmd=(
-    "$LOG_DB_PROVISION_SCRIPT"
-    --ami-id "$AWS_AMI_ID"
-    --instance-type "$AWS_INSTANCE_TYPE"
-    --subnet-id "$AWS_SUBNET_ID"
-    --security-group-ids "$AWS_SECURITY_GROUP_IDS"
-    --env-file "$ENV_FILE"
-    --skip-rebuild-central
-  )
-  if [[ -n "$AWS_KEY_NAME" ]]; then
-    log_db_cmd+=(--key-name "$AWS_KEY_NAME")
-  fi
-  if [[ -n "$AWS_IAM_INSTANCE_PROFILE" ]]; then
-    log_db_cmd+=(--iam-instance-profile "$AWS_IAM_INSTANCE_PROFILE")
-  fi
-  if [[ -n "$AWS_REGION" ]]; then
-    log_db_cmd+=(--region "$AWS_REGION")
-  fi
-  "${log_db_cmd[@]}"
-fi
+LOG_DATABASE_URL="$(ensure_log_database_url "$LOG_DATABASE_URL")"
+set_env_key "$ENV_FILE" "LOG_DATABASE_URL" "$LOG_DATABASE_URL"
 
 run_compose -f docker-compose.central.yml --env-file .env up -d --build
 

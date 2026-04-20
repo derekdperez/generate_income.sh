@@ -82,6 +82,9 @@ if [[ -f "deploy/.env" ]]; then
   set +a
 fi
 
+LOG_DATABASE_URL="$(ensure_log_database_url "${LOG_DATABASE_URL:-}")"
+export LOG_DATABASE_URL
+
 if [[ -z "${COORDINATOR_BASE_URL:-}" || -z "${COORDINATOR_API_TOKEN:-}" ]]; then
   echo "Missing COORDINATOR_BASE_URL and/or COORDINATOR_API_TOKEN in deploy/.env; cannot auto-register targets." >&2
   exit 1
