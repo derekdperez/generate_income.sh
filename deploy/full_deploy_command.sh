@@ -17,6 +17,29 @@ REPO_BRANCH="main"
 WORKER_TAG_FILTER="nightmare-worker*"
 DEFAULT_WORKER_COUNT=2
 
+DOCKER_USE_SUDO=0
+
+run_docker() {
+  if [[ "$DOCKER_USE_SUDO" -eq 1 ]]; then
+    sudo docker "$@"
+  else
+    docker "$@"
+  fi
+}
+
+detect_docker_access_mode() {
+  if docker info >/dev/null 2>&1; then
+    DOCKER_USE_SUDO=0
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    DOCKER_USE_SUDO=1
+    return 0
+  fi
+  echo "Docker daemon is unreachable (no direct or sudo access)." >&2
+  return 1
+}
+
 run_as_invoking_user() {
   if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     sudo -H -u "${SUDO_USER}" "$@"
@@ -26,11 +49,11 @@ run_as_invoking_user() {
 }
 
 resolve_compose_cmd() {
-  if run_as_invoking_user docker compose version >/dev/null 2>&1; then
+  if run_docker compose version >/dev/null 2>&1; then
     echo "docker compose"
     return 0
   fi
-  if run_as_invoking_user which docker-compose >/dev/null 2>&1; then
+  if command -v docker-compose >/dev/null 2>&1; then
     echo "docker-compose"
     return 0
   fi
@@ -41,83 +64,19 @@ run_compose() {
   local compose_cmd="$1"
   shift
   if [[ "$compose_cmd" == "docker compose" ]]; then
-    run_as_invoking_user docker compose "$@"
+    run_docker compose "$@"
   else
-    run_as_invoking_user docker-compose "$@"
+    if [[ "$DOCKER_USE_SUDO" -eq 1 ]]; then
+      sudo docker-compose "$@"
+    else
+      docker-compose "$@"
+    fi
   fi
 }
 
 ids_empty() {
   local value="$1"
   [[ -z "$value" || "$value" == "None" ]]
-}
-
-
-read_env_value() {
-  local env_file="$1"
-  local env_key="$2"
-  [[ -f "$env_file" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      "${env_key}"=*)
-        echo "${line#${env_key}=}"
-        return 0
-        ;;
-    esac
-  done <"$env_file"
-  return 1
-}
-
-ensure_log_database_url() {
-  local env_file="deploy/.env"
-  local current_value=""
-  current_value="$(read_env_value "$env_file" LOG_DATABASE_URL 2>/dev/null || true)"
-  if [[ -n "$current_value" ]]; then
-    export LOG_DATABASE_URL="$current_value"
-    return 0
-  fi
-
-  local provision_script="./deploy/provision-log-db-aws.sh"
-  if [[ ! -x "$provision_script" ]]; then
-    chmod +x "$provision_script" 2>/dev/null || true
-  fi
-  if [[ ! -x "$provision_script" ]]; then
-    echo "Missing executable ${provision_script}; cannot provision log database automatically." >&2
-    return 1
-  fi
-  if [[ -z "$AWS_AMI_ID" || -z "$AWS_SUBNET_ID" || -z "$AWS_SECURITY_GROUP_IDS" ]]; then
-    echo "LOG_DATABASE_URL is not set and AWS provisioning parameters are incomplete." >&2
-    return 1
-  fi
-
-  local cmd=(
-    "$provision_script"
-    --ami-id "$AWS_AMI_ID"
-    --instance-type "$AWS_INSTANCE_TYPE"
-    --subnet-id "$AWS_SUBNET_ID"
-    --security-group-ids "$AWS_SECURITY_GROUP_IDS"
-    --env-file "$env_file"
-    --skip-rebuild-central
-  )
-  if [[ -n "$AWS_KEY_NAME" ]]; then
-    cmd+=(--key-name "$AWS_KEY_NAME")
-  fi
-  if [[ -n "$AWS_IAM_INSTANCE_PROFILE" ]]; then
-    cmd+=(--iam-instance-profile "$AWS_IAM_INSTANCE_PROFILE")
-  fi
-  if [[ -n "$AWS_REGION" ]]; then
-    cmd+=(--region "$AWS_REGION")
-  fi
-
-  run_as_invoking_user "${cmd[@]}"
-
-  current_value="$(read_env_value "$env_file" LOG_DATABASE_URL 2>/dev/null || true)"
-  if [[ -z "$current_value" ]]; then
-    echo "Automatic log database provisioning completed but LOG_DATABASE_URL is still missing from ${env_file}." >&2
-    return 1
-  fi
-  export LOG_DATABASE_URL="$current_value"
-  return 0
 }
 
 get_worker_instance_ids() {
@@ -150,19 +109,12 @@ if [[ -f "deploy/.env" ]]; then
   set +a
 fi
 
-ensure_log_database_url
-
-if [[ -f "deploy/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "deploy/.env"
-  set +a
-fi
-
 if [[ -z "${COORDINATOR_BASE_URL:-}" || -z "${COORDINATOR_API_TOKEN:-}" ]]; then
   echo "Missing COORDINATOR_BASE_URL and/or COORDINATOR_API_TOKEN in deploy/.env; cannot auto-register targets." >&2
   exit 1
 fi
+
+detect_docker_access_mode >/dev/null 2>&1 || true
 
 echo "Waiting for coordinator API readiness..."
 api_ready=0
