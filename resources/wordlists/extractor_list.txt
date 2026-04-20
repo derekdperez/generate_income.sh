@@ -144,14 +144,6 @@
     "importance_score": 5
   },
   {
-    "name": "base64_like_blobs",
-    "scope": "request_response",
-    "regex": "\\b(?:[A-Za-z0-9+/]{20,}={0,2})\\b",
-    "description": "Extract long Base64-like strings. Useful for identifying encoded tokens, serialized state, embedded files, or credentials.",
-    "output_filename": "base64_like_blobs.txt",
-    "importance_score": 5
-  },
-  {
     "name": "oauth_parameters",
     "scope": "request_response",
     "regex": "\\b(?:client_id|client_secret|redirect_uri|response_type|scope|code_challenge|code_verifier|authorization_code|access_token|refresh_token)=([^&\\s\"']+)",
@@ -504,22 +496,6 @@
     "importance_score": 6
   },
   {
-    "name": "ssrf_candidate_parameters",
-    "scope": "request_response",
-    "regex": "(?i)\\b(?:url|uri|dest|destination|redirect|redirect_uri|return(?:To|Url)?|next|continue|callback|feed|image_url|link|site|domain|endpoint|proxy|target|path)=([^&\\s\"']+)",
-    "description": "Extract common SSRF or open redirect style parameter values.",
-    "output_filename": "ssrf_candidate_parameters.txt",
-    "importance_score": 6
-  },
-  {
-    "name": "file_upload_parameters",
-    "scope": "request_response",
-    "regex": "(?i)\\b(?:filename|file|upload|attachment|multipart/form-data|Content-Disposition:\\s*form-data;\\s*name=\"[^\"]*file[^\"]*\")",
-    "description": "Extract indicators of file upload surfaces useful for file handling and validation assessment.",
-    "output_filename": "file_upload_parameters.txt",
-    "importance_score": 5
-  },
-  {
     "name": "sensitive_env_variable_names",
     "scope": "request_response",
     "regex": "\\b(?:AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|DATABASE_URL|DB_PASSWORD|SECRET_KEY|JWT_SECRET|SPRING_DATASOURCE_PASSWORD|GOOGLE_APPLICATION_CREDENTIALS|REDIS_URL|MONGO_URL)\\b",
@@ -621,14 +597,6 @@
     "regex": "(?i)\\b(?:user_id|userid|account_id|order_id|invoice_id|customer_id|profile_id|document_id|file_id|tenant_id|org_id)=([A-Za-z0-9._:-]{1,64})",
     "description": "Extract direct object reference style parameter values commonly associated with IDOR testing.",
     "output_filename": "idor_candidate_identifiers.txt",
-    "importance_score": 5
-  },
-  {
-    "name": "redirect_parameter_names",
-    "scope": "request_response",
-    "regex": "(?i)\\b(?:redirect|redirect_uri|return|returnTo|returnUrl|next|continue|dest|destination|target)=",
-    "description": "Extract common open redirect parameter names.",
-    "output_filename": "redirect_parameter_names.txt",
     "importance_score": 5
   },
   {
