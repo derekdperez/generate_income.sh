@@ -255,6 +255,8 @@ class DistributedCoordinator:
             "fozzy_results_dir": fozzy_domain_dir / "results",
             "extractor_summary_json": fozzy_domain_dir / "extractor" / "summary.json",
             "extractor_matches_dir": fozzy_domain_dir / "extractor" / "matches",
+            "auth0r_summary_json": domain_dir / "auth0r.summary.json",
+            "auth0r_log": domain_dir / "coordinator.auth0r.log",
             "nightmare_high_value_dir": high_value_dir,
         }
 
@@ -542,6 +544,24 @@ class DistributedCoordinator:
 
                 if exit_code == 0:
                     try:
+                        self.client.enqueue_stage(root_domain, "auth0r")
+                        self.logger.info(
+                            "nightmare_stage_enqueued",
+                            worker_id=worker_id,
+                            entry_id=entry_id,
+                            root_domain=root_domain,
+                            stage="auth0r",
+                        )
+                    except Exception as exc:
+                        self.logger.error(
+                            "nightmare_stage_enqueue_failed",
+                            worker_id=worker_id,
+                            entry_id=entry_id,
+                            root_domain=root_domain,
+                            stage="auth0r",
+                            error=str(exc),
+                        )
+                    try:
                         self.client.enqueue_stage(root_domain, "fozzy")
                         self.logger.info(
                             "nightmare_stage_enqueued",
@@ -742,6 +762,132 @@ class DistributedCoordinator:
             finally:
                 self._end_job()
 
+
+    def _auth0r_worker_loop(self, idx: int) -> None:
+        worker_id = f"{self.worker_prefix}-auth0r-{idx}"
+        self._set_worker_state(worker_id, "running")
+        self.logger.info("auth0r_worker_loop_started", worker_id=worker_id, worker_index=idx)
+        while not self.stop_event.is_set():
+            state = self._poll_worker_commands(worker_id)
+            if state in {"paused", "stopped", "errored"}:
+                self.logger.warning(
+                    "auth0r_worker_waiting_due_to_state",
+                    worker_id=worker_id,
+                    worker_state=state,
+                    poll_interval_seconds=self.cfg.poll_interval_seconds,
+                )
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            self._maybe_apply_fleet_output_clear()
+            try:
+                entry = self.client.claim_stage(worker_id, "auth0r", self.cfg.lease_seconds)
+            except Exception as exc:
+                self.logger.error("auth0r_claim_failed", worker_id=worker_id, error=str(exc))
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            if not entry:
+                self.logger.info("auth0r_claim_empty", worker_id=worker_id)
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            root_domain = str(entry.get("root_domain", "") or "").strip().lower()
+            if not root_domain:
+                self.logger.error("auth0r_claim_invalid_entry", worker_id=worker_id, entry=entry)
+                self.stop_event.wait(1.0)
+                continue
+            paths = self._artifact_paths(root_domain)
+            nightmare_session_path = paths["nightmare_session_json"]
+            if not nightmare_session_path.is_file():
+                self._download_file_artifact(root_domain, "nightmare_session_json", nightmare_session_path)
+            if not nightmare_session_path.is_file():
+                self.client.complete_stage(worker_id, root_domain, "auth0r", 1, "missing nightmare session artifact")
+                self.logger.error(
+                    "auth0r_session_missing",
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    session_path=str(nightmare_session_path),
+                )
+                continue
+
+            self._begin_job()
+            try:
+                heartbeat = LeaseHeartbeat(
+                    tick_fn=lambda: self.client.heartbeat_stage(worker_id, root_domain, "auth0r", self.cfg.lease_seconds),
+                    interval_seconds=self.cfg.heartbeat_interval_seconds,
+                    logger=self.logger,
+                    heartbeat_kind="auth0r_stage",
+                )
+                heartbeat.start()
+                cmd = [
+                    self.cfg.python_executable,
+                    "auth0r.py",
+                    root_domain,
+                    "--nightmare-session",
+                    str(nightmare_session_path),
+                    "--summary-json",
+                    str(paths["auth0r_summary_json"]),
+                ]
+                if os.getenv("DATABASE_URL"):
+                    cmd.extend(["--database-url", os.getenv("DATABASE_URL", "")])
+                if not self.client.verify_ssl:
+                    cmd.append("--insecure-tls")
+                auth0r_cfg = _read_json_dict(self.cfg.auth0r_config)
+                min_delay = auth0r_cfg.get("min_delay_seconds", 0.25)
+                cmd.extend(["--min-delay-seconds", str(min_delay)])
+                log_path = paths["auth0r_log"]
+                exit_code = 1
+                err_text = ""
+                self.logger.info(
+                    "auth0r_subprocess_start",
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    command=cmd,
+                    log_path=str(log_path),
+                )
+                try:
+                    exit_code = run_subprocess(cmd, cwd=BASE_DIR, log_path=log_path)
+                    if exit_code != 0:
+                        err_text = f"auth0r exit code {exit_code}"
+                    self.logger.info(
+                        "auth0r_subprocess_complete",
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        exit_code=exit_code,
+                        error=err_text,
+                    )
+                except Exception as exc:
+                    err_text = str(exc)
+                    exit_code = 1
+                    self.logger.error(
+                        "auth0r_subprocess_error",
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        error=err_text,
+                    )
+                finally:
+                    heartbeat.stop()
+
+                try:
+                    self._upload_file_artifact(root_domain, "auth0r_summary_json", paths["auth0r_summary_json"], worker_id)
+                    self._upload_file_artifact(root_domain, "auth0r_log", paths["auth0r_log"], worker_id)
+                except Exception as exc:
+                    self.logger.error(
+                        "auth0r_artifact_upload_failed",
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        error=str(exc),
+                    )
+                try:
+                    self.client.complete_stage(worker_id, root_domain, "auth0r", exit_code, err_text)
+                except Exception as exc:
+                    self.logger.error(
+                        "auth0r_complete_failed",
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        exit_code=exit_code,
+                        error=str(exc),
+                    )
+            finally:
+                self._end_job()
     def _extractor_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-extractor-{idx}"
         self._set_worker_state(worker_id, "running")
@@ -888,6 +1034,10 @@ class DistributedCoordinator:
             for idx in range(1, max(1, self.cfg.fozzy_workers) + 1):
                 t = threading.Thread(target=self._fozzy_worker_loop, args=(idx,), daemon=True)
                 threads.append(t)
+        if self.cfg.enable_auth0r:
+            for idx in range(1, max(1, self.cfg.auth0r_workers) + 1):
+                t = threading.Thread(target=self._auth0r_worker_loop, args=(idx,), daemon=True)
+                threads.append(t)
         if self.cfg.enable_extractor:
             for idx in range(1, max(1, self.cfg.extractor_workers) + 1):
                 t = threading.Thread(target=self._extractor_worker_loop, args=(idx,), daemon=True)
@@ -900,6 +1050,7 @@ class DistributedCoordinator:
             worker_prefix=self.worker_prefix,
             nightmare_workers=(self.cfg.nightmare_workers if self.cfg.enable_nightmare else 0),
             fozzy_workers=(self.cfg.fozzy_workers if self.cfg.enable_fozzy else 0),
+            auth0r_workers=(self.cfg.auth0r_workers if self.cfg.enable_auth0r else 0),
             extractor_workers=(self.cfg.extractor_workers if self.cfg.enable_extractor else 0),
         )
         try:
@@ -912,7 +1063,7 @@ class DistributedCoordinator:
 
 
 def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Distributed coordinator worker for Nightmare/Fozzy/Extractor")
+    p = argparse.ArgumentParser(description="Distributed coordinator worker for Nightmare/Fozzy/Auth0r/Extractor")
     p.add_argument("--config", default=str(CONFIG_PATH_DEFAULT), help="Path to coordinator config JSON")
     p.add_argument("--server-base-url", default=None, help="Coordinator server base URL (e.g. https://coord.example.com)")
     p.add_argument("--api-token", default=None, help="Coordinator API bearer token")
@@ -932,6 +1083,7 @@ def main(argv: Optional[list[str] ] = None) -> int:
         output_root=str(cfg.output_root),
         nightmare_workers=cfg.nightmare_workers,
         fozzy_workers=cfg.fozzy_workers,
+        auth0r_workers=cfg.auth0r_workers,
         extractor_workers=cfg.extractor_workers,
     )
     runner = DistributedCoordinator(cfg, logger=logger)

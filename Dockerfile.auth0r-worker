@@ -1,0 +1,5 @@
+FROM nightmare:latest
+
+ENV APP_ROLE=coordinator
+
+CMD ["coordinator", "--config", "config/coordinator.auth0r-only.json"]

@@ -1,0 +1,21 @@
+services:
+  auth0r-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.auth0r-worker
+    image: nightmare-auth0r-worker:latest
+    restart: unless-stopped
+    environment:
+      APP_ROLE: coordinator
+      COORDINATOR_BASE_URL: ${COORDINATOR_BASE_URL:?set COORDINATOR_BASE_URL}
+      COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
+      DATABASE_URL: ${DATABASE_URL:-}
+      AUTH0R_ENCRYPTION_KEY: ${AUTH0R_ENCRYPTION_KEY:-}
+    volumes:
+      - ../output:/app/output
+      - ../config:/app/config
+    command:
+      - coordinator
+      - --config
+      - config/coordinator.auth0r-only.json

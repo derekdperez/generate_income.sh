@@ -15,6 +15,8 @@
   "python_executable": "python",
   "nightmare_config": "config/nightmare.json",
   "fozzy_config": "config/fozzy.json",
-  "extractor_config": "config/extractor.json"
+  "extractor_config": "config/extractor.json",
+  "auth0r_workers": 2,
+  "enable_auth0r": true,
+  "auth0r_config": "config/auth0r.json"
 }
-

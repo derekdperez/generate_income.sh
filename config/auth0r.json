@@ -1,0 +1,5 @@
+{
+  "min_delay_seconds": 0.25,
+  "max_seed_actions": 200,
+  "verify_tls": true
+}

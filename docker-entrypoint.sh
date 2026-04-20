@@ -22,8 +22,11 @@ case "${ROLE}" in
   extractor)
     exec python extractor.py "$@"
     ;;
+  auth0r)
+    exec python auth0r.py "$@"
+    ;;
   *)
-    echo "Unknown APP_ROLE=${ROLE}. Valid: server|coordinator|worker|nightmare|fozzy|extractor" >&2
+    echo "Unknown APP_ROLE=${ROLE}. Valid: server|coordinator|worker|nightmare|fozzy|extractor|auth0r" >&2
     exit 2
     ;;
 esac

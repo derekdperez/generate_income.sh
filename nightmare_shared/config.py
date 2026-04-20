@@ -141,14 +141,17 @@ class CoordinatorSettings(BaseModel):
     nightmare_workers: int = 2
     fozzy_workers: int = 2
     extractor_workers: int = 2
+    auth0r_workers: int = 2
     python_executable: str = "python3"
     nightmare_config: Path = Path("config/nightmare.json")
     fozzy_config: Path = Path("config/fozzy.json")
     extractor_config: Path = Path("config/extractor.json")
+    auth0r_config: Path = Path("config/auth0r.json")
     upload_session_every_seconds: float = 15.0
     enable_nightmare: bool = True
     enable_fozzy: bool = True
     enable_extractor: bool = True
+    enable_auth0r: bool = True
     fozzy_process_workers: int = 1
     extractor_process_workers: int = 1
 
@@ -165,7 +168,7 @@ class CoordinatorSettings(BaseModel):
     def _normalize_floatish(cls, value: Any) -> float:
         return safe_float(value, 0.0)
 
-    @field_validator("lease_seconds", "nightmare_workers", "fozzy_workers", "extractor_workers", "fozzy_process_workers", "extractor_process_workers", mode="before")
+    @field_validator("lease_seconds", "nightmare_workers", "fozzy_workers", "extractor_workers", "auth0r_workers", "fozzy_process_workers", "extractor_process_workers", mode="before")
     @classmethod
     def _normalize_intish(cls, value: Any) -> int:
         return safe_int(value, 0)
@@ -178,6 +181,7 @@ class CoordinatorSettings(BaseModel):
         self.nightmare_workers = max(1, self.nightmare_workers)
         self.fozzy_workers = max(1, self.fozzy_workers)
         self.extractor_workers = max(1, self.extractor_workers)
+        self.auth0r_workers = max(1, self.auth0r_workers)
         self.upload_session_every_seconds = max(5.0, self.upload_session_every_seconds)
         self.fozzy_process_workers = max(1, self.fozzy_process_workers)
         self.extractor_process_workers = max(1, self.extractor_process_workers)

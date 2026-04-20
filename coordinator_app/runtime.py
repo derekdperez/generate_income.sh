@@ -51,14 +51,17 @@ class CoordinatorConfig:
     nightmare_workers: int
     fozzy_workers: int
     extractor_workers: int
+    auth0r_workers: int
     python_executable: str
     nightmare_config: Path
     fozzy_config: Path
     extractor_config: Path
+    auth0r_config: Path
     upload_session_every_seconds: float
     enable_nightmare: bool
     enable_fozzy: bool
     enable_extractor: bool
+    enable_auth0r: bool
     fozzy_process_workers: int
     extractor_process_workers: int
 
@@ -440,14 +443,17 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
             "nightmare_workers": cfg.get("nightmare_workers", 2),
             "fozzy_workers": cfg.get("fozzy_workers", 2),
             "extractor_workers": cfg.get("extractor_workers", 2),
+            "auth0r_workers": cfg.get("auth0r_workers", 2),
             "python_executable": merged_value(None, cfg, "python_executable", sys.executable),
             "nightmare_config": BASE_DIR / str(cfg.get("nightmare_config", "config/nightmare.json")),
             "fozzy_config": BASE_DIR / str(cfg.get("fozzy_config", "config/fozzy.json")),
             "extractor_config": BASE_DIR / str(cfg.get("extractor_config", "config/extractor.json")),
+            "auth0r_config": BASE_DIR / str(cfg.get("auth0r_config", "config/auth0r.json")),
             "upload_session_every_seconds": cfg.get("upload_session_every_seconds", 15.0),
             "enable_nightmare": bool(cfg.get("enable_nightmare", True)),
             "enable_fozzy": bool(cfg.get("enable_fozzy", True)),
             "enable_extractor": bool(cfg.get("enable_extractor", True)),
+            "enable_auth0r": bool(cfg.get("enable_auth0r", True)),
             "fozzy_process_workers": cfg.get("fozzy_process_workers", 1),
             "extractor_process_workers": cfg.get("extractor_process_workers", 1),
         }
@@ -466,14 +472,17 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
         nightmare_workers=settings.nightmare_workers,
         fozzy_workers=settings.fozzy_workers,
         extractor_workers=settings.extractor_workers,
+        auth0r_workers=settings.auth0r_workers,
         python_executable=settings.python_executable,
         nightmare_config=Path(settings.nightmare_config).resolve(),
         fozzy_config=Path(settings.fozzy_config).resolve(),
         extractor_config=Path(settings.extractor_config).resolve(),
+        auth0r_config=Path(settings.auth0r_config).resolve(),
         upload_session_every_seconds=settings.upload_session_every_seconds,
         enable_nightmare=settings.enable_nightmare,
         enable_fozzy=settings.enable_fozzy,
         enable_extractor=settings.enable_extractor,
+        enable_auth0r=settings.enable_auth0r,
         fozzy_process_workers=settings.fozzy_process_workers,
         extractor_process_workers=settings.extractor_process_workers,
     )
