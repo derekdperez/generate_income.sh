@@ -832,7 +832,11 @@ class DistributedCoordinator:
                     cmd.append("--insecure-tls")
                 auth0r_cfg = _read_json_dict(self.cfg.auth0r_config)
                 min_delay = auth0r_cfg.get("min_delay_seconds", 0.25)
+                max_seed_actions = auth0r_cfg.get("max_seed_actions", 200)
+                timeout_seconds = auth0r_cfg.get("timeout_seconds", 20.0)
                 cmd.extend(["--min-delay-seconds", str(min_delay)])
+                cmd.extend(["--max-seed-actions", str(max_seed_actions)])
+                cmd.extend(["--timeout-seconds", str(timeout_seconds)])
                 log_path = paths["auth0r_log"]
                 exit_code = 1
                 err_text = ""

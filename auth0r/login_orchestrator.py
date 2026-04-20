@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import httpx
-from urllib.parse import urljoin
 
 from auth0r.types import AuthIdentity
 
@@ -16,6 +15,15 @@ def _marker_matches(text: str, marker_kind: str, marker_value: str) -> bool:
     if kind in {"text", "contains"}:
         return needle in haystack
     return False
+
+
+def _cookie_allowed(cookie: dict, identity: AuthIdentity) -> bool:
+    if not identity.allowed_hosts:
+        return True
+    cookie_domain = str(cookie.get("domain", "") or "").lstrip(".").lower()
+    if not cookie_domain:
+        return True
+    return any(cookie_domain == host.lower().lstrip(".") or cookie_domain.endswith("." + host.lower().lstrip(".")) for host in identity.allowed_hosts)
 
 
 def verify_authenticated(client: httpx.Client, identity: AuthIdentity, base_url: str) -> tuple[bool, dict]:
@@ -45,9 +53,10 @@ def verify_authenticated(client: httpx.Client, identity: AuthIdentity, base_url:
 def establish_session(identity: AuthIdentity, base_url: str, verify_tls: bool = True, timeout_seconds: float = 20.0) -> tuple[httpx.Client, str, dict]:
     headers = dict(identity.custom_headers or {})
     client = httpx.Client(follow_redirects=True, verify=verify_tls, timeout=timeout_seconds, headers=headers)
-    source_type = "imported_cookie" if identity.imported_cookies else "fresh_login"
+    pre_login_cookies = []
+    source_type = "imported_cookie" if identity.imported_cookies and identity.login_strategy == "cookie_import" else "fresh_login"
     for cookie in identity.imported_cookies:
-        if not isinstance(cookie, dict):
+        if not isinstance(cookie, dict) or not _cookie_allowed(cookie, identity):
             continue
         name = str(cookie.get("name", "") or "")
         value = str(cookie.get("value", "") or "")
@@ -55,12 +64,14 @@ def establish_session(identity: AuthIdentity, base_url: str, verify_tls: bool = 
         path = str(cookie.get("path", "/") or "/")
         if name:
             client.cookies.set(name, value, domain=domain or None, path=path)
+            pre_login_cookies.append({"name": name, "value": value, "domain": domain, "path": path})
     login_cfg = {
         "login_url": identity.login_url,
         "login_method": identity.login_method,
         "username_field": identity.login_username_field,
         "password_field": identity.login_password_field,
         "extra_fields": identity.login_extra_fields,
+        "pre_login_cookie_count": len(pre_login_cookies),
     }
     if identity.login_strategy in {"html_form", "json_api"} and identity.login_url:
         payload = dict(identity.login_extra_fields or {})
@@ -72,6 +83,9 @@ def establish_session(identity: AuthIdentity, base_url: str, verify_tls: bool = 
             rsp = client.request(identity.login_method or "POST", identity.login_url, data=payload)
         login_cfg["login_status_code"] = rsp.status_code
     verified, summary = verify_authenticated(client, identity, base_url)
+    summary["session_cookie_names"] = [cookie.name for cookie in client.cookies.jar]
+    summary["pre_login_cookies"] = pre_login_cookies
+    summary["source_type"] = source_type
     if not verified:
         client.close()
         raise RuntimeError(f"authentication verification failed for {identity.identity_label}: {summary}")

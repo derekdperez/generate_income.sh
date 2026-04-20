@@ -1,5 +1,6 @@
 {
   "min_delay_seconds": 0.25,
   "max_seed_actions": 200,
+  "timeout_seconds": 20.0,
   "verify_tls": true
 }
