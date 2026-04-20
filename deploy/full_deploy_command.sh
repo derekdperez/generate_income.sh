@@ -52,6 +52,74 @@ ids_empty() {
   [[ -z "$value" || "$value" == "None" ]]
 }
 
+
+read_env_value() {
+  local env_file="$1"
+  local env_key="$2"
+  [[ -f "$env_file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      "${env_key}"=*)
+        echo "${line#${env_key}=}"
+        return 0
+        ;;
+    esac
+  done <"$env_file"
+  return 1
+}
+
+ensure_log_database_url() {
+  local env_file="deploy/.env"
+  local current_value=""
+  current_value="$(read_env_value "$env_file" LOG_DATABASE_URL 2>/dev/null || true)"
+  if [[ -n "$current_value" ]]; then
+    export LOG_DATABASE_URL="$current_value"
+    return 0
+  fi
+
+  local provision_script="./deploy/provision-log-db-aws.sh"
+  if [[ ! -x "$provision_script" ]]; then
+    chmod +x "$provision_script" 2>/dev/null || true
+  fi
+  if [[ ! -x "$provision_script" ]]; then
+    echo "Missing executable ${provision_script}; cannot provision log database automatically." >&2
+    return 1
+  fi
+  if [[ -z "$AWS_AMI_ID" || -z "$AWS_SUBNET_ID" || -z "$AWS_SECURITY_GROUP_IDS" ]]; then
+    echo "LOG_DATABASE_URL is not set and AWS provisioning parameters are incomplete." >&2
+    return 1
+  fi
+
+  local cmd=(
+    "$provision_script"
+    --ami-id "$AWS_AMI_ID"
+    --instance-type "$AWS_INSTANCE_TYPE"
+    --subnet-id "$AWS_SUBNET_ID"
+    --security-group-ids "$AWS_SECURITY_GROUP_IDS"
+    --env-file "$env_file"
+    --skip-rebuild-central
+  )
+  if [[ -n "$AWS_KEY_NAME" ]]; then
+    cmd+=(--key-name "$AWS_KEY_NAME")
+  fi
+  if [[ -n "$AWS_IAM_INSTANCE_PROFILE" ]]; then
+    cmd+=(--iam-instance-profile "$AWS_IAM_INSTANCE_PROFILE")
+  fi
+  if [[ -n "$AWS_REGION" ]]; then
+    cmd+=(--region "$AWS_REGION")
+  fi
+
+  run_as_invoking_user "${cmd[@]}"
+
+  current_value="$(read_env_value "$env_file" LOG_DATABASE_URL 2>/dev/null || true)"
+  if [[ -z "$current_value" ]]; then
+    echo "Automatic log database provisioning completed but LOG_DATABASE_URL is still missing from ${env_file}." >&2
+    return 1
+  fi
+  export LOG_DATABASE_URL="$current_value"
+  return 0
+}
+
 get_worker_instance_ids() {
   local state_values="$1"
   run_as_invoking_user aws ec2 describe-instances \
@@ -82,8 +150,14 @@ if [[ -f "deploy/.env" ]]; then
   set +a
 fi
 
-LOG_DATABASE_URL="$(ensure_log_database_url "${LOG_DATABASE_URL:-}")"
-export LOG_DATABASE_URL
+ensure_log_database_url
+
+if [[ -f "deploy/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "deploy/.env"
+  set +a
+fi
 
 if [[ -z "${COORDINATOR_BASE_URL:-}" || -z "${COORDINATOR_API_TOKEN:-}" ]]; then
   echo "Missing COORDINATOR_BASE_URL and/or COORDINATOR_API_TOKEN in deploy/.env; cannot auto-register targets." >&2
