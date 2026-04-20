@@ -1,6 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+report_central_error() {
+  local msg="$1"
+  local raw="${2:-$1}"
+  if [ -z "${COORDINATOR_BASE_URL:-}" ]; then
+    return 0
+  fi
+  local base="${COORDINATOR_BASE_URL%/}"
+  local payload
+  payload=$(python3 - "$msg" "$raw" "bootstrap_central_auto" <<'PY'
+import json, os, socket, sys
+msg = sys.argv[1]
+raw = sys.argv[2]
+program = sys.argv[3]
+print(json.dumps({
+    "severity": "error",
+    "description": msg,
+    "machine": os.getenv("EC2_INSTANCE_ID") or os.getenv("HOSTNAME") or socket.gethostname(),
+    "source_id": f"{program}:shell",
+    "source_type": "shell_script",
+    "program_name": program,
+    "component_name": "shell",
+    "raw_line": raw,
+    "metadata_json": {"script": program},
+}))
+PY
+)
+  curl -ksS --connect-timeout 5 --max-time 10 \
+    -H "Content-Type: application/json" \
+    ${COORDINATOR_API_TOKEN:+-H "Authorization: Bearer ${COORDINATOR_API_TOKEN}"} \
+    -d "$payload" \
+    "$base/api/coord/errors/ingest" >/dev/null 2>&1 || true
+}
+
+trap 'report_central_error "Shell script error in bootstrap_central_auto" "line=${LINENO} cmd=${BASH_COMMAND}"' ERR
+
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_DIR="${ROOT_DIR}/deploy"
 TLS_DIR="${DEPLOY_DIR}/tls"
@@ -207,45 +243,6 @@ if ! [[ "$AUTO_PROVISION_WORKERS" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-
-
-
-set_env_key() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  mkdir -p "$(dirname "$file")"
-  python3 - "$file" "$key" "$value" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-key = sys.argv[2]
-value = sys.argv[3]
-
-lines = []
-if path.exists():
-    lines = path.read_text(encoding="utf-8").splitlines()
-
-updated = False
-new_lines = []
-for raw_line in lines:
-    line = raw_line.strip()
-    if line and not line.startswith("#") and "=" in raw_line:
-        existing_key = raw_line.split("=", 1)[0].strip()
-        if existing_key == key:
-            new_lines.append(f"{key}={value}")
-            updated = True
-            continue
-    new_lines.append(raw_line)
-
-if not updated:
-    new_lines.append(f"{key}={value}")
-
-path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-PY
-  restore_invoking_user_ownership "$file"
-}
 
 read_env_value() {
   local file="$1"

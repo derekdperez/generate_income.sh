@@ -38,6 +38,8 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+
+from nightmare_shared.error_reporting import install_error_reporting, report_error
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html as render_js_extractor_report_html
 from typing import Any, Optional
 
@@ -2077,6 +2079,7 @@ def parse_args(argv: Optional[list[str] ] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[list[str] ] = None) -> int:
+    install_error_reporting(program_name="extractor", component_name="extractor", source_type="worker_tool")
     args = parse_args(argv)
     config_path = resolve_config_path(str(args.config))
     file_config = read_json_file(config_path)
@@ -2176,4 +2179,17 @@ def main(argv: Optional[list[str] ] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        report_error(
+            "Unhandled extractor exception",
+            program_name="extractor",
+            component_name="extractor",
+            source_type="worker_tool",
+            exception=exc,
+            raw_line=str(exc),
+        )
+        raise

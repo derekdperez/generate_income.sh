@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Small web server for Nightmare/Fozzy reporting and live run overview.
 
 Usage:
@@ -56,8 +56,7 @@ from reporting.server_pages import (
     render_dashboard_html,
     render_database_html,
     render_docker_status_html,
-    render_discovered_files_html,
-    render_discovered_targets_html,
+    render_errors_html,
     render_extractor_matches_html,
     render_fuzzing_html,
     render_view_logs_html,
@@ -65,6 +64,7 @@ from reporting.server_pages import (
 )
 from server_app.store import CoordinatorStore
 from logging_app.store import LogStore
+from nightmare_shared.error_reporting import install_error_reporting, report_error
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_ROOT = BASE_DIR / "output"
@@ -2628,6 +2628,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # avoid noisy tracebacks for expected connection aborts.
             if _is_client_disconnect_error(exc):
                 return
+            report_error(
+                "Unhandled HTTP handler exception",
+                program_name="server",
+                component_name="DashboardHandler",
+                source_type="server",
+                exception=exc,
+                raw_line=str(exc),
+                metadata={"path": str(getattr(self, "path", "") or "")},
+            )
             raise
 
     def _write_json(self, payload: dict[str, Any], status: int = 200) -> None:
@@ -2868,11 +2877,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/view-logs":
             self._write_text(render_view_logs_html(), content_type="text/html; charset=utf-8")
             return
-        if path == "/discovered-targets":
-            self._write_text(render_discovered_targets_html(), content_type="text/html; charset=utf-8")
-            return
-        if path == "/discovered-files":
-            self._write_text(render_discovered_files_html(), content_type="text/html; charset=utf-8")
+        if path == "/errors":
+            self._write_text(render_errors_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/api/summary":
             payload = collect_dashboard_data(self.output_root, self.coordinator_store)
@@ -2885,6 +2891,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "invalid log path"}, status=400)
                 return
             self._write_json({"path": str(resolved), "tail": _read_tail_lines(resolved, lines=DEFAULT_VIEW_LOG_LINES)})
+            return
+        if path == "/api/errors":
+            if self.log_store is None:
+                self._write_json({"error": "log database is not configured"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                payload = self.log_store.query_error_events(
+                    search=str((query.get("search") or [""])[0] or "").strip(),
+                    machine=str((query.get("machine") or [""])[0] or "").strip(),
+                    program_name=str((query.get("program_name") or [""])[0] or "").strip(),
+                    component_name=str((query.get("component_name") or [""])[0] or "").strip(),
+                    exception_type=str((query.get("exception_type") or [""])[0] or "").strip(),
+                    limit=max(1, min(5000, _safe_int((query.get("limit") or [250])[0], 250))),
+                    offset=max(0, _safe_int((query.get("offset") or [0])[0], 0)),
+                    sort_dir=str((query.get("sort_dir") or ["desc"])[0] or "desc").strip(),
+                )
+            except Exception as exc:
+                self.log_message("error log query failed: %r", exc)
+                self._write_json({"error": "error log query failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json(payload)
             return
         if path == "/api/coord/database-status":
             if self.coordinator_store is None:
@@ -3166,181 +3196,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "crawl progress query failed", "detail": str(exc)}, status=500)
                 return
             self._write_json(payload)
-            return
-
-        if path == "/api/coord/discovered-files":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
-            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
-            try:
-                rows = self.coordinator_store.list_discovered_files(limit=limit)
-            except Exception as exc:
-                self.log_message("list_discovered_files failed: %r", exc)
-                self._write_json({"error": "discovered files query failed", "detail": str(exc)}, status=500)
-                return
-            if search_text:
-                rows = [
-                    item for item in rows
-                    if search_text in " ".join(
-                        [
-                            str(item.get("root_domain", "") or ""),
-                            str(item.get("source_url", "") or ""),
-                            str(item.get("artifact_type", "") or ""),
-                            str(item.get("updated_at_utc", "") or ""),
-                            str(item.get("content_size_bytes", 0) or 0),
-                        ]
-                    ).lower()
-                ]
-            self._write_json({"generated_at_utc": _iso_now(), "total_files": len(rows), "files": rows})
-            return
-        if path == "/api/coord/high-value-files":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            limit = _safe_int((query.get("limit") or [10000])[0], 10000)
-            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
-            try:
-                rows = self.coordinator_store.list_high_value_items(limit=limit)
-            except Exception as exc:
-                self.log_message("list_high_value_items failed: %r", exc)
-                self._write_json({"error": "high-value files query failed", "detail": str(exc)}, status=500)
-                return
-            if search_text:
-                rows = [
-                    item for item in rows
-                    if search_text in " ".join(
-                        [
-                            str(item.get("root_domain", "") or ""),
-                            str(item.get("source_url", "") or ""),
-                            str(item.get("captured_at_utc", "") or ""),
-                            str(item.get("saved_relative", "") or ""),
-                            str(item.get("content_size_bytes", 0) or 0),
-                        ]
-                    ).lower()
-                ]
-            self._write_json({"generated_at_utc": _iso_now(), "total_files": len(rows), "files": rows})
-            return
-        if path == "/api/coord/artifact/download":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
-            artifact_type = str((query.get("artifact_type") or [""])[0] or "").strip().lower()
-            if not root_domain or not artifact_type:
-                self._write_json({"error": "root_domain and artifact_type are required"}, status=400)
-                return
-            artifact = self.coordinator_store.get_artifact(root_domain, artifact_type)
-            if artifact is None:
-                self._write_json({"error": "artifact not found"}, status=404)
-                return
-            extension = {
-                "nightmare_high_value_zip": ".zip",
-                "extractor_matches_zip": ".zip",
-                "fozzy_results_zip": ".zip",
-                "extractor_summary_json": ".json",
-                "fozzy_summary_json": ".json",
-                "nightmare_session_json": ".json",
-                "nightmare_url_inventory_json": ".json",
-                "nightmare_requests_json": ".json",
-                "nightmare_parameters_json": ".json",
-                "nightmare_post_requests_json": ".json",
-                "nightmare_source_of_truth_json": ".json",
-                "nightmare_report_html": ".html",
-                "nightmare_log": ".log",
-                "nightmare_scrapy_log": ".log",
-            }.get(artifact_type, "")
-            download_name = f"{root_domain}_{artifact_type}{extension}"
-            content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
-            self._write_bytes(bytes(artifact.get("content", b"") or b""), content_type=content_type, download_name=download_name)
-            return
-        if path == "/api/coord/high-value-item/download":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
-            saved_relative = str((query.get("saved_relative") or [""])[0] or "").strip()
-            if not root_domain or not saved_relative:
-                self._write_json({"error": "root_domain and saved_relative are required"}, status=400)
-                return
-            payload = self.coordinator_store.get_high_value_item_content(root_domain, saved_relative)
-            if payload is None:
-                self._write_json({"error": "high-value item not found"}, status=404)
-                return
-            download_name = str(payload.get("download_name", "download.bin") or "download.bin")
-            content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
-            self._write_bytes(bytes(payload.get("content", b"") or b""), content_type=content_type, download_name=download_name)
-            return
-        if path == "/api/coord/discovered-targets":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            limit = _safe_int((query.get("limit") or [2000])[0], 2000)
-            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
-            try:
-                rows = self.coordinator_store.list_discovered_target_domains(limit=limit)
-            except Exception as exc:
-                self.log_message("list_discovered_target_domains failed: %r", exc)
-                self._write_json({"error": "discovered target query failed", "detail": str(exc)}, status=500)
-                return
-            if search_text:
-                filtered_rows: list[dict[str, Any]] = []
-                for item in rows:
-                    haystack = " ".join(
-                        [
-                            str(item.get("root_domain", "") or ""),
-                            str(item.get("start_url", "") or ""),
-                            str(item.get("saved_at_utc", "") or ""),
-                        ]
-                        + [str(value) for value in (item.get("method_counts") or {}).values()]
-                    ).lower()
-                    if search_text in haystack:
-                        filtered_rows.append(item)
-                rows = filtered_rows
-            payload = {
-                "generated_at_utc": _iso_now(),
-                "total_domains": len(rows),
-                "domains": rows,
-            }
-            self._write_json(payload)
-            return
-        if path == "/api/coord/discovered-target-sitemap":
-            if self.coordinator_store is None:
-                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
-                return
-            if not self._is_coordinator_authorized():
-                self._write_json({"error": "unauthorized"}, status=401)
-                return
-            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
-            if not root_domain:
-                self._write_json({"error": "root_domain is required"}, status=400)
-                return
-            try:
-                payload = self.coordinator_store.get_discovered_target_sitemap(root_domain)
-            except Exception as exc:
-                self.log_message("get_discovered_target_sitemap failed: %r", exc)
-                self._write_json({"error": "discovered target sitemap query failed", "detail": str(exc)}, status=500)
-                return
-            if payload is None:
-                self._write_json({"found": False, "root_domain": root_domain}, status=404)
-                return
-            self._write_json({"found": True, "root_domain": root_domain, "sitemap": payload})
             return
         if path == "/api/coord/extractor-matches/domains":
             if self.coordinator_store is None:
@@ -4015,6 +3870,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_json({"error": "unauthorized"}, status=401)
             return
 
+        if path == "/api/coord/errors/ingest":
+            if self.log_store is None:
+                self._write_json({"error": "log database is not configured"}, status=503)
+                return
+            payload = body if isinstance(body, dict) else {}
+            now_utc = datetime.now(timezone.utc)
+            entry = {
+                "event_time_utc": str(payload.get("event_time_utc", "") or now_utc.isoformat()),
+                "event_time_est": _format_est_datetime(now_utc),
+                "severity": str(payload.get("severity", "error") or "error"),
+                "description": str(payload.get("description", "") or "").strip() or "error event",
+                "machine": str(payload.get("machine", "") or "unknown"),
+                "source_id": str(payload.get("source_id", "") or "unknown"),
+                "source_type": str(payload.get("source_type", "") or "unknown"),
+                "program_name": str(payload.get("program_name", "") or ""),
+                "component_name": str(payload.get("component_name", "") or ""),
+                "class_name": str(payload.get("class_name", "") or ""),
+                "function_name": str(payload.get("function_name", "") or ""),
+                "exception_type": str(payload.get("exception_type", "") or ""),
+                "stacktrace": str(payload.get("stacktrace", "") or ""),
+                "metadata_json": payload.get("metadata_json", {}) if isinstance(payload.get("metadata_json", {}), dict) else {},
+                "raw_line": str(payload.get("raw_line", "") or ""),
+            }
+            try:
+                inserted = self.log_store.insert_events([entry])
+            except Exception as exc:
+                self._write_json({"error": "error ingestion failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json({"ok": True, "inserted": inserted})
+            return
+
         if path == "/api/coord/register-targets":
             targets_payload = body.get("targets", [])
             targets: list[str] = []
@@ -4589,6 +4475,10 @@ def main(argv: list[str] | None = None) -> int:
     coordinator_store: CoordinatorStore | None = CoordinatorStore(database_url)
     try:
         log_store: LogStore | None = LogStore(log_database_url)
+        try:
+            install_error_reporting(program_name="server", component_name="central_http_server", source_type="server")
+        except Exception:
+            pass
     except Exception as exc:
         print(
             f"[server] failed to initialize required log store at log_database_url: {exc}",
@@ -4671,7 +4561,21 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    install_error_reporting(program_name="server", component_name="central_http_server", source_type="server")
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        report_error(
+            "Unhandled server exception",
+            program_name="server",
+            component_name="central_http_server",
+            source_type="server",
+            exception=exc,
+            raw_line=str(exc),
+        )
+        raise
 
 
 

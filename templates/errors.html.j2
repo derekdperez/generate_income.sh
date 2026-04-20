@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Errors</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 16px; flex-wrap: wrap; }
+    input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; min-width: 180px; }
+    button, a.button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; text-decoration: none; color: inherit; }
+    button.primary { background: #dc2626; border-color: #b91c1c; color: white; }
+    .table-wrap { max-height: 72vh; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
+    th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
+    tr.error-row td { background: #fff7f7; }
+    tr.critical-row td { background: #fef2f2; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+    .stack { max-width: 900px; max-height: 200px; overflow: auto; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #fecaca; background: #fee2e2; color: #991b1b; font-weight: 700; font-size: 11px; }
+    .nav { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+    .muted { color:#64748b; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a class="button" href="/">Dashboard</a>
+    <a class="button" href="/workers">Workers</a>
+    <a class="button" href="/docker-status">Docker Status</a>
+    <a class="button" href="/view-logs">View Logs</a>
+    <a class="button" href="/errors">Errors</a>
+  </div>
+  <h1>Errors</h1>
+  <div class="meta">Central error feed for application, worker, and system-level events that are forwarded into the log database.</div>
+
+  <div class="toolbar">
+    <input id="search" type="text" placeholder="Search description / stacktrace">
+    <input id="machine" type="text" placeholder="Machine">
+    <input id="program" type="text" placeholder="Program">
+    <input id="component" type="text" placeholder="Component">
+    <input id="exceptionType" type="text" placeholder="Exception type">
+    <select id="limit">
+      <option value="100">100 rows</option>
+      <option value="250" selected>250 rows</option>
+      <option value="500">500 rows</option>
+      <option value="1000">1000 rows</option>
+    </select>
+    <button id="refresh" class="primary">Refresh</button>
+  </div>
+
+  <div class="meta" id="status">Loading…</div>
+
+  <div class="table-wrap">
+    <table id="errorsTable">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Severity</th>
+          <th>Machine</th>
+          <th>Program</th>
+          <th>Component</th>
+          <th>Source</th>
+          <th>Exception</th>
+          <th>Description</th>
+          <th>Class</th>
+          <th>Function</th>
+          <th>Stacktrace / Raw</th>
+        </tr>
+      </thead>
+      <tbody id="errorsBody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    async function loadErrors() {
+      const params = new URLSearchParams({
+        search: document.getElementById('search').value,
+        machine: document.getElementById('machine').value,
+        program_name: document.getElementById('program').value,
+        component_name: document.getElementById('component').value,
+        exception_type: document.getElementById('exceptionType').value,
+        limit: document.getElementById('limit').value
+      });
+      const status = document.getElementById('status');
+      status.textContent = 'Loading…';
+      const resp = await fetch('/api/errors?' + params.toString(), { credentials: 'same-origin' });
+      const payload = await resp.json();
+      const body = document.getElementById('errorsBody');
+      body.innerHTML = '';
+      const events = Array.isArray(payload.events) ? payload.events : [];
+      for (const event of events) {
+        const tr = document.createElement('tr');
+        const sev = String(event.severity || '').toLowerCase();
+        tr.className = sev.includes('critical') ? 'critical-row' : 'error-row';
+        const stack = event.stacktrace || event.raw_line || '';
+        tr.innerHTML = `
+          <td>${escapeHtml(event.event_time_est || event.event_time_utc || '')}</td>
+          <td><span class="pill">${escapeHtml(event.severity || '')}</span></td>
+          <td>${escapeHtml(event.machine || '')}</td>
+          <td>${escapeHtml(event.program_name || '')}</td>
+          <td>${escapeHtml(event.component_name || '')}</td>
+          <td>${escapeHtml(event.source_id || '')}<div class="muted">${escapeHtml(event.source_type || '')}</div></td>
+          <td>${escapeHtml(event.exception_type || '')}</td>
+          <td>${escapeHtml(event.description || '')}</td>
+          <td>${escapeHtml(event.class_name || '')}</td>
+          <td>${escapeHtml(event.function_name || '')}</td>
+          <td class="mono stack">${escapeHtml(stack)}</td>
+        `;
+        body.appendChild(tr);
+      }
+      status.textContent = `Loaded ${events.length} of ${payload.total || 0} error events`;
+    }
+    function escapeHtml(value) {
+      return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+    document.getElementById('refresh').addEventListener('click', loadErrors);
+    for (const id of ['search', 'machine', 'program', 'component', 'exceptionType']) {
+      document.getElementById(id).addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') loadErrors();
+      });
+    }
+    loadErrors().catch((error) => {
+      document.getElementById('status').textContent = 'Failed to load errors: ' + error;
+    });
+  </script>
+</body>
+</html>

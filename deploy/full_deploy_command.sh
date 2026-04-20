@@ -1,6 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+report_central_error() {
+  local msg="$1"
+  local raw="${2:-$1}"
+  if [ -z "${COORDINATOR_BASE_URL:-}" ]; then
+    return 0
+  fi
+  local base="${COORDINATOR_BASE_URL%/}"
+  local payload
+  payload=$(python3 - "$msg" "$raw" "full_deploy_command" <<'PY'
+import json, os, socket, sys
+msg = sys.argv[1]
+raw = sys.argv[2]
+program = sys.argv[3]
+print(json.dumps({
+    "severity": "error",
+    "description": msg,
+    "machine": os.getenv("EC2_INSTANCE_ID") or os.getenv("HOSTNAME") or socket.gethostname(),
+    "source_id": f"{program}:shell",
+    "source_type": "shell_script",
+    "program_name": program,
+    "component_name": "shell",
+    "raw_line": raw,
+    "metadata_json": {"script": program},
+}))
+PY
+)
+  curl -ksS --connect-timeout 5 --max-time 10 \
+    -H "Content-Type: application/json" \
+    ${COORDINATOR_API_TOKEN:+-H "Authorization: Bearer ${COORDINATOR_API_TOKEN}"} \
+    -d "$payload" \
+    "$base/api/coord/errors/ingest" >/dev/null 2>&1 || true
+}
+
+trap 'report_central_error "Shell script error in full_deploy_command" "line=${LINENO} cmd=${BASH_COMMAND}"' ERR
+
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -17,29 +53,6 @@ REPO_BRANCH="main"
 WORKER_TAG_FILTER="nightmare-worker*"
 DEFAULT_WORKER_COUNT=2
 
-DOCKER_USE_SUDO=0
-
-run_docker() {
-  if [[ "$DOCKER_USE_SUDO" -eq 1 ]]; then
-    sudo docker "$@"
-  else
-    docker "$@"
-  fi
-}
-
-detect_docker_access_mode() {
-  if docker info >/dev/null 2>&1; then
-    DOCKER_USE_SUDO=0
-    return 0
-  fi
-  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
-    DOCKER_USE_SUDO=1
-    return 0
-  fi
-  echo "Docker daemon is unreachable (no direct or sudo access)." >&2
-  return 1
-}
-
 run_as_invoking_user() {
   if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     sudo -H -u "${SUDO_USER}" "$@"
@@ -49,11 +62,11 @@ run_as_invoking_user() {
 }
 
 resolve_compose_cmd() {
-  if run_docker compose version >/dev/null 2>&1; then
+  if run_as_invoking_user docker compose version >/dev/null 2>&1; then
     echo "docker compose"
     return 0
   fi
-  if command -v docker-compose >/dev/null 2>&1; then
+  if run_as_invoking_user which docker-compose >/dev/null 2>&1; then
     echo "docker-compose"
     return 0
   fi
@@ -64,13 +77,9 @@ run_compose() {
   local compose_cmd="$1"
   shift
   if [[ "$compose_cmd" == "docker compose" ]]; then
-    run_docker compose "$@"
+    run_as_invoking_user docker compose "$@"
   else
-    if [[ "$DOCKER_USE_SUDO" -eq 1 ]]; then
-      sudo docker-compose "$@"
-    else
-      docker-compose "$@"
-    fi
+    run_as_invoking_user docker-compose "$@"
   fi
 }
 
@@ -113,8 +122,6 @@ if [[ -z "${COORDINATOR_BASE_URL:-}" || -z "${COORDINATOR_API_TOKEN:-}" ]]; then
   echo "Missing COORDINATOR_BASE_URL and/or COORDINATOR_API_TOKEN in deploy/.env; cannot auto-register targets." >&2
   exit 1
 fi
-
-detect_docker_access_mode >/dev/null 2>&1 || true
 
 echo "Waiting for coordinator API readiness..."
 api_ready=0

@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 from http_client import request_json
 from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
+from nightmare_shared.error_reporting import report_error
 from nightmare_shared.logging_utils import get_logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -77,57 +78,6 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _read_text_tail(path: Path, *, max_bytes: int = 65536) -> str:
-    try:
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            if size <= 0:
-                return ""
-            start = max(0, size - int(max_bytes))
-            handle.seek(start, os.SEEK_SET)
-            return handle.read().decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-
-
-def _extract_failure_detail(log_text: str) -> str:
-    lines = [line.strip() for line in str(log_text or "").splitlines()]
-    if not lines:
-        return ""
-
-    interesting: list[str] = []
-    for line in lines:
-        if not line:
-            continue
-        if line.startswith("=== RUN"):
-            continue
-        if line.startswith("$ "):
-            continue
-        interesting.append(line)
-    if not interesting:
-        return ""
-
-    for line in reversed(interesting):
-        lower = line.lower()
-        if "traceback" in lower:
-            continue
-        if "error" in lower or "exception" in lower:
-            return line
-    return interesting[-1]
-
-
-def summarize_subprocess_failure(process_name: str, exit_code: int, log_path: Path, *, max_detail_chars: int = 400) -> str:
-    base = f"{str(process_name or 'subprocess').strip()} exit code {int(exit_code)}"
-    detail = _extract_failure_detail(_read_text_tail(log_path))
-    if not detail:
-        return base
-    detail = detail.strip().replace("\r", " ").replace("\n", " ")
-    if max_detail_chars > 0 and len(detail) > max_detail_chars:
-        detail = f"{detail[: max_detail_chars - 3].rstrip()}..."
-    return f"{base}; {detail}"
 
 
 class CoordinatorClient:
@@ -473,8 +423,34 @@ def run_subprocess(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
         except Exception as exc:
             log_handle.write(f"[coordinator] subprocess failed to start: {exc}\n")
             log_handle.flush()
+            report_error(
+                "Subprocess failed to start",
+                program_name="coordinator",
+                component_name="run_subprocess",
+                source_type="worker",
+                exception=exc,
+                raw_line=str(exc),
+                metadata={"command": run_cmd, "log_path": str(log_path)},
+            )
             raise
-        return int(proc.wait())
+        exit_code = int(proc.wait())
+        if exit_code != 0:
+            try:
+                tail = ""
+                with log_path.open("r", encoding="utf-8", errors="ignore") as reader:
+                    lines = reader.readlines()[-40:]
+                    tail = "".join(lines)
+                report_error(
+                    f"Subprocess exited with non-zero status {exit_code}",
+                    program_name="coordinator",
+                    component_name="run_subprocess",
+                    source_type="worker",
+                    raw_line=tail[-4000:],
+                    metadata={"command": run_cmd, "log_path": str(log_path), "exit_code": exit_code},
+                )
+            except Exception:
+                pass
+        return exit_code
 
 def load_config(args: argparse.Namespace) -> CoordinatorConfig:
     load_env_file_into_os(BASE_DIR / "deploy" / ".env", override=False)

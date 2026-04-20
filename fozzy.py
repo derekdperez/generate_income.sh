@@ -44,6 +44,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
+
+from nightmare_shared.error_reporting import install_error_reporting, report_error
 from typing import Any, Callable
 
 from fozzy_app.fuzz_core import (
@@ -5488,6 +5490,7 @@ def run_incremental_domains(args: argparse.Namespace) -> dict[str, bool]:
 
 
 def main() -> None:
+    install_error_reporting(program_name="fozzy", component_name="fozzy", source_type="worker_tool")
     args = parse_args()
     cfg_for_log = build_effective_fozzy_config(args)
     explicit_log_path = _resolve_optional_log_file_path(cfg_for_log.get("log_file"))
@@ -5526,3 +5529,13 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nFozzy interrupted by user (Ctrl+C). Partial outputs may have been saved.", flush=True)
         raise SystemExit(130)
+    except Exception as exc:
+        report_error(
+            "Unhandled fozzy exception",
+            program_name="fozzy",
+            component_name="fozzy",
+            source_type="worker_tool",
+            exception=exc,
+            raw_line=str(exc),
+        )
+        raise

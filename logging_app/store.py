@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,6 +37,13 @@ CREATE TABLE IF NOT EXISTS application_logs (
   machine TEXT NOT NULL,
   source_id TEXT NOT NULL,
   source_type TEXT NOT NULL,
+  program_name TEXT NOT NULL DEFAULT '',
+  component_name TEXT NOT NULL DEFAULT '',
+  class_name TEXT NOT NULL DEFAULT '',
+  function_name TEXT NOT NULL DEFAULT '',
+  exception_type TEXT NOT NULL DEFAULT '',
+  stacktrace TEXT NOT NULL DEFAULT '',
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   raw_line TEXT,
   entry_hash TEXT NOT NULL UNIQUE,
   created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -44,7 +52,15 @@ CREATE INDEX IF NOT EXISTS idx_application_logs_event_time ON application_logs(e
 CREATE INDEX IF NOT EXISTS idx_application_logs_severity ON application_logs(severity);
 CREATE INDEX IF NOT EXISTS idx_application_logs_machine ON application_logs(machine);
 CREATE INDEX IF NOT EXISTS idx_application_logs_source ON application_logs(source_id);
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS program_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS component_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS class_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS function_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS exception_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS stacktrace TEXT NOT NULL DEFAULT '';
+ALTER TABLE application_logs ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 """
+
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
@@ -60,6 +76,13 @@ CREATE INDEX IF NOT EXISTS idx_application_logs_source ON application_logs(sourc
                 str(entry.get("machine", "") or ""),
                 str(entry.get("source_id", "") or ""),
                 str(entry.get("source_type", "") or ""),
+                str(entry.get("program_name", "") or ""),
+                str(entry.get("component_name", "") or ""),
+                str(entry.get("class_name", "") or ""),
+                str(entry.get("function_name", "") or ""),
+                str(entry.get("exception_type", "") or ""),
+                str(entry.get("stacktrace", "") or ""),
+                json.dumps(entry.get("metadata_json", {}) or {}, sort_keys=True, default=str),
                 str(entry.get("raw_line", "") or ""),
             ]
         )
@@ -87,6 +110,13 @@ CREATE INDEX IF NOT EXISTS idx_application_logs_source ON application_logs(sourc
                     str(item.get("machine", "") or ""),
                     str(item.get("source_id", "") or ""),
                     str(item.get("source_type", "") or ""),
+                    str(item.get("program_name", "") or ""),
+                    str(item.get("component_name", "") or ""),
+                    str(item.get("class_name", "") or ""),
+                    str(item.get("function_name", "") or ""),
+                    str(item.get("exception_type", "") or ""),
+                    str(item.get("stacktrace", "") or ""),
+                    json.dumps(item.get("metadata_json", {}) or {}, default=str),
                     str(item.get("raw_line", "") or ""),
                     self._entry_hash(item),
                 )
@@ -100,9 +130,11 @@ CREATE INDEX IF NOT EXISTS idx_application_logs_source ON application_logs(sourc
                     cur.execute(
                         """
 INSERT INTO application_logs (
-  event_time_utc, event_time_est, severity, description, machine, source_id, source_type, raw_line, entry_hash
+  event_time_utc, event_time_est, severity, description, machine, source_id, source_type,
+  program_name, component_name, class_name, function_name, exception_type, stacktrace, metadata_json,
+  raw_line, entry_hash
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
 ON CONFLICT (entry_hash) DO NOTHING;
 """,
                         row,
@@ -118,6 +150,9 @@ ON CONFLICT (entry_hash) DO NOTHING;
         search: str = "",
         severity: str = "",
         machine: str = "",
+        program_name: str = "",
+        component_name: str = "",
+        exception_type: str = "",
         limit: int = 500,
         offset: int = 0,
         sort_dir: str = "desc",
@@ -133,10 +168,19 @@ ON CONFLICT (entry_hash) DO NOTHING;
         if machine:
             clauses.append("LOWER(machine) LIKE %s")
             params.append(f"%{machine.lower()}%")
+        if program_name:
+            clauses.append("LOWER(program_name) LIKE %s")
+            params.append(f"%{program_name.lower()}%")
+        if component_name:
+            clauses.append("LOWER(component_name) LIKE %s")
+            params.append(f"%{component_name.lower()}%")
+        if exception_type:
+            clauses.append("LOWER(exception_type) LIKE %s")
+            params.append(f"%{exception_type.lower()}%")
         if search:
-            clauses.append("(LOWER(description) LIKE %s OR LOWER(raw_line) LIKE %s)")
+            clauses.append("(LOWER(description) LIKE %s OR LOWER(raw_line) LIKE %s OR LOWER(stacktrace) LIKE %s)")
             needle = f"%{search.lower()}%"
-            params.extend([needle, needle])
+            params.extend([needle, needle, needle])
         where_sql = " AND ".join(clauses)
         order_sql = "DESC" if str(sort_dir or "").lower() != "asc" else "ASC"
         with self._connect() as conn:
@@ -145,7 +189,8 @@ ON CONFLICT (entry_hash) DO NOTHING;
                 total = int((cur.fetchone() or [0])[0] or 0)
                 cur.execute(
                     f"""
-SELECT event_time_utc, event_time_est, severity, description, machine, source_id, source_type, raw_line
+SELECT event_time_utc, event_time_est, severity, description, machine, source_id, source_type,
+       program_name, component_name, class_name, function_name, exception_type, stacktrace, metadata_json, raw_line
 FROM application_logs
 WHERE {where_sql}
 ORDER BY event_time_utc {order_sql}
@@ -169,3 +214,75 @@ OFFSET %s LIMIT %s;
                 }
             )
         return {"total": total, "offset": int(offset), "limit": int(limit), "events": out}
+
+
+    def query_error_events(
+        self,
+        *,
+        search: str = "",
+        machine: str = "",
+        program_name: str = "",
+        component_name: str = "",
+        exception_type: str = "",
+        limit: int = 500,
+        offset: int = 0,
+        sort_dir: str = "desc",
+    ) -> dict[str, Any]:
+        clauses = ["LOWER(severity) IN ('error', 'critical', 'fatal')"]
+        params: list[Any] = []
+        if machine:
+            clauses.append("LOWER(machine) LIKE %s")
+            params.append(f"%{machine.lower()}%")
+        if program_name:
+            clauses.append("LOWER(program_name) LIKE %s")
+            params.append(f"%{program_name.lower()}%")
+        if component_name:
+            clauses.append("LOWER(component_name) LIKE %s")
+            params.append(f"%{component_name.lower()}%")
+        if exception_type:
+            clauses.append("LOWER(exception_type) LIKE %s")
+            params.append(f"%{exception_type.lower()}%")
+        if search:
+            needle = f"%{search.lower()}%"
+            clauses.append("(LOWER(description) LIKE %s OR LOWER(raw_line) LIKE %s OR LOWER(stacktrace) LIKE %s)")
+            params.extend([needle, needle, needle])
+        where_sql = " AND ".join(clauses)
+        order_sql = "DESC" if str(sort_dir or "").lower() != "asc" else "ASC"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM application_logs WHERE {where_sql};", tuple(params))
+                total = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    f"""
+SELECT event_time_utc, event_time_est, severity, description, machine, source_id, source_type,
+       program_name, component_name, class_name, function_name, exception_type, stacktrace, metadata_json, raw_line
+FROM application_logs
+WHERE {where_sql}
+ORDER BY event_time_utc {order_sql}
+OFFSET %s LIMIT %s;
+""",
+                    tuple([*params, int(offset), int(limit)]),
+                )
+                rows = cur.fetchall()
+        events = []
+        for row in rows:
+            events.append(
+                {
+                    "event_time_utc": row[0].isoformat() if isinstance(row[0], datetime) else str(row[0] or ""),
+                    "event_time_est": row[1],
+                    "severity": row[2],
+                    "description": row[3],
+                    "machine": row[4],
+                    "source_id": row[5],
+                    "source_type": row[6],
+                    "program_name": row[7],
+                    "component_name": row[8],
+                    "class_name": row[9],
+                    "function_name": row[10],
+                    "exception_type": row[11],
+                    "stacktrace": row[12],
+                    "metadata_json": row[13] if isinstance(row[13], dict) else {},
+                    "raw_line": row[14],
+                }
+            )
+        return {"total": total, "events": events}
