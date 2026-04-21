@@ -9,7 +9,7 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass(slots=True)
+@dataclass
 class ArtifactMetadata:
     artifact_id: str
     artifact_type: str
@@ -31,7 +31,7 @@ class ArtifactMetadata:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class SummaryEnvelope:
     stage: str
     status: str
@@ -54,7 +54,7 @@ class SummaryEnvelope:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class EventRecord:
     event_type: str
     aggregate_key: str
@@ -68,7 +68,7 @@ class EventRecord:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class SuppressionRule:
     suppression_id: str
     scope_type: str
@@ -84,7 +84,7 @@ class SuppressionRule:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class TriageRecord:
     finding_fingerprint: str
     status: str
@@ -98,7 +98,7 @@ class TriageRecord:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class RiskScorecard:
     root_domain: str
     score: float

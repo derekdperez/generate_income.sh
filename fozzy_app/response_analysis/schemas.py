@@ -14,7 +14,7 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-@dataclass(slots=True)
+@dataclass
 class Finding:
     id: str
     title: str
@@ -32,7 +32,7 @@ class Finding:
         return payload
 
 
-@dataclass(slots=True)
+@dataclass
 class HeaderDiff:
     new_headers: list[str] = field(default_factory=list)
     missing_headers: list[str] = field(default_factory=list)
@@ -44,7 +44,7 @@ class HeaderDiff:
         return _json_safe(asdict(self))
 
 
-@dataclass(slots=True)
+@dataclass
 class BodyDiffStats:
     normalized_similarity: float = 1.0
     token_jaccard: float = 1.0
@@ -61,7 +61,7 @@ class BodyDiffStats:
         return payload
 
 
-@dataclass(slots=True)
+@dataclass
 class AnalysisOutput:
     request_id: str
     baseline_id: str
@@ -105,7 +105,7 @@ class AnalysisOutput:
         }
 
 
-@dataclass(slots=True)
+@dataclass
 class NormalizedResponse:
     status_code: int
     elapsed_ms: int
@@ -127,7 +127,7 @@ class NormalizedResponse:
     token_set: set[str]
 
 
-@dataclass(slots=True)
+@dataclass
 class ResponseFeatures:
     status_code: int
     elapsed_ms: int
@@ -151,7 +151,7 @@ class ResponseFeatures:
     text_features: dict[str, Any]
 
 
-@dataclass(slots=True)
+@dataclass
 class DiffResult:
     status_changed: bool
     status_from: int
@@ -168,7 +168,7 @@ class DiffResult:
     auth_change_reason: str
 
 
-@dataclass(slots=True)
+@dataclass
 class BaselineProfile:
     baseline_id: str
     template_key: str

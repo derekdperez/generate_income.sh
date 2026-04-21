@@ -7,7 +7,7 @@ from typing import Any
 from .schemas import Finding
 
 
-@dataclass(slots=True)
+@dataclass
 class ClusterInfo:
     cluster_id: str
     label: str

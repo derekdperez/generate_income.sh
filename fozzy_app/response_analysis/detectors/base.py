@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from ..schemas import DiffResult, Finding, ResponseFeatures
 
 
-@dataclass(slots=True)
+@dataclass
 class DetectorContext:
     request_context: dict[str, Any]
     baseline_features: ResponseFeatures
