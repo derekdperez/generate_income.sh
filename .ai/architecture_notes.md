@@ -156,3 +156,6 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 - Discovered-files contract hardening:
   - `server_app/store.py` now emits canonical UI fields for discovered/high-value file listings (`updated_at_utc`/`captured_at_utc`, `content_size_bytes`).
   - `server.py` discovered/high-value endpoints now return both `rows` (canonical) and `files` (compatibility alias) to decouple API evolution from template rollout timing.
+
+- Auth0r overview query robustness:
+  - `CoordinatorStore.auth0r_overview` sorting now uses typed `CASE` branches per sort key family (text vs timestamp) to keep PostgreSQL type resolution deterministic across `completed_only` modes.

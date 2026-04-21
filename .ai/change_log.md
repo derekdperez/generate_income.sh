@@ -1075,3 +1075,13 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py server_app/store.py`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_discovered_files_html or list_discovered_files_returns_template_compatible_keys or list_high_value_files_returns_template_compatible_keys"` -> 3 passed
   - `pytest -q tests/test_refactor_modules.py tests/test_server_auth_cookie.py` -> 20 passed
+
+- Fixed auth0r overview SQL crash that prevented `/auth0r` page load.
+- Root cause: `CoordinatorStore.auth0r_overview` used one `CASE` expression in `ORDER BY` mixing `root_domain` (text) and `saved_at_utc` (timestamp), which Postgres rejects with `CASE types timestamp without time zone and text cannot be matched`.
+- Changes:
+  - `server_app/store.py`: replaced mixed-type `CASE` sort with two type-safe `CASE` expressions (text-only branch + timestamp-only branch) and updated query param binding accordingly.
+  - `tests/test_reporting_and_store_helpers.py`: added regression test `test_auth0r_overview_completed_only_uses_type_safe_ordering`.
+- Validation:
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "auth0r_overview_completed_only_uses_type_safe_ordering"` -> 1 passed
+  - `python -m py_compile server.py server_app/store.py`
+  - `pytest -q tests/test_refactor_modules.py tests/test_server_auth_cookie.py` -> 20 passed

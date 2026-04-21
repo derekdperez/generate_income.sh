@@ -852,6 +852,52 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
     assert pages["https://example.com/admin"]["inbound_count"] == 1
 
 
+def test_auth0r_overview_completed_only_uses_type_safe_ordering():
+    now = datetime(2026, 4, 21, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchall = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM domain_rows" in compact and "discovered_urls_count > 0" in compact:
+                assert "CASE WHEN (%s = TRUE) THEN root_domain ELSE NULL END DESC" in compact
+                assert "CASE WHEN (%s = FALSE) THEN COALESCE(saved_at_utc, NOW()) ELSE NULL END DESC" in compact
+                assert params == (True, True, True, 25)
+                self._fetchall = [("example.com", "https://example.com/", 9, "completed", now)]
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchall(self):
+            return self._fetchall
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    payload = CoordinatorStore.auth0r_overview(store, completed_only=True, limit=25)
+    assert payload["completed_only"] is True
+    assert payload["total_domains"] == 1
+    assert payload["domains"][0]["root_domain"] == "example.com"
+    assert payload["domains"][0]["status"] == "completed"
+
+
 def test_list_discovered_files_returns_template_compatible_keys():
     now = datetime(2026, 4, 21, tzinfo=timezone.utc)
 

@@ -294,3 +294,5 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - Discovered-files payload convention: coordinator list APIs should expose `rows` as the canonical collection key, and may include `files` as a backward-compatibility alias during transitions.
 - Discovered-file row-shape convention: list rows consumed by UI tables should provide `updated_at_utc` and `content_size_bytes` canonical fields; legacy aliases (`discovered_at_utc`, `file_size`) can be preserved only for compatibility.
+
+- Postgres sort convention for optional ordering modes: avoid `CASE` branches that return different data types (for example text vs timestamp) inside a single expression; instead use separate typed `CASE` expressions in `ORDER BY` or build explicit query variants.

@@ -1092,17 +1092,15 @@ WHERE discovered_urls_count > 0
     AND completed_targets > 0
   ))
 ORDER BY
-  CASE
-    WHEN (%s = TRUE) THEN root_domain
-    ELSE COALESCE(saved_at_utc, NOW())::timestamp
-  END DESC,
+  CASE WHEN (%s = TRUE) THEN root_domain ELSE NULL END DESC,
+  CASE WHEN (%s = FALSE) THEN COALESCE(saved_at_utc, NOW()) ELSE NULL END DESC,
   root_domain ASC
 LIMIT %s;
 """
         domains: list[dict[str, Any]] = []
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (bool(completed_only), bool(completed_only), safe_limit))
+                cur.execute(sql, (bool(completed_only), bool(completed_only), bool(completed_only), safe_limit))
                 rows = cur.fetchall()
         for row in rows:
             domains.append(
