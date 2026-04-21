@@ -484,6 +484,7 @@ LIMIT %s
         replay_policy: dict[str, Any] | Any = None,
     ) -> str:
         profile_id = str(profile_id or "").strip() or str(uuid.uuid4())
+        normalized_profile_id = profile_id
         allowed_hosts_list = [str(item).strip() for item in (allowed_hosts if isinstance(allowed_hosts, list) else _split_lines(allowed_hosts)) if str(item).strip()]
         default_headers_dict = default_headers if isinstance(default_headers, dict) else _json_load(default_headers, {})
         replay_policy_dict = replay_policy if isinstance(replay_policy, dict) else _json_load(replay_policy, {})

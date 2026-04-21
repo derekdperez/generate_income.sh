@@ -286,13 +286,17 @@ def detect_soft_not_found_response(
 
     for phrase in body_phrases:
         phrase_text = str(phrase).strip().lower()
-        if phrase_text and phrase_text in compact and len(body_bytes) <= small_body_max_bytes:
-            return True, f"soft-404 phrase '{phrase}' in small 200 response ({len(body_bytes)} bytes)"
+        if phrase_text and phrase_text in compact:
+            if len(body_bytes) <= small_body_max_bytes:
+                return True, f"soft-404 phrase '{phrase}' in small 200 response ({len(body_bytes)} bytes)"
+            return True, f"soft-404 phrase '{phrase}' in 200 response body ({len(body_bytes)} bytes)"
 
     for pattern in body_regexes:
         try:
-            if re.search(str(pattern), compact, flags=re.IGNORECASE) and len(body_bytes) <= small_body_max_bytes:
-                return True, f"soft-404 body regex '{pattern}' in small 200 response ({len(body_bytes)} bytes)"
+            if re.search(str(pattern), compact, flags=re.IGNORECASE):
+                if len(body_bytes) <= small_body_max_bytes:
+                    return True, f"soft-404 body regex '{pattern}' in small 200 response ({len(body_bytes)} bytes)"
+                return True, f"soft-404 body regex '{pattern}' in 200 response body ({len(body_bytes)} bytes)"
         except re.error:
             continue
 
@@ -415,6 +419,7 @@ def build_soft_404_negative_profile(
             negative_profile=None,
             compare_against_negative_profile=False,
             read_limit=SOFT_404_BASELINE_BODY_READ_MAX,
+            head_first=False,
         )
         response = probe.get("response") if isinstance(probe.get("response"), dict) else {}
         headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
@@ -5263,11 +5268,13 @@ def probe_url_existence(
     negative_profile: dict[str, Any] | None = None,
     compare_against_negative_profile: bool = False,
     read_limit: int = HTTP_PROBE_BODY_READ_MAX,
+    head_first: bool = True,
 ) -> dict[str, Any]:
     user_agent = "nightmare-url-validator/1.0"
     last_error: str | None = None
 
-    for method in ("HEAD", "GET"):
+    methods = ("HEAD", "GET") if bool(head_first) and not bool(compare_against_negative_profile) else ("GET",)
+    for method in methods:
         if request_throttle is not None:
             request_throttle.wait()
 

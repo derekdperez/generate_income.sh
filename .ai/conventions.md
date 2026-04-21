@@ -315,3 +315,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Deploy diagnostics convention: readiness failures should print per-URL probe results (public base + localhost variants) and isolate service logs by container/service to make root-cause triage actionable.
 - Log-DB reuse convention: treat non-empty `LOG_DATABASE_URL` as reusable only if endpoint is reachable; otherwise reprovision and rewrite env.
 - Provisioning convention: replacement log DB provisioning may intentionally bypass existing URL/instance guardrails via explicit `--force-provision` path when stale infra references are detected.
+- Soft-404 baseline-learning convention: for negative-profile training, prefer GET-body probes over HEAD-first probes; HEAD-only responses can be bodyless and produce unusable fingerprints.
+- Soft-404 comparison convention: baseline classification paths should use full-body requests (GET) because body similarity signals are required for reliable catch-all detection.
+- Soft-404 heuristic convention: phrase/regex markers should not be gated exclusively by small-body thresholds; large branded error templates may exceed small-body limits.

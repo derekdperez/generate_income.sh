@@ -1167,3 +1167,20 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - If unreachable, it clears the stale URL, marks re-provision intent, and invokes `provision-log-db-aws.sh` to create a replacement VM.
   - Added `--force-provision` flow in `deploy/provision-log-db-aws.sh` to allow replacement provisioning even when stale URL or legacy tagged instances exist.
 - Validation: static checks + source-level verification of new flow; runtime deploy validation pending on EC2.
+- Investigated soft-404 false-positive path using Samsung `.bash_history` validation target.
+- Findings:
+  - Baseline-learning probes for soft-404 profiles were using HEAD-first flow; on domains that return HEAD 403/empty-body, learned fingerprints lacked useful body content and could not match catch-all HTML pages.
+  - Heuristic phrase/regex soft-404 detection in `detect_soft_not_found_response(...)` only fired for "small" 200 responses, so large branded soft-404 pages were skipped even when phrases matched.
+- Changes:
+  - `nightmare.py` `probe_url_existence(...)` now supports `head_first` and automatically uses GET-only when comparing against negative profile (body-required classification).
+  - `build_soft_404_negative_profile(...)` now calls probe with `head_first=False` so learned baselines are body-backed GET responses.
+  - `detect_soft_not_found_response(...)` now allows phrase/regex matches on large 200 bodies (reason string indicates large-body match).
+- Validation:
+  - `python -m py_compile nightmare.py`
+  - Reproduced baseline learning now capturing GET 404 body for Samsung test host.
+
+## 2026-04-21
+
+- Fixed Auth0r profile-save crash in `auth0r/profile_store.py`:
+  - `upsert_profile(...)` now defines and uses `normalized_profile_id` before SQL execution.
+- Why: saving a profile from `/auth0r` could raise a runtime `NameError` and surface in browser as a generic `failed to fetch` alert instead of a normal API error payload.

@@ -172,3 +172,6 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Bounded connect timeouts now enforce fail-fast behavior so deploy diagnostics surface concrete DB connectivity issues instead of opaque API-unreachable symptoms.
 - Bootstrap/log-db dependency boundary: central server startup is hard-dependent on dedicated log DB connectivity.
 - Startup pipeline now includes pre-compose stale-endpoint detection for `LOG_DATABASE_URL`, preventing repeated coordinator container crash-loop when log DB VM was deleted.
+- URL-validation boundary refinement:
+  - `probe_url_existence` now separates transport strategy (`head_first`) from classification intent (negative-profile compare), allowing GET-first classification workflows while preserving HEAD-first optimization for generic probes.
+  - Soft-404 baseline quality is now less sensitive to server-specific HEAD behavior.
