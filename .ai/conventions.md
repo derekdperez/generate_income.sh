@@ -287,3 +287,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - UI auth token convention: each standalone page script that uses bearer auth must define (or import) `TOKEN_COOKIE_NAME`, `readCookie`, `writeCookie`, and `deleteCookie` helpers before `authHeaders()` references them.
 - Auth-header behavior convention: `authHeaders()` should persist non-empty token to cookie and clear cookie when token input is empty, then return `Authorization` header only when token exists.
+
+- UI route parity convention: any navbar-visible page template must have a corresponding explicit GET route in `server.py` (avoid orphaned templates/links).
+- Page data contract convention: if a template calls a first-party API path (for example `/api/errors`), that endpoint must be implemented in `server.py` and protected consistently with coordinator auth.
+- Error-ingest convention: shell/runtime diagnostics posted to `/api/coord/errors/ingest` should support both single-event and batch-event payloads and return inserted/received counts.

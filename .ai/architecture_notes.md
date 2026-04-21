@@ -147,3 +147,8 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 - Startup dependency boundary refinement for server bootstrap:
   - Required stores (`CoordinatorStore`, `LogStore`) continue to hard-gate startup.
   - Optional auth0r profile store is now soft-initialized; failure degrades auth0r endpoints to 503 instead of crashing the whole HTTP server process.
+
+- Observability boundary refinement:
+  - `/errors` is now a dedicated UI surface rendered from `templates/errors.html.j2`.
+  - `/api/errors` serves filtered error events from the structured log DB (`LogStore.query_error_events`), while `/api/coord/errors/ingest` is the write-side ingest endpoint.
+  - Read/write responsibilities are split cleanly in `server.py` routing while storage remains in `logging_app/store.py`.

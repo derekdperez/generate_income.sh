@@ -38,6 +38,10 @@ def render_view_logs_html() -> str:
     return render_template("view_logs.html.j2")
 
 
+def render_errors_html() -> str:
+    return render_template("errors.html.j2")
+
+
 def render_auth0r_html() -> str:
     return render_template("auth0r.html.j2")
 

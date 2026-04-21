@@ -1048,3 +1048,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `pytest -q tests/test_refactor_modules.py` -> 14 passed.
   - `pytest -q tests/test_refactor_modules.py tests/test_reporting_and_store_helpers.py` had 1 pre-existing unrelated failure in discovered-target store SQL expectation.
 - Why: auth0r UI could not execute its first API call due to missing shared auth helper definitions.
+
+## 2026-04-21
+
+- Restored Errors page wiring end-to-end.
+- Root cause: `templates/errors.html.j2` and navbar link existed, but `server.py` had no `/errors` page route and no `/api/errors` handler, so page load failed/returned not found.
+- Added `render_errors_html()` in `reporting/server_pages.py` and imported it into `server.py`.
+- Added GET route `/errors` -> `render_errors_html()`.
+- Added GET API `/api/errors` (coordinator-auth protected) backed by `LogStore.query_error_events(...)` with filters: `search`, `machine`, `program_name`, `component_name`, `exception_type`, plus `limit/offset/sort_dir`.
+- Added POST API `/api/coord/errors/ingest` (coordinator-auth protected) to persist one or many structured error events via `LogStore.insert_events(...)`.
+- Validation:
+  - `python -m py_compile server.py reporting/server_pages.py`
+  - `pytest -q tests/test_server_auth_cookie.py tests/test_refactor_modules.py` -> 20 passed.
+- Why: expose the existing errors UI and script-based error ingestion path as first-class server endpoints.

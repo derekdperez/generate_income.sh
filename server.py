@@ -59,6 +59,7 @@ from reporting.server_pages import (
     render_discovered_files_html,
     render_discovered_targets_html,
     render_docker_status_html,
+    render_errors_html,
     render_extractor_matches_html,
     render_fuzzing_html,
     render_view_logs_html,
@@ -2934,6 +2935,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/view-logs":
             self._write_text(render_view_logs_html(), content_type="text/html; charset=utf-8")
             return
+        if path == "/errors":
+            self._write_text(render_errors_html(), content_type="text/html; charset=utf-8")
+            return
         if path == "/discovered-targets":
             self._write_text(render_discovered_targets_html(), content_type="text/html; charset=utf-8")
             return
@@ -3068,6 +3072,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/summary":
             payload = collect_dashboard_data(self.output_root, self.coordinator_store)
+            self._write_json(payload)
+            return
+        if path == "/api/errors":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            if self.log_store is None:
+                self._write_json({"error": "structured log store is unavailable"}, status=503)
+                return
+            search = str((query.get("search") or [""])[0] or "").strip()
+            machine = str((query.get("machine") or [""])[0] or "").strip()
+            program_name = str((query.get("program_name") or [""])[0] or "").strip()
+            component_name = str((query.get("component_name") or [""])[0] or "").strip()
+            exception_type = str((query.get("exception_type") or [""])[0] or "").strip()
+            limit = max(1, min(5000, _safe_int((query.get("limit") or [250])[0], 250)))
+            offset = max(0, _safe_int((query.get("offset") or [0])[0], 0))
+            sort_dir = str((query.get("sort_dir") or ["desc"])[0] or "desc").strip().lower()
+            try:
+                payload = self.log_store.query_error_events(
+                    search=search,
+                    machine=machine,
+                    program_name=program_name,
+                    component_name=component_name,
+                    exception_type=exception_type,
+                    limit=limit,
+                    offset=offset,
+                    sort_dir=sort_dir,
+                )
+            except Exception as exc:
+                self.log_message("query_error_events failed: %r", exc)
+                self._write_json({"error": "error event query failed", "detail": str(exc)}, status=500)
+                return
+            payload.update({"generated_at_utc": _iso_now(), "offset": offset, "limit": limit})
             self._write_json(payload)
             return
         if path == "/api/log-tail":
@@ -4375,6 +4415,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json({"ok": True, **payload})
             return
+        if path == "/api/coord/errors/ingest":
+            if self.log_store is None:
+                self._write_json({"error": "structured log store is unavailable"}, status=503)
+                return
+            payload_events = body.get("events")
+            if isinstance(payload_events, list):
+                events = [item for item in payload_events if isinstance(item, dict)]
+            elif isinstance(body, dict):
+                events = [body]
+            else:
+                self._write_json({"error": "invalid payload"}, status=400)
+                return
+            if not events:
+                self._write_json({"error": "at least one event is required"}, status=400)
+                return
+            try:
+                inserted = int(self.log_store.insert_events(events))
+            except Exception as exc:
+                self.log_message("errors_ingest failed: %r", exc)
+                self._write_json({"error": "error ingest failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json({"ok": True, "inserted": inserted, "received": len(events)})
+            return
 
         self._write_json({"error": "not found"}, status=404)
 
@@ -4807,5 +4870,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
