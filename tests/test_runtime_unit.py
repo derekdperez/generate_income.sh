@@ -232,3 +232,32 @@ def test_event_stream_reads_recent_rows_in_reverse_order(tmp_path: Path):
     rows = stream.read(limit=1, reverse=True)
     assert len(rows) == 1
     assert rows[0]["event_type"] == "worker.stopped"
+
+
+def test_worker_event_map_matches_worker_id_aliases():
+    from server_app.store import CoordinatorStore
+    from shared.models import EventRecord
+
+    store = object.__new__(CoordinatorStore)
+
+    class _Stream:
+        def read(self, limit=0, reverse=False):
+            return [
+                EventRecord(
+                    event_type="stage.claimed",
+                    aggregate_key="stage:example.com:extractor",
+                    schema_version=1,
+                    payload={"worker_id": "WORKER-2", "message": "claimed extractor"},
+                ).to_dict(),
+                EventRecord(
+                    event_type="worker.state_changed",
+                    aggregate_key="worker:worker-1",
+                    schema_version=1,
+                    payload={"message": "running"},
+                ).to_dict(),
+            ]
+
+    store._event_stream = _Stream()
+    result = store._latest_worker_event_map(["worker-1", "worker-2"])
+    assert result["worker-1"]["last_event_emitted"] == "running"
+    assert result["worker-2"]["last_event_emitted"] == "claimed extractor"

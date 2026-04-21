@@ -202,6 +202,45 @@ def _max_iso_datetime(*values: Any) -> str:
     return latest.isoformat() if latest is not None else ""
 
 
+def _latest_worker_log_line_from_links(logs: list[dict[str, Any]]) -> dict[str, str]:
+    newest_path: Path | None = None
+    newest_mtime = -1.0
+    for item in list(logs or []):
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("relative") or "").strip()
+        if not rel:
+            continue
+        candidate = (BASE_DIR / rel).resolve()
+        if not candidate.is_file():
+            continue
+        try:
+            stat = candidate.stat()
+        except Exception:
+            continue
+        if stat.st_mtime > newest_mtime:
+            newest_mtime = float(stat.st_mtime)
+            newest_path = candidate
+    if newest_path is None:
+        return {"message": "", "event_time_utc": ""}
+    message = ""
+    try:
+        tail = _read_tail_lines(newest_path, lines=5)
+        for line in reversed(tail.splitlines()):
+            cleaned = str(line or "").strip()
+            if cleaned:
+                message = cleaned
+                break
+    except Exception:
+        message = ""
+    event_time_utc = ""
+    try:
+        event_time_utc = datetime.fromtimestamp(newest_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        event_time_utc = ""
+    return {"message": message, "event_time_utc": event_time_utc}
+
+
 def _enrich_worker_snapshot_with_live_details(
     snapshot: dict[str, Any],
     *,
@@ -214,7 +253,10 @@ def _enrich_worker_snapshot_with_live_details(
     log_map: dict[str, dict[str, Any]] = {}
     if log_store is not None:
         try:
-            log_map = log_store.latest_events_by_source_ids(worker_ids)
+            if hasattr(log_store, "latest_events_by_worker_ids"):
+                log_map = log_store.latest_events_by_worker_ids(worker_ids)
+            else:
+                log_map = log_store.latest_events_by_source_ids(worker_ids)
         except Exception:
             log_map = {}
     for worker in workers:
@@ -223,8 +265,13 @@ def _enrich_worker_snapshot_with_live_details(
         worker_id = str(worker.get("worker_id") or "").strip()
         log_info = log_map.get(worker_id, {})
         last_log_message = str(log_info.get("description") or "").strip() or str(log_info.get("raw_line") or "").strip()
+        last_log_message_at_utc = str(log_info.get("event_time_utc") or "").strip()
+        if not last_log_message:
+            file_log_info = _latest_worker_log_line_from_links(worker.get("logs") if isinstance(worker.get("logs"), list) else [])
+            last_log_message = str(file_log_info.get("message") or "").strip()
+            last_log_message_at_utc = str(file_log_info.get("event_time_utc") or "").strip()
         worker["last_log_message"] = last_log_message
-        worker["last_log_message_at_utc"] = str(log_info.get("event_time_utc") or "").strip()
+        worker["last_log_message_at_utc"] = last_log_message_at_utc
         if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
             if last_log_message:
                 worker["last_action_performed"] = last_log_message

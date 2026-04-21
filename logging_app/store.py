@@ -291,6 +291,120 @@ ORDER BY event_time_utc DESC;
             }
         return out
 
+
+
+    def latest_events_by_worker_ids(self, worker_ids: list[str], *, limit_per_worker: int = 1) -> dict[str, dict[str, Any]]:
+        normalized = [str(item or "").strip() for item in list(worker_ids or []) if str(item or "").strip()]
+        if not normalized:
+            return {}
+        alias_map: dict[str, set[str]] = {}
+        all_aliases: set[str] = set()
+        for worker_id in normalized:
+            canonical = worker_id.strip().lower()
+            aliases = {worker_id, canonical}
+            if canonical.startswith("worker-"):
+                aliases.add(canonical.replace("worker-", ""))
+            alias_map[canonical] = {alias for alias in aliases if str(alias or "").strip()}
+            all_aliases.update(alias_map[canonical])
+        out: dict[str, dict[str, Any]] = {}
+        sql = """
+WITH ranked AS (
+    SELECT
+      event_time_utc,
+      event_time_est,
+      severity,
+      description,
+      machine,
+      source_id,
+      source_type,
+      program_name,
+      component_name,
+      class_name,
+      function_name,
+      exception_type,
+      stacktrace,
+      metadata_json,
+      raw_line,
+      ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(NULLIF(LOWER(metadata_json->>'worker_id'), ''), NULLIF(LOWER(source_id), ''), NULLIF(LOWER(machine), ''))
+        ORDER BY event_time_utc DESC, log_id DESC
+      ) AS rn
+    FROM application_logs
+    WHERE LOWER(source_id) = ANY(%s)
+       OR LOWER(machine) = ANY(%s)
+       OR LOWER(COALESCE(metadata_json->>'worker_id', '')) = ANY(%s)
+       OR LOWER(COALESCE(metadata_json->>'source_id', '')) = ANY(%s)
+)
+SELECT
+  event_time_utc,
+  event_time_est,
+  severity,
+  description,
+  machine,
+  source_id,
+  source_type,
+  program_name,
+  component_name,
+  class_name,
+  function_name,
+  exception_type,
+  stacktrace,
+  metadata_json,
+  raw_line
+FROM ranked
+WHERE rn <= %s
+ORDER BY event_time_utc DESC;
+"""
+        alias_list = sorted({str(item).strip().lower() for item in all_aliases if str(item).strip()})
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (alias_list, alias_list, alias_list, alias_list, max(1, int(limit_per_worker or 1))))
+                rows = cur.fetchall()
+        for row in rows:
+            metadata_json = row[13] if isinstance(row[13], dict) else {}
+            worker_candidates = [
+                str(metadata_json.get("worker_id") or "").strip(),
+                str(row[5] or "").strip(),
+                str(row[4] or "").strip(),
+                str(metadata_json.get("source_id") or "").strip(),
+            ]
+            matched_worker_id = ""
+            matched_sort_key = None
+            for candidate in worker_candidates:
+                if not candidate:
+                    continue
+                candidate_lower = candidate.lower()
+                for worker_id in normalized:
+                    worker_key = worker_id.strip().lower()
+                    if candidate_lower in alias_map.get(worker_key, set()):
+                        sort_key = str(row[0].isoformat() if isinstance(row[0], datetime) else str(row[0] or ""))
+                        if matched_sort_key is None or sort_key > matched_sort_key:
+                            matched_sort_key = sort_key
+                            matched_worker_id = worker_id
+            if not matched_worker_id:
+                continue
+            existing = out.get(matched_worker_id)
+            current_time = row[0].isoformat() if isinstance(row[0], datetime) else str(row[0] or "")
+            if existing is not None and str(existing.get("event_time_utc") or "") >= current_time:
+                continue
+            out[matched_worker_id] = {
+                "event_time_utc": current_time,
+                "event_time_est": str(row[1] or ""),
+                "severity": str(row[2] or "info"),
+                "description": str(row[3] or ""),
+                "machine": str(row[4] or ""),
+                "source_id": str(row[5] or ""),
+                "source_type": str(row[6] or ""),
+                "program_name": str(row[7] or ""),
+                "component_name": str(row[8] or ""),
+                "class_name": str(row[9] or ""),
+                "function_name": str(row[10] or ""),
+                "exception_type": str(row[11] or ""),
+                "stacktrace": str(row[12] or ""),
+                "metadata_json": metadata_json,
+                "raw_line": str(row[14] or ""),
+            }
+        return out
     def query_error_events(
         self,
         *,

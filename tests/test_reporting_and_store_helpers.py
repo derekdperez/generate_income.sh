@@ -1086,3 +1086,32 @@ def test_worker_control_snapshot_includes_latest_worker_event():
     assert worker["last_event_emitted"] == "claimed target example.com"
     assert worker["last_event_type"] == "worker.claimed_target"
     assert worker["last_run_time_at_utc"]
+
+
+def test_worker_snapshot_enrichment_falls_back_to_worker_log_file(tmp_path):
+    import server
+
+    worker_log = tmp_path / "worker-1.log"
+    worker_log.write_text("line1\nlatest log line\n", encoding="utf-8")
+    snapshot = {
+        "workers": [
+            {
+                "worker_id": "worker-1",
+                "logs": [{"label": worker_log.name, "relative": worker_log.name}],
+                "last_event_emitted_at_utc": "",
+                "last_heartbeat_at_utc": "",
+                "last_run_time_at_utc": "",
+                "last_action_performed": "unknown",
+            }
+        ]
+    }
+    original_base = server.BASE_DIR
+    try:
+        server.BASE_DIR = tmp_path
+        enriched = server._enrich_worker_snapshot_with_live_details(snapshot, log_store=None)
+    finally:
+        server.BASE_DIR = original_base
+    worker = enriched["workers"][0]
+    assert worker["last_log_message"] == "latest log line"
+    assert worker["last_action_performed"] == "latest log line"
+    assert worker["last_log_message_at_utc"]

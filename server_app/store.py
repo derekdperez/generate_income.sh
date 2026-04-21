@@ -1787,14 +1787,34 @@ ORDER BY w.worker_id ASC;
 
 
     @staticmethod
-    def _worker_id_from_event_row(event: dict[str, Any]) -> str:
+    def _worker_id_aliases(value: Any) -> set[str]:
+        text = str(value or "").strip()
+        if not text:
+            return set()
+        aliases = {text, text.lower()}
+        lowered = text.lower()
+        if lowered.startswith("worker-"):
+            aliases.add(lowered.replace("worker-", "", 1))
+        return {item for item in aliases if str(item or "").strip()}
+
+    @classmethod
+    def _worker_id_from_event_row(cls, event: dict[str, Any]) -> str:
         if not isinstance(event, dict):
             return ""
         payload = event.get("payload")
         payload_dict = payload if isinstance(payload, dict) else {}
-        worker_id = str(payload_dict.get("worker_id") or "").strip()
-        if worker_id:
-            return worker_id
+        candidates = [
+            payload_dict.get("worker_id"),
+            payload_dict.get("source_worker"),
+            payload_dict.get("actor_worker_id"),
+            payload_dict.get("claimed_by_worker_id"),
+            payload_dict.get("machine"),
+            payload_dict.get("worker"),
+        ]
+        for candidate in candidates:
+            worker_id = str(candidate or "").strip()
+            if worker_id:
+                return worker_id
         aggregate_key = str(event.get("aggregate_key") or "").strip()
         if aggregate_key.startswith("worker:"):
             return aggregate_key.split(":", 1)[1].strip()
@@ -1810,9 +1830,13 @@ ORDER BY w.worker_id ASC;
 
     def _latest_worker_event_map(self, worker_ids: list[str], *, scan_limit: int = 5000) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
-        normalized_ids = {str(item or "").strip() for item in list(worker_ids or []) if str(item or "").strip()}
+        normalized_ids = [str(item or "").strip() for item in list(worker_ids or []) if str(item or "").strip()]
         if not normalized_ids:
             return out
+        alias_to_worker: dict[str, str] = {}
+        for worker_id in normalized_ids:
+            for alias in self._worker_id_aliases(worker_id):
+                alias_to_worker.setdefault(alias.lower(), worker_id)
         stream = getattr(self, "_event_stream", None)
         if stream is None:
             return out
@@ -1821,16 +1845,23 @@ ORDER BY w.worker_id ASC;
         except Exception:
             return out
         for item in rows:
-            worker_id = self._worker_id_from_event_row(item)
-            if not worker_id or worker_id not in normalized_ids or worker_id in out:
+            candidate = self._worker_id_from_event_row(item)
+            if not candidate:
+                continue
+            worker_id = alias_to_worker.get(str(candidate).strip().lower(), "")
+            if not worker_id:
                 continue
             payload = item.get("payload")
             payload_dict = payload if isinstance(payload, dict) else {}
             message = str(payload_dict.get("message") or "").strip() or str(item.get("event_type") or "").strip()
+            current_time = str(item.get("created_at") or "").strip()
+            existing = out.get(worker_id)
+            if existing is not None and str(existing.get("last_event_emitted_at_utc") or "") >= current_time:
+                continue
             out[worker_id] = {
                 "last_event_emitted": message,
                 "last_event_type": str(item.get("event_type") or "").strip(),
-                "last_event_emitted_at_utc": str(item.get("created_at") or "").strip(),
+                "last_event_emitted_at_utc": current_time,
             }
             if len(out) >= len(normalized_ids):
                 break
@@ -2004,15 +2035,21 @@ ORDER BY w.worker_id ASC;
         event_map = self._latest_worker_event_map([str(worker.get("worker_id") or "") for worker in workers])
         for worker in workers:
             event_info = event_map.get(str(worker.get("worker_id") or "").strip(), {})
-            if not event_info:
+            if event_info:
+                worker["last_event_emitted"] = str(event_info.get("last_event_emitted") or "")
+                worker["last_event_type"] = str(event_info.get("last_event_type") or "")
+                worker["last_event_emitted_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
+                if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
+                    worker["last_action_performed"] = str(event_info.get("last_event_emitted") or "")
+                if str(event_info.get("last_event_emitted_at_utc") or "").strip():
+                    worker["last_run_time_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
                 continue
-            worker["last_event_emitted"] = str(event_info.get("last_event_emitted") or "")
-            worker["last_event_type"] = str(event_info.get("last_event_type") or "")
-            worker["last_event_emitted_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
-            if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
-                worker["last_action_performed"] = str(event_info.get("last_event_emitted") or "")
-            if str(event_info.get("last_event_emitted_at_utc") or "").strip():
-                worker["last_run_time_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
+            fallback_activity = self._normalize_last_action_label(str(worker.get("last_activity") or "").strip())
+            fallback_time = str(worker.get("last_heartbeat_at_utc") or "").strip()
+            if fallback_activity and fallback_activity.lower() != "unknown":
+                worker["last_event_emitted"] = fallback_activity
+                worker["last_event_type"] = "worker.presence"
+                worker["last_event_emitted_at_utc"] = fallback_time
         total = len(workers)
         return {
             "generated_at_utc": now_utc.isoformat(),
