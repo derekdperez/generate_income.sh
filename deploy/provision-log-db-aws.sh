@@ -20,6 +20,7 @@ DB_USER="nightmare_logs"
 DB_PASSWORD=""
 WAIT_FOR_RUNNING=1
 SKIP_REBUILD_CENTRAL=0
+FORCE_PROVISION=0
 
 usage() {
   cat <<'USAGE'
@@ -37,7 +38,8 @@ Usage:
     [--db-password <strong-password>] \
     [--env-file deploy/.env] \
     [--compose-file deploy/docker-compose.central.yml] \
-    [--skip-rebuild-central]
+    [--skip-rebuild-central] \
+    [--force-provision]
 
 What it does:
   1. Provisions one EC2 VM for dedicated log/reporting Postgres.
@@ -170,6 +172,7 @@ while [[ $# -gt 0 ]]; do
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
     --compose-file) COMPOSE_FILE="${2:-}"; shift 2 ;;
     --skip-rebuild-central) SKIP_REBUILD_CENTRAL=1; shift ;;
+    --force-provision) FORCE_PROVISION=1; shift ;;
     --no-wait) WAIT_FOR_RUNNING=0; shift ;;
     --help|-h) usage; exit 0 ;;
     *)
@@ -201,25 +204,31 @@ if [[ -z "$existing_log_db_url" ]]; then
   fi
 fi
 if [[ -n "$existing_log_db_url" ]]; then
-  echo "LOG_DATABASE_URL already exists in ${ENV_FILE}; skipping VM provisioning."
-  if [[ "$SKIP_REBUILD_CENTRAL" -eq 0 ]]; then
-    compose_cmd="$(resolve_compose_cmd || true)"
-    if [[ -z "$compose_cmd" ]]; then
-      echo "docker compose/docker-compose is required to rebuild central server." >&2
-      exit 1
+  if [[ "$FORCE_PROVISION" -eq 0 ]]; then
+    echo "LOG_DATABASE_URL already exists in ${ENV_FILE}; skipping VM provisioning."
+    if [[ "$SKIP_REBUILD_CENTRAL" -eq 0 ]]; then
+      compose_cmd="$(resolve_compose_cmd || true)"
+      if [[ -z "$compose_cmd" ]]; then
+        echo "docker compose/docker-compose is required to rebuild central server." >&2
+        exit 1
+      fi
+      run_compose "$compose_cmd" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build server
     fi
-    run_compose "$compose_cmd" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build server
+    exit 0
   fi
-  exit 0
+  echo "LOG_DATABASE_URL already exists but --force-provision was set; provisioning a replacement log DB VM."
 fi
 
 if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity "${region_args[@]}" >/dev/null 2>&1; then
   existing_instance_ids="$(find_existing_log_db_instances "${region_args[@]}")"
   if [[ -n "$existing_instance_ids" && "$existing_instance_ids" != "None" ]]; then
-    echo "Found existing log DB instance(s): ${existing_instance_ids}" >&2
-    echo "Refusing to provision another log DB VM because LOG_DATABASE_URL is missing." >&2
-    echo "Recover/set LOG_DATABASE_URL in ${ENV_FILE} and rerun." >&2
-    exit 1
+    if [[ "$FORCE_PROVISION" -eq 0 ]]; then
+      echo "Found existing log DB instance(s): ${existing_instance_ids}" >&2
+      echo "Refusing to provision another log DB VM because LOG_DATABASE_URL is missing." >&2
+      echo "Recover/set LOG_DATABASE_URL in ${ENV_FILE} and rerun, or use --force-provision." >&2
+      exit 1
+    fi
+    echo "Found existing log DB instance(s): ${existing_instance_ids}; continuing because --force-provision was set."
   fi
 fi
 

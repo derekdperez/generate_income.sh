@@ -170,3 +170,5 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - HTTP listeners are created only after `CoordinatorStore` and `LogStore` initialization.
   - Any long/blocking DB connect path in those constructors can make the container look healthy while no TCP listener is active.
   - Bounded connect timeouts now enforce fail-fast behavior so deploy diagnostics surface concrete DB connectivity issues instead of opaque API-unreachable symptoms.
+- Bootstrap/log-db dependency boundary: central server startup is hard-dependent on dedicated log DB connectivity.
+- Startup pipeline now includes pre-compose stale-endpoint detection for `LOG_DATABASE_URL`, preventing repeated coordinator container crash-loop when log DB VM was deleted.

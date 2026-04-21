@@ -1160,3 +1160,10 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `deploy/full_deploy_command.sh`: readiness probes now use curl connect/max-time bounds and print per-candidate URL diagnostics; server/postgres logs are emitted separately for clearer failure attribution.
 - Validation:
   - `python -m py_compile logging_app/store.py server_app/store.py`
+- Fixed bootstrap behavior for deleted log-DB VM with stale `LOG_DATABASE_URL` still present.
+- Root cause: `bootstrap-central-auto.sh` reused non-empty `LOG_DATABASE_URL` without reachability validation, so central server repeatedly restarted on log-store connect timeout and readiness stayed at HTTP 000.
+- Changes:
+  - `deploy/bootstrap-central-auto.sh` now validates `LOG_DATABASE_URL` TCP reachability before reuse.
+  - If unreachable, it clears the stale URL, marks re-provision intent, and invokes `provision-log-db-aws.sh` to create a replacement VM.
+  - Added `--force-provision` flow in `deploy/provision-log-db-aws.sh` to allow replacement provisioning even when stale URL or legacy tagged instances exist.
+- Validation: static checks + source-level verification of new flow; runtime deploy validation pending on EC2.

@@ -60,6 +60,7 @@ AWS_REGION=""
 REPO_URL=""
 REPO_BRANCH="main"
 LOG_DATABASE_URL=""
+REPROVISION_LOG_DB=0
 COMPOSE_CMD=""
 DOCKER_USE_SUDO=0
 INVOKING_USER="${SUDO_USER:-}"
@@ -631,6 +632,33 @@ metadata_get() {
   curl -fsS -m 2 "http://169.254.169.254/latest/meta-data/${path}" || true
 }
 
+can_reach_postgres_url() {
+  local db_url="$1"
+  if [[ -z "$db_url" ]]; then
+    return 1
+  fi
+  python3 - "$db_url" <<'PY'
+import socket
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1].strip()
+if not url:
+    raise SystemExit(1)
+parsed = urlparse(url)
+host = (parsed.hostname or "").strip()
+port = int(parsed.port or 5432)
+if not host:
+    raise SystemExit(1)
+try:
+    with socket.create_connection((host, port), timeout=3.0):
+        pass
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 detect_base_url() {
   if [[ -n "$BASE_URL_OVERRIDE" ]]; then
     echo "$BASE_URL_OVERRIDE"
@@ -765,6 +793,15 @@ if [[ -z "$LOG_DATABASE_URL" && "$FORCE_REGEN" -ne 1 ]]; then
   fi
 fi
 
+if [[ -n "$LOG_DATABASE_URL" && "$FORCE_REGEN" -ne 1 ]]; then
+  if ! can_reach_postgres_url "$LOG_DATABASE_URL"; then
+    echo "Existing LOG_DATABASE_URL is not reachable (stale/deleted log DB VM likely)."
+    echo "Will provision a replacement dedicated log DB VM and update deploy/.env."
+    LOG_DATABASE_URL=""
+    REPROVISION_LOG_DB=1
+  fi
+fi
+
 if [[ -z "$COORDINATOR_API_TOKEN" && "$FORCE_REGEN" -ne 1 ]]; then
   recovered_api_token="$(recover_env_value_from_container nightmare-coordinator-server COORDINATOR_API_TOKEN)"
   if [[ -n "$recovered_api_token" ]]; then
@@ -896,6 +933,9 @@ if [[ -z "$LOG_DATABASE_URL" ]]; then
     --env-file "$ENV_FILE"
     --skip-rebuild-central
   )
+  if [[ "$REPROVISION_LOG_DB" -eq 1 ]]; then
+    log_db_cmd+=(--force-provision)
+  fi
   if [[ -n "$AWS_KEY_NAME" ]]; then
     log_db_cmd+=(--key-name "$AWS_KEY_NAME")
   fi
