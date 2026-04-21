@@ -504,7 +504,7 @@ ON CONFLICT (id) DO UPDATE SET
             cur.execute(
                 sql,
                 (
-                    profile_id,
+                    normalized_profile_id,
                     str(root_domain or "").strip().lower(),
                     str(profile_label or "").strip() or "Default",
                     bool(enabled),
@@ -541,6 +541,9 @@ ON CONFLICT (id) DO UPDATE SET
         enabled: bool = True,
     ) -> str:
         identity_id = str(identity_id or "").strip() or str(uuid.uuid4())
+        normalized_profile_id = str(profile_id or "").strip()
+        if not normalized_profile_id:
+            raise ValueError("profile_id is required")
         custom_headers_dict = custom_headers if isinstance(custom_headers, dict) else _json_load(custom_headers, {})
         login_extra_fields_dict = login_extra_fields if isinstance(login_extra_fields, dict) else _json_load(login_extra_fields, {})
         markers_success = _normalize_markers(success_markers)
