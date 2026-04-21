@@ -216,6 +216,81 @@ OFFSET %s LIMIT %s;
         return {"total": total, "offset": int(offset), "limit": int(limit), "events": out}
 
 
+
+    def latest_events_by_source_ids(self, source_ids: list[str], *, limit_per_source: int = 1) -> dict[str, dict[str, Any]]:
+        normalized = [str(item or "").strip() for item in list(source_ids or []) if str(item or "").strip()]
+        if not normalized:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        sql = """
+WITH ranked AS (
+    SELECT
+      event_time_utc,
+      event_time_est,
+      severity,
+      description,
+      machine,
+      source_id,
+      source_type,
+      program_name,
+      component_name,
+      class_name,
+      function_name,
+      exception_type,
+      stacktrace,
+      metadata_json,
+      raw_line,
+      ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY event_time_utc DESC, log_id DESC) AS rn
+    FROM application_logs
+    WHERE source_id = ANY(%s)
+)
+SELECT
+  event_time_utc,
+  event_time_est,
+  severity,
+  description,
+  machine,
+  source_id,
+  source_type,
+  program_name,
+  component_name,
+  class_name,
+  function_name,
+  exception_type,
+  stacktrace,
+  metadata_json,
+  raw_line
+FROM ranked
+WHERE rn <= %s
+ORDER BY event_time_utc DESC;
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (normalized, max(1, int(limit_per_source or 1))))
+                rows = cur.fetchall()
+        for row in rows:
+            source_id = str(row[5] or "").strip()
+            if not source_id or source_id in out:
+                continue
+            out[source_id] = {
+                "event_time_utc": row[0].isoformat() if isinstance(row[0], datetime) else str(row[0] or ""),
+                "event_time_est": str(row[1] or ""),
+                "severity": str(row[2] or "info"),
+                "description": str(row[3] or ""),
+                "machine": str(row[4] or ""),
+                "source_id": source_id,
+                "source_type": str(row[6] or ""),
+                "program_name": str(row[7] or ""),
+                "component_name": str(row[8] or ""),
+                "class_name": str(row[9] or ""),
+                "function_name": str(row[10] or ""),
+                "exception_type": str(row[11] or ""),
+                "stacktrace": str(row[12] or ""),
+                "metadata_json": row[13] if isinstance(row[13], dict) else {},
+                "raw_line": str(row[14] or ""),
+            }
+        return out
+
     def query_error_events(
         self,
         *,

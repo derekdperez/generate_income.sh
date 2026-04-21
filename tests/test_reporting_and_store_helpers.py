@@ -1024,3 +1024,65 @@ def test_list_high_value_files_returns_template_compatible_keys():
     assert row["discovered_at_utc"] == now.isoformat()
     assert row["content_size_bytes"] == 5
     assert row["file_size"] == 5
+
+
+def test_worker_control_snapshot_includes_latest_worker_event():
+    now = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchall = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM worker_ids w" in compact and "queued_commands" in compact:
+                self._fetchall = [("worker-evt-1", now, 0, 0, 0, [], 0, "unknown")]
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchall(self):
+            return self._fetchall
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    class FakeEventStream:
+        def read(self, *, limit=None, reverse=False):
+            rows = [
+                {
+                    "event_type": "worker.claimed_target",
+                    "aggregate_key": "worker:worker-evt-1",
+                    "created_at": (now + timedelta(seconds=2)).isoformat(),
+                    "payload": {
+                        "worker_id": "worker-evt-1",
+                        "message": "claimed target example.com",
+                    },
+                }
+            ]
+            return list(reversed(rows)) if reverse else rows
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+    store._event_stream = FakeEventStream()  # type: ignore[attr-defined]
+
+    data = CoordinatorStore.worker_control_snapshot(store, stale_after_seconds=120)
+    worker = data["workers"][0]
+    assert worker["last_event_emitted"] == "claimed target example.com"
+    assert worker["last_event_type"] == "worker.claimed_target"
+    assert worker["last_run_time_at_utc"]

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Small web server for Nightmare/Fozzy reporting and live run overview.
 
 Usage:
@@ -176,6 +176,65 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _max_iso_datetime(*values: Any) -> str:
+    latest: datetime | None = None
+    for item in values:
+        parsed = _parse_iso_datetime(item)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest.isoformat() if latest is not None else ""
+
+
+def _enrich_worker_snapshot_with_live_details(
+    snapshot: dict[str, Any],
+    *,
+    log_store: LogStore | None = None,
+) -> dict[str, Any]:
+    workers = snapshot.get("workers")
+    if not isinstance(workers, list):
+        return snapshot
+    worker_ids = [str(worker.get("worker_id") or "").strip() for worker in workers if isinstance(worker, dict)]
+    log_map: dict[str, dict[str, Any]] = {}
+    if log_store is not None:
+        try:
+            log_map = log_store.latest_events_by_source_ids(worker_ids)
+        except Exception:
+            log_map = {}
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        worker_id = str(worker.get("worker_id") or "").strip()
+        log_info = log_map.get(worker_id, {})
+        last_log_message = str(log_info.get("description") or "").strip() or str(log_info.get("raw_line") or "").strip()
+        worker["last_log_message"] = last_log_message
+        worker["last_log_message_at_utc"] = str(log_info.get("event_time_utc") or "").strip()
+        if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
+            if last_log_message:
+                worker["last_action_performed"] = last_log_message
+        worker["last_run_time_at_utc"] = _max_iso_datetime(
+            worker.get("last_run_time_at_utc"),
+            worker.get("last_heartbeat_at_utc"),
+            worker.get("last_event_emitted_at_utc"),
+            worker.get("last_log_message_at_utc"),
+        )
+    return snapshot
 
 
 def _collect_master_reports(output_root: Path) -> list[dict[str, Any]]:
@@ -3473,6 +3532,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 worker_id = str(worker.get("worker_id", "") or "").strip()
                 worker["logs"] = self._discover_worker_log_links(worker_id)
                 worker["config"] = self._resolve_worker_config_rel(worker_id)
+            snapshot = _enrich_worker_snapshot_with_live_details(snapshot, log_store=self.log_store)
             self._write_json(snapshot)
             return
         if path == "/api/coord/crawl-progress":

@@ -54,6 +54,10 @@
           <th class="sortable" data-sort="status">Status <span class="sort-ind" id="sort_status"></span></th>
           <th class="sortable" data-sort="current_targets">Current Targets <span class="sort-ind" id="sort_current_targets"></span></th>
           <th class="sortable" data-sort="urls_scanned_session">URLs Scanned (session) <span class="sort-ind" id="sort_urls_scanned_session"></span></th>
+          <th class="sortable" data-sort="last_run_time_at_utc">Last Run Time (EST) <span class="sort-ind" id="sort_last_run_time_at_utc"></span></th>
+          <th class="sortable" data-sort="last_action_performed">Last Action Performed <span class="sort-ind" id="sort_last_action_performed"></span></th>
+          <th class="sortable" data-sort="last_log_message">Last Log Message <span class="sort-ind" id="sort_last_log_message"></span></th>
+          <th class="sortable" data-sort="last_event_emitted">Last Event Emitted <span class="sort-ind" id="sort_last_event_emitted"></span></th>
           <th>Actions</th>
           <th class="sortable" data-sort="logs">Logs <span class="sort-ind" id="sort_logs"></span></th>
           <th class="sortable" data-sort="config">Config <span class="sort-ind" id="sort_config"></span></th>
@@ -64,12 +68,16 @@
           <th><input id="filter_status" class="col-filter" type="text" placeholder="Filter status"></th>
           <th><input id="filter_current_targets" class="col-filter" type="text" placeholder="Filter targets"></th>
           <th><input id="filter_urls_scanned_session" class="col-filter" type="text" placeholder="Filter URLs"></th>
+          <th><input id="filter_last_run_time_at_utc" class="col-filter" type="text" placeholder="Filter time"></th>
+          <th><input id="filter_last_action_performed" class="col-filter" type="text" placeholder="Filter action"></th>
+          <th><input id="filter_last_log_message" class="col-filter" type="text" placeholder="Filter log"></th>
+          <th><input id="filter_last_event_emitted" class="col-filter" type="text" placeholder="Filter event"></th>
           <th></th>
           <th><input id="filter_logs" class="col-filter" type="text" placeholder="Filter logs"></th>
           <th><input id="filter_config" class="col-filter" type="text" placeholder="Filter config"></th>
         </tr>
       </thead>
-      <tbody id="rows"><tr><td colspan="8">Loading...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="12">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -130,7 +138,26 @@
     }
 
     function esc(v){ return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch])); }
-    function escJs(v){ return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/\\n/g, "\\\\n").replace(/\\r/g, "\\\\r"); }
+    function escJs(v){ return String(v || "").replace(/\\/g, "\\\\").replace(/\"/g, '\\\"').replace(/'/g, "\\'").replace(/\\n/g, "\\\\n").replace(/\\r/g, "\\\\r"); }
+    function clipText(value, maxLen) {
+      const text = String(value || "").trim();
+      const limit = Math.max(8, Number(maxLen || 96));
+      if (text.length <= limit) return text;
+      return `${text.slice(0, limit - 1)}…`;
+    }
+    const estTimeFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Etc/GMT+5",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    function formatEstClock(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value || "");
+      return estTimeFormatter.format(date);
+    }
     function authHeaders() {
       const token = document.getElementById("token").value.trim();
       if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
@@ -198,6 +225,10 @@
       if (key === "status") return `${_text(worker.status)} ${_text(worker.seconds_since_heartbeat)} ${_text(worker.last_activity)}`.toLowerCase();
       if (key === "current_targets") return _text(worker.current_targets || []).toLowerCase();
       if (key === "urls_scanned_session") return _text(worker.urls_scanned_session).toLowerCase();
+      if (key === "last_run_time_at_utc") return `${_text(formatEstClock(worker.last_run_time_at_utc || ""))} ${_text(worker.last_run_time_at_utc || "")}`.toLowerCase();
+      if (key === "last_action_performed") return _text(worker.last_action_performed).toLowerCase();
+      if (key === "last_log_message") return _text(worker.last_log_message).toLowerCase();
+      if (key === "last_event_emitted") return _text(worker.last_event_emitted).toLowerCase();
       if (key === "logs") return _text((worker.logs || []).map((l) => `${_text(l.label)} ${_text(l.relative)}`)).toLowerCase();
       if (key === "config") return `${_text(worker.config)} ${_text(worker.config_path_rel)}`.toLowerCase();
       return "";
@@ -208,6 +239,10 @@
         _workerFieldText(worker, "status"),
         _workerFieldText(worker, "current_targets"),
         _workerFieldText(worker, "urls_scanned_session"),
+        _workerFieldText(worker, "last_run_time_at_utc"),
+        _workerFieldText(worker, "last_action_performed"),
+        _workerFieldText(worker, "last_log_message"),
+        _workerFieldText(worker, "last_event_emitted"),
         _workerFieldText(worker, "logs"),
         _workerFieldText(worker, "config"),
       ].join(" ");
@@ -224,7 +259,7 @@
     }
     function _filterAndSortWorkers(rows) {
       const query = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
-      const filterKeys = ["worker_id", "status", "current_targets", "urls_scanned_session", "logs", "config"];
+      const filterKeys = ["worker_id", "status", "current_targets", "urls_scanned_session", "last_run_time_at_utc", "last_action_performed", "last_log_message", "last_event_emitted", "logs", "config"];
       const filters = {};
       for (const key of filterKeys) filters[key] = String((document.getElementById(`filter_${key}`)?.value || "")).trim().toLowerCase();
       let out = Array.isArray(rows) ? rows.slice() : [];
@@ -240,6 +275,8 @@
         let cmp = 0;
         if (sortKey === "urls_scanned_session") {
           cmp = _cmp(Number(left?.urls_scanned_session || 0), Number(right?.urls_scanned_session || 0));
+        } else if (sortKey === "last_run_time_at_utc") {
+          cmp = _cmp(Date.parse(String(left?.last_run_time_at_utc || "")) || 0, Date.parse(String(right?.last_run_time_at_utc || "")) || 0);
         } else if (sortKey === "status") {
           const rankCmp = _cmp(_statusSortRank(left?.status), _statusSortRank(right?.status));
           cmp = rankCmp !== 0 ? rankCmp : _cmp(_workerFieldText(left, "status"), _workerFieldText(right, "status"));
@@ -363,8 +400,8 @@
       _setSortIndicators();
       const visibleCount = visibleWorkers.length;
       document.getElementById("msg").textContent = `Showing ${visibleCount} of ${rows.length} workers. Selected: ${selectedWorkers().length}.`;
-      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers discovered yet.</td></tr>"; _updateSelectAllState(); return; }
-      if (!visibleWorkers.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No workers match current filters.</td></tr>"; _updateSelectAllState(); return; }
+      if (!rows.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='12'>No workers discovered yet.</td></tr>"; _updateSelectAllState(); return; }
+      if (!visibleWorkers.length) { document.getElementById("rows").innerHTML = "<tr><td colspan='12'>No workers match current filters.</td></tr>"; _updateSelectAllState(); return; }
       document.getElementById("rows").innerHTML = visibleWorkers.map((w) => {
         const logsList = (w.logs || []).map((l) => `<a href="/files/${encodeURIComponent(l.relative).replace(/%2F/g, "/")}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join("<br>") || "<span class='muted'>none</span>";
         const logDownloadBtn = (Array.isArray(w.logs) && w.logs.length)
@@ -376,12 +413,23 @@
         const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
         const workerId = String(w.worker_id || "");
         const checked = selectedWorkerIds.has(workerId) ? " checked" : "";
+        const lastRunTime = formatEstClock(w.last_run_time_at_utc || "") || "<span class='muted'>—</span>";
+        const lastAction = String(w.last_action_performed || "").trim();
+        const lastLog = String(w.last_log_message || "").trim();
+        const lastEvent = String(w.last_event_emitted || "").trim();
+        const actionCell = lastAction ? `<span title="${esc(lastAction)}">${esc(clipText(lastAction, 96))}</span>` : "<span class='muted'>none</span>";
+        const logCell = lastLog ? `<span title="${esc(lastLog)}">${esc(clipText(lastLog, 120))}</span>` : "<span class='muted'>none</span>";
+        const eventCell = lastEvent ? `<span title="${esc(lastEvent)}">${esc(clipText(lastEvent, 120))}</span>` : "<span class='muted'>none</span>";
         return `<tr>
           <td><input class="workerSel" type="checkbox" value="${esc(workerId)}"${checked}></td>
           <td>${esc(w.worker_id)}</td>
           <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span><br><span class="muted">${esc(w.last_activity || "")}</span></td>
           <td>${targets}</td>
           <td>${esc(w.urls_scanned_session)}</td>
+          <td class="mono">${lastRunTime}</td>
+          <td>${actionCell}</td>
+          <td>${logCell}</td>
+          <td>${eventCell}</td>
           <td><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','start')">Start</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','pause')">Pause</button><button onclick="bulkCommandForOne('${escJs(w.worker_id)}','stop')">Stop</button></td>
           <td>${logs}</td>
           <td><button onclick="openConfig('${escJs(w.worker_id)}')">Edit</button><br><span class="muted">${esc(w.config || "")}</span></td>
@@ -428,7 +476,7 @@
         saveCachedWorkerControl(payload);
       } catch (e) {
         if (!showedCached) {
-          document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load worker state: ${esc(e.message)}</td></tr>`;
+          document.getElementById("rows").innerHTML = `<tr><td colspan='12'>Failed to load worker state: ${esc(e.message)}</td></tr>`;
         } else {
           document.getElementById("msg").textContent = `Refresh failed. Showing cached worker state. (${e.message || e})`;
         }

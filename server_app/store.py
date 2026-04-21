@@ -1785,6 +1785,57 @@ ORDER BY w.worker_id ASC;
             "workers": workers,
         }
 
+
+    @staticmethod
+    def _worker_id_from_event_row(event: dict[str, Any]) -> str:
+        if not isinstance(event, dict):
+            return ""
+        payload = event.get("payload")
+        payload_dict = payload if isinstance(payload, dict) else {}
+        worker_id = str(payload_dict.get("worker_id") or "").strip()
+        if worker_id:
+            return worker_id
+        aggregate_key = str(event.get("aggregate_key") or "").strip()
+        if aggregate_key.startswith("worker:"):
+            return aggregate_key.split(":", 1)[1].strip()
+        return ""
+
+    @staticmethod
+    def _normalize_last_action_label(value: str) -> str:
+        text = str(value or "").strip().strip("_")
+        if not text:
+            return "unknown"
+        text = text.replace("_", " ")
+        return " ".join(part for part in text.split() if part)
+
+    def _latest_worker_event_map(self, worker_ids: list[str], *, scan_limit: int = 5000) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        normalized_ids = {str(item or "").strip() for item in list(worker_ids or []) if str(item or "").strip()}
+        if not normalized_ids:
+            return out
+        stream = getattr(self, "_event_stream", None)
+        if stream is None:
+            return out
+        try:
+            rows = stream.read(limit=max(1000, int(scan_limit or 5000)), reverse=True)
+        except Exception:
+            return out
+        for item in rows:
+            worker_id = self._worker_id_from_event_row(item)
+            if not worker_id or worker_id not in normalized_ids or worker_id in out:
+                continue
+            payload = item.get("payload")
+            payload_dict = payload if isinstance(payload, dict) else {}
+            message = str(payload_dict.get("message") or "").strip() or str(item.get("event_type") or "").strip()
+            out[worker_id] = {
+                "last_event_emitted": message,
+                "last_event_type": str(item.get("event_type") or "").strip(),
+                "last_event_emitted_at_utc": str(item.get("created_at") or "").strip(),
+            }
+            if len(out) >= len(normalized_ids):
+                break
+        return out
+
     def worker_control_snapshot(
         self,
         *,
@@ -1934,6 +1985,7 @@ ORDER BY w.worker_id ASC;
                     "worker_id": worker_id,
                     "status": status,
                     "last_activity": last_activity,
+                    "last_action_performed": self._normalize_last_action_label(last_activity),
                     "last_heartbeat_at_utc": last_heartbeat_iso,
                     "seconds_since_heartbeat": seconds_since,
                     "running_targets": int(row[2] or 0),
@@ -1941,8 +1993,26 @@ ORDER BY w.worker_id ASC;
                     "urls_scanned_session": int(row[4] or 0),
                     "current_targets": [str(item) for item in current_targets_raw if str(item or "").strip()],
                     "queued_commands": int(row[6] or 0),
+                    "last_event_emitted": "",
+                    "last_event_type": "",
+                    "last_event_emitted_at_utc": "",
+                    "last_log_message": "",
+                    "last_log_message_at_utc": "",
+                    "last_run_time_at_utc": last_heartbeat_iso or "",
                 }
             )
+        event_map = self._latest_worker_event_map([str(worker.get("worker_id") or "") for worker in workers])
+        for worker in workers:
+            event_info = event_map.get(str(worker.get("worker_id") or "").strip(), {})
+            if not event_info:
+                continue
+            worker["last_event_emitted"] = str(event_info.get("last_event_emitted") or "")
+            worker["last_event_type"] = str(event_info.get("last_event_type") or "")
+            worker["last_event_emitted_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
+            if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
+                worker["last_action_performed"] = str(event_info.get("last_event_emitted") or "")
+            if str(event_info.get("last_event_emitted_at_utc") or "").strip():
+                worker["last_run_time_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
         total = len(workers)
         return {
             "generated_at_utc": now_utc.isoformat(),
