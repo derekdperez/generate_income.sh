@@ -54,6 +54,7 @@ from http_request_queue import HttpRequestQueue
 from nightmare_app import spider_url_policy
 from nightmare_app.normalized_exports import write_normalized_exports
 from nightmare_shared.value_types import infer_observed_value_type
+from nightmare_shared.page_classification import build_page_fingerprint, classify_page, PageFingerprint
 
 import scrapy
 from openai import APIError, APITimeoutError, BadRequestError, OpenAI, RateLimitError
@@ -89,6 +90,9 @@ DEFAULT_SOFT_404_PHRASES = [
 ]
 DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE = "attention required! | cloudflare"
 DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE = "sorry, you have been blocked"
+SOFT_404_BASELINE_ATTEMPTS = 10
+SOFT_404_BASELINE_BODY_READ_MAX = 256 * 1024
+SOFT_404_BASELINE_DIR_NAME = "soft_404_profiles"
 BASE_DIR = Path(__file__).resolve().parent
 FILE_PATH_WORDLIST_PATH = BASE_DIR / "resources" / "wordlists" / "file_path_list.txt"
 FILE_PATH_WORDLIST_DISCOVERED_FROM = "resources/wordlists/file_path_list.txt"
@@ -293,6 +297,207 @@ def detect_soft_not_found_response(
             continue
 
     return False, None
+
+
+
+def _page_fingerprint_to_dict(fp: PageFingerprint) -> dict[str, Any]:
+    return {
+        "requested_url": fp.requested_url,
+        "final_url": fp.final_url,
+        "status_code": int(fp.status_code),
+        "redirect_chain": list(fp.redirect_chain),
+        "content_type": fp.content_type,
+        "title": fp.title,
+        "visible_text_preview": fp.visible_text[:800],
+        "response_length": int(fp.response_length),
+        "raw_hash": fp.raw_hash,
+        "normalized_hash": fp.normalized_hash,
+        "fuzzy_hash": fp.fuzzy_hash,
+        "normalized_body": fp.normalized_body,
+        "markers": list(fp.markers),
+        "fingerprint_id": fp.fingerprint_id,
+    }
+
+
+def _page_fingerprint_from_dict(payload: dict[str, Any]) -> PageFingerprint:
+    return PageFingerprint(
+        requested_url=str(payload.get("requested_url") or ""),
+        final_url=str(payload.get("final_url") or ""),
+        status_code=int(payload.get("status_code") or 0),
+        redirect_chain=[str(v or "").strip() for v in (payload.get("redirect_chain") or []) if str(v or "").strip()],
+        content_type=str(payload.get("content_type") or ""),
+        title=str(payload.get("title") or ""),
+        visible_text=str(payload.get("visible_text_preview") or payload.get("visible_text") or ""),
+        response_length=int(payload.get("response_length") or 0),
+        raw_hash=str(payload.get("raw_hash") or ""),
+        normalized_hash=str(payload.get("normalized_hash") or ""),
+        fuzzy_hash=str(payload.get("fuzzy_hash") or ""),
+        normalized_body=str(payload.get("normalized_body") or ""),
+        markers=[str(v or "").strip() for v in (payload.get("markers") or []) if str(v or "").strip()],
+    )
+
+
+def build_response_page_fingerprint(
+    *,
+    requested_url: str,
+    status_code: int | None,
+    response_url: str,
+    response_headers: dict[str, Any] | None,
+    response_body: bytes | bytearray | None,
+) -> PageFingerprint:
+    headers = response_headers if isinstance(response_headers, dict) else {}
+    content_type = str(headers.get("content-type") or headers.get("Content-Type") or "")
+    return build_page_fingerprint(
+        requested_url=requested_url,
+        status_code=int(status_code or 0),
+        final_url=str(response_url or requested_url or ""),
+        redirect_chain=[],
+        content_type=content_type,
+        response_body=bytes(response_body or b""),
+    )
+
+
+def _soft_404_profile_dir(site_output_dir: Path) -> Path:
+    return site_output_dir / SOFT_404_BASELINE_DIR_NAME
+
+
+def soft_404_profile_path(site_output_dir: Path, host: str) -> Path:
+    safe_host = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(host or "").strip().lower()) or "default"
+    return _soft_404_profile_dir(site_output_dir) / f"{safe_host}.json"
+
+
+def load_soft_404_profile(site_output_dir: Path, host: str) -> dict[str, Any] | None:
+    path = soft_404_profile_path(site_output_dir, host)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_common_soft_404_tokens(fingerprints: list[PageFingerprint]) -> list[str]:
+    token_sets: list[set[str]] = []
+    for fp in fingerprints:
+        tokens = {token for token in re.findall(r"[a-z0-9_]{4,}", fp.normalized_body or "") if token not in {"http", "https", "requested", "path"}}
+        if tokens:
+            token_sets.append(tokens)
+    if not token_sets:
+        return []
+    common = set.intersection(*token_sets)
+    return sorted(common)[:200]
+
+
+def build_soft_404_negative_profile(
+    *,
+    origin_url: str,
+    timeout_seconds: float,
+    request_throttle: RequestThrottle | None = None,
+    attempts: int | None = None,
+) -> dict[str, Any]:
+    ensure_page_existence_criteria_loaded()
+    criteria = PAGE_EXISTENCE_CRITERIA or default_page_existence_criteria()
+    total_attempts = max(1, int(attempts or criteria.get("negative_baseline_attempts", SOFT_404_BASELINE_ATTEMPTS) or SOFT_404_BASELINE_ATTEMPTS))
+    parsed_origin = urlparse(str(origin_url or "").strip())
+    base_path = parsed_origin.path if str(parsed_origin.path or "").strip() else "/"
+    if not base_path.endswith("/"):
+        base_path = f"{base_path.rstrip('/')}/"
+    requests_payload: list[dict[str, Any]] = []
+    fingerprints: list[PageFingerprint] = []
+    for _ in range(total_attempts):
+        miss_segment = f"nightmare-soft404-{os.urandom(12).hex()}"
+        target_url = normalize_url(urljoin(urlunparse((parsed_origin.scheme, parsed_origin.netloc, base_path, "", "", "")), miss_segment))
+        probe = probe_url_existence(
+            url=target_url,
+            timeout_seconds=timeout_seconds,
+            request_throttle=request_throttle,
+            negative_profile=None,
+            compare_against_negative_profile=False,
+            read_limit=SOFT_404_BASELINE_BODY_READ_MAX,
+        )
+        response = probe.get("response") if isinstance(probe.get("response"), dict) else {}
+        headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
+        response_body = base64.b64decode(str(response.get("body_base64", "") or "")) if response else b""
+        fp = build_response_page_fingerprint(
+            requested_url=target_url,
+            status_code=probe.get("status_code"),
+            response_url=str(response.get("url") or target_url),
+            response_headers=headers,
+            response_body=response_body,
+        )
+        fingerprints.append(fp)
+        requests_payload.append(
+            {
+                "requested_url": target_url,
+                "status_code": probe.get("status_code"),
+                "method": probe.get("method"),
+                "note": probe.get("note"),
+                "response_url": str(response.get("url") or target_url),
+                "content_type": str(headers.get("content-type") or headers.get("Content-Type") or ""),
+                "response_size_bytes": int(response.get("body_size_bytes") or response.get("body_size") or len(response_body)),
+                "elapsed_ms": int(response.get("elapsed_ms") or 0),
+                "fingerprint": _page_fingerprint_to_dict(fp),
+            }
+        )
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "origin_url": normalize_url(origin_url),
+        "host": str(parsed_origin.netloc or "").lower(),
+        "attempts": total_attempts,
+        "common_tokens": _extract_common_soft_404_tokens(fingerprints),
+        "fingerprints": [_page_fingerprint_to_dict(fp) for fp in fingerprints],
+        "requests": requests_payload,
+        "classification_config": {
+            "baseline_similarity_threshold": float(criteria.get("negative_baseline_similarity_threshold", 0.88) or 0.88),
+            "baseline_jaccard_threshold": float(criteria.get("negative_baseline_jaccard_threshold", 0.80) or 0.80),
+            "title_similarity_threshold": float(criteria.get("negative_baseline_title_similarity_threshold", 0.90) or 0.90),
+        },
+    }
+
+
+def save_soft_404_negative_profile(site_output_dir: Path, payload: dict[str, Any]) -> Path:
+    host = str(payload.get("host") or "default")
+    path = soft_404_profile_path(site_output_dir, host)
+    ensure_directory(path.parent)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def classify_against_negative_profile(
+    *,
+    requested_url: str,
+    status_code: int | None,
+    response_url: str,
+    response_headers: dict[str, Any] | None,
+    response_body: bytes | bytearray | None,
+    negative_profile: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not negative_profile or not isinstance(negative_profile, dict):
+        return None
+    baseline_rows = negative_profile.get("fingerprints")
+    if not isinstance(baseline_rows, list) or not baseline_rows:
+        return None
+    baselines: list[PageFingerprint] = []
+    for row in baseline_rows:
+        if isinstance(row, dict):
+            try:
+                baselines.append(_page_fingerprint_from_dict(row))
+            except Exception:
+                continue
+    if not baselines:
+        return None
+    cfg = negative_profile.get("classification_config") if isinstance(negative_profile.get("classification_config"), dict) else {}
+    candidate = build_response_page_fingerprint(
+        requested_url=requested_url,
+        status_code=status_code,
+        response_url=response_url,
+        response_headers=response_headers,
+        response_body=response_body,
+    )
+    result = classify_page(candidate=candidate, baselines=baselines, config=cfg)
+    result["candidate_fingerprint_id"] = candidate.fingerprint_id
+    return result
 
 
 def is_effective_existing_record(record: UrlInventoryRecord | None) -> bool:
@@ -989,6 +1194,10 @@ def default_page_existence_criteria() -> dict[str, Any]:
         "soft_404_body_regexes": [],
         "cloudflare_block_title_phrase": DEFAULT_CLOUDFLARE_BLOCK_TITLE_PHRASE,
         "cloudflare_block_body_phrase": DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE,
+        "negative_baseline_attempts": SOFT_404_BASELINE_ATTEMPTS,
+        "negative_baseline_similarity_threshold": 0.88,
+        "negative_baseline_jaccard_threshold": 0.80,
+        "negative_baseline_title_similarity_threshold": 0.90,
     }
 
 
@@ -1055,6 +1264,28 @@ def _sanitize_page_existence_criteria(raw: dict[str, Any]) -> dict[str, Any]:
     merged["cloudflare_block_body_phrase"] = str(
         merged.get("cloudflare_block_body_phrase", DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE)
     ).strip() or DEFAULT_CLOUDFLARE_BLOCK_BODY_PHRASE
+    merged["negative_baseline_attempts"] = _as_positive_int(
+        merged.get("negative_baseline_attempts"),
+        SOFT_404_BASELINE_ATTEMPTS,
+    )
+    def _as_probability(value: Any, fallback: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = fallback
+        return min(1.0, max(0.0, parsed))
+    merged["negative_baseline_similarity_threshold"] = _as_probability(
+        merged.get("negative_baseline_similarity_threshold"),
+        0.88,
+    )
+    merged["negative_baseline_jaccard_threshold"] = _as_probability(
+        merged.get("negative_baseline_jaccard_threshold"),
+        0.80,
+    )
+    merged["negative_baseline_title_similarity_threshold"] = _as_probability(
+        merged.get("negative_baseline_title_similarity_threshold"),
+        0.90,
+    )
     return merged
 
 
@@ -5028,6 +5259,10 @@ def probe_url_existence(
     url: str,
     timeout_seconds: float,
     request_throttle: RequestThrottle | None = None,
+    *,
+    negative_profile: dict[str, Any] | None = None,
+    compare_against_negative_profile: bool = False,
+    read_limit: int = HTTP_PROBE_BODY_READ_MAX,
 ) -> dict[str, Any]:
     user_agent = "nightmare-url-validator/1.0"
     last_error: str | None = None
@@ -5054,7 +5289,7 @@ def probe_url_existence(
                     url=url,
                     headers=request_payload["headers"],
                     timeout_seconds=timeout_seconds,
-                    read_limit=HTTP_PROBE_BODY_READ_MAX,
+                    read_limit=read_limit,
                     metadata={"component": "nightmare", "operation": "probe_url_existence"},
                     max_attempts=int((globals().get("config") or {}).get("http_queue_max_attempts", 5) or 5),
                     wait_timeout_seconds=max(timeout_seconds * 6.0, 30.0),
@@ -5064,23 +5299,53 @@ def probe_url_existence(
                 response_body = base64.b64decode(str(response_dict.get("body_base64", "") or ""))
                 response_headers = response_dict.get("headers") if isinstance(response_dict.get("headers"), dict) else {}
                 response_url = str(response_dict.get("url") or url)
+                elapsed_ms = int(queued_result.get("elapsed_ms", 0) or response_dict.get("elapsed_ms", 0) or 0)
             else:
                 response = request_capped(
                     method,
                     url,
                     headers=request_payload["headers"],
                     timeout_seconds=timeout_seconds,
-                    read_limit=HTTP_PROBE_BODY_READ_MAX,
+                    read_limit=read_limit,
                     user_agent=user_agent,
                 )
                 status_code = int(response.status_code)
                 response_body = response.body
                 response_headers = response.headers
                 response_url = response.url
+                elapsed_ms = int(response.elapsed_ms or 0)
 
             if method == "HEAD" and status_code == 200:
                 continue
             soft_404_detected, soft_404_reason = detect_soft_not_found_response(status_code, response_body)
+            negative_profile_match: dict[str, Any] | None = None
+            if (
+                compare_against_negative_profile
+                and not soft_404_detected
+                and int(status_code or 0) == 200
+                and response_body
+                and negative_profile
+            ):
+                negative_profile_match = classify_against_negative_profile(
+                    requested_url=url,
+                    status_code=status_code,
+                    response_url=response_url,
+                    response_headers=response_headers,
+                    response_body=response_body,
+                    negative_profile=negative_profile,
+                )
+                classification = str((negative_profile_match or {}).get("classification") or "").strip().lower()
+                if classification in {"likely_soft_404", "redirect_placeholder"}:
+                    soft_404_detected = True
+                    reasons = negative_profile_match.get("reasons") if isinstance(negative_profile_match.get("reasons"), list) else []
+                    similarity = negative_profile_match.get("baseline_similarity")
+                    reason_bits = [str(item).strip() for item in reasons if str(item).strip()]
+                    if similarity is not None:
+                        reason_bits.append(f"baseline_similarity={similarity}")
+                    soft_404_reason = (
+                        "Matched learned soft-404 baseline"
+                        + (f" ({', '.join(reason_bits)})" if reason_bits else "")
+                    )
             exists_confirmed = 200 <= status_code < 400
             note = "Confirmed by direct HTTP probe"
             if soft_404_detected:
@@ -5098,11 +5363,13 @@ def probe_url_existence(
                 "soft_404_detected": soft_404_detected,
                 "soft_404_reason": soft_404_reason,
                 "request": request_payload,
+                "negative_profile_match": negative_profile_match,
                 "response": {
                     "status": status_code,
                     "url": response_url,
                     "headers": dict(response_headers.items()) if hasattr(response_headers, "items") else dict(response_headers or {}),
-                    **encode_body_for_evidence(response_body),
+                    **encode_body_for_evidence(response_body, max_bytes=read_limit),
+                    "elapsed_ms": elapsed_ms,
                 },
             }
         except Exception as error:
@@ -5116,6 +5383,7 @@ def probe_url_existence(
         "soft_404_detected": False,
         "soft_404_reason": None,
         "request": None,
+        "negative_profile_match": None,
         "response": None,
     }
 
@@ -6993,57 +7261,105 @@ def main() -> None:
     if verify_urls and not interrupted:
         progress.info(f"Starting URL existence verification for {len(combined_urls)} URLs")
         verify_throttle = RequestThrottle(interval_seconds=verify_delay)
-
-        for index, url in enumerate(combined_urls, start=1):
-            progress.info(f"Verifying URL {index}/{len(combined_urls)}: {url}")
+        domain_output_dir = evidence_dir_path.parent
+        negative_profiles_by_host: dict[str, dict[str, Any]] = {}
+        for raw_url, raw_record in state.url_inventory.items():
+            discovered_via = {
+                str(source or "").strip().lower()
+                for source in (getattr(raw_record, "discovered_via", set()) or set())
+                if str(source or "").strip()
+            }
+            non_guess_sources = discovered_via - (GUESSED_DISCOVERY_SOURCES | {"crawl_response", "ai_probe_request"})
+            guess_only_discovery = bool(discovered_via & GUESSED_DISCOVERY_SOURCES) and not non_guess_sources
+            host = str(urlparse(raw_url).netloc or "").lower()
+            if not host or not guess_only_discovery or host in negative_profiles_by_host:
+                continue
+            existing_profile = load_soft_404_profile(domain_output_dir, host)
+            if existing_profile:
+                negative_profiles_by_host[host] = existing_profile
+                continue
+            origin_url = urlunparse((urlparse(raw_url).scheme or urlparse(args.url).scheme or "https", host, "/", "", "", ""))
             try:
-                with dev_timed_call("main.probe_url_existence", progress):
-                    probe_result = probe_url_existence(
-                        url=url,
+                progress.info(f"Learning soft-404 baseline for guessed URLs on {host}")
+                with dev_timed_call("main.build_soft_404_negative_profile", progress):
+                    profile = build_soft_404_negative_profile(
+                        origin_url=origin_url,
                         timeout_seconds=verify_timeout,
                         request_throttle=verify_throttle,
                     )
+                save_path = save_soft_404_negative_profile(domain_output_dir, profile)
+                negative_profiles_by_host[host] = profile
+                progress.info(f"Saved learned soft-404 baseline for {host} to {save_path.resolve()}")
             except KeyboardInterrupt:
                 interrupted = True
                 interrupt_stage = "verify_urls"
-                progress.info("Interrupt received during URL verification; stopping verification and finalizing outputs")
+                progress.info("Interrupt received while learning soft-404 baseline; stopping verification and finalizing outputs")
                 break
-            record = ensure_inventory_record(state, url)
-            record.exists_confirmed = bool(probe_result["exists_confirmed"])
-            record.existence_status_code = probe_result["status_code"]
-            record.existence_check_method = probe_result["method"]
-            record.existence_check_note = probe_result["note"]
-            record.soft_404_detected = bool(probe_result.get("soft_404_detected", False))
-            record.soft_404_reason = (
-                str(probe_result.get("soft_404_reason", "")).strip() or None
-            )
-            progress.info(
-                "Verification result for "
-                f"{url}: exists_confirmed={record.exists_confirmed}, "
-                f"status={record.existence_status_code}, method={record.existence_check_method}, "
-                f"note={record.existence_check_note}"
-            )
+            except Exception as baseline_error:
+                progress.info(f"Soft-404 baseline learning failed for {host}: {baseline_error}")
+        if not interrupted:
+            for index, url in enumerate(combined_urls, start=1):
+                progress.info(f"Verifying URL {index}/{len(combined_urls)}: {url}")
+                record = ensure_inventory_record(state, url)
+                discovered_via = {
+                    str(source or "").strip().lower()
+                    for source in (record.discovered_via or set())
+                    if str(source or "").strip()
+                }
+                non_guess_sources = discovered_via - (GUESSED_DISCOVERY_SOURCES | {"crawl_response", "ai_probe_request"})
+                guess_only_discovery = bool(discovered_via & GUESSED_DISCOVERY_SOURCES) and not non_guess_sources
+                host = str(urlparse(url).netloc or "").lower()
+                negative_profile = negative_profiles_by_host.get(host) if guess_only_discovery else None
+                try:
+                    with dev_timed_call("main.probe_url_existence", progress):
+                        probe_result = probe_url_existence(
+                            url=url,
+                            timeout_seconds=verify_timeout,
+                            request_throttle=verify_throttle,
+                            negative_profile=negative_profile,
+                            compare_against_negative_profile=bool(negative_profile),
+                        )
+                except KeyboardInterrupt:
+                    interrupted = True
+                    interrupt_stage = "verify_urls"
+                    progress.info("Interrupt received during URL verification; stopping verification and finalizing outputs")
+                    break
+                record.exists_confirmed = bool(probe_result["exists_confirmed"])
+                record.existence_status_code = probe_result["status_code"]
+                record.existence_check_method = probe_result["method"]
+                record.existence_check_note = probe_result["note"]
+                record.soft_404_detected = bool(probe_result.get("soft_404_detected", False))
+                record.soft_404_reason = (
+                    str(probe_result.get("soft_404_reason", "")).strip() or None
+                )
+                progress.info(
+                    "Verification result for "
+                    f"{url}: exists_confirmed={record.exists_confirmed}, "
+                    f"status={record.existence_status_code}, method={record.existence_check_method}, "
+                    f"note={record.existence_check_note}"
+                )
 
-            verification_evidence = {
-                "captured_at_utc": datetime.now(timezone.utc).isoformat(),
-                "source_type": "existence_probe",
-                "url": url,
-                "probe_result": {
-                    "exists_confirmed": probe_result["exists_confirmed"],
-                    "status_code": probe_result["status_code"],
-                    "method": probe_result["method"],
-                    "note": probe_result["note"],
-                    "soft_404_detected": bool(probe_result.get("soft_404_detected", False)),
-                    "soft_404_reason": probe_result.get("soft_404_reason"),
-                },
-                "request": probe_result["request"],
-                "response": probe_result["response"],
-            }
-            verification_file = save_evidence(evidence_dir_path, url, "existence_probe", verification_evidence)
-            if verification_file not in record.discovery_evidence_files:
-                record.discovery_evidence_files.append(verification_file)
-            if interrupted:
-                break
+                verification_evidence = {
+                    "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "source_type": "existence_probe",
+                    "url": url,
+                    "probe_result": {
+                        "exists_confirmed": probe_result["exists_confirmed"],
+                        "status_code": probe_result["status_code"],
+                        "method": probe_result["method"],
+                        "note": probe_result["note"],
+                        "soft_404_detected": bool(probe_result.get("soft_404_detected", False)),
+                        "soft_404_reason": probe_result.get("soft_404_reason"),
+                        "negative_profile_match": probe_result.get("negative_profile_match"),
+                    },
+                    "request": probe_result["request"],
+                    "response": probe_result["response"],
+                }
+                verification_file = save_evidence(evidence_dir_path, url, "existence_probe", verification_evidence)
+                if verification_file not in record.discovery_evidence_files:
+                    record.discovery_evidence_files.append(verification_file)
+                if interrupted:
+                    break
     else:
         if interrupted:
             progress.info("URL verification skipped due to interrupt")

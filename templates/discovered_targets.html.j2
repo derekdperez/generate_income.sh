@@ -94,11 +94,17 @@
             <th>Crawled</th>
             <th>Requested</th>
             <th>Exists</th>
+            <th>Existence Note</th>
+            <th>Response</th>
+            <th>Resp Status</th>
+            <th>Resp Time (ms)</th>
+            <th>Resp Size</th>
+            <th>Content Type</th>
             <th>Crawl Status</th>
             <th>Existence Status</th>
           </tr>
         </thead>
-        <tbody id="sitemapRows"><tr><td colspan="10">Select a domain above.</td></tr></tbody>
+        <tbody id="sitemapRows"><tr><td colspan="16">Select a domain above.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -235,7 +241,7 @@
         : "Select a domain above.";
       const tbody = document.getElementById("sitemapRows");
       if (!sitemapRowsCache.length) {
-        tbody.innerHTML = '<tr><td colspan="10">No sitemap rows available for this domain.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16">No sitemap rows available for this domain.</td></tr>';
         bindGridControls();
         return;
       }
@@ -248,7 +254,13 @@
           <td>${(() => { const discoveredFrom = Array.isArray(row.discovered_from) ? row.discovered_from : (Array.isArray(row.parents) ? row.parents : []); return discoveredFrom.length ? `<div class="chip-list">${discoveredFrom.slice(0, 8).map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""; })()}</td>
           <td>${(row.was_crawled || row.crawled) ? "yes" : ""}</td>
           <td>${(row.crawl_requested || row.requested) ? "yes" : ""}</td>
-          <td>${(row.exists_confirmed || row.exists) ? "yes" : ""}</td>
+          <td>${esc(row.exists_status || ((row.exists_confirmed || row.exists) ? "exists" : "unknown"))}</td>
+          <td>${esc(row.exists_reason || "")}</td>
+          <td>${(row.response_available && row.view_response_path && (row.exists_status === "exists" || row.exists_confirmed || row.exists)) ? `<a href="${esc(row.view_response_path)}" target="_blank" rel="noopener">View Response</a>` : ""}</td>
+          <td data-raw="${Number(row.response_status_code || 0)}">${esc(row.response_status_code ?? "")}</td>
+          <td data-raw="${Number(row.response_elapsed_ms || 0)}">${esc(row.response_elapsed_ms ?? "")}</td>
+          <td data-raw="${Number(row.response_size_bytes || 0)}">${esc(row.response_size_bytes ?? "")}</td>
+          <td>${esc(row.response_content_type || row.content_type || "")}</td>
           <td data-raw="${Number(row.crawl_status_code ?? row.status_code ?? 0)}">${esc(row.crawl_status_code ?? row.status_code ?? "")}</td>
           <td data-raw="${Number(row.existence_status_code || 0)}">${esc(row.existence_status_code ?? "")}</td>
         </tr>

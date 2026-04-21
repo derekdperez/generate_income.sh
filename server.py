@@ -57,6 +57,7 @@ from reporting.server_pages import (
     render_dashboard_html,
     render_database_html,
     render_discovered_files_html,
+    render_discovered_target_response_html,
     render_discovered_targets_html,
     render_docker_status_html,
     render_errors_html,
@@ -3051,6 +3052,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/discovered-targets":
             self._write_text(render_discovered_targets_html(), content_type="text/html; charset=utf-8")
             return
+        if path == "/discovered-target-response":
+            self._write_text(render_discovered_target_response_html(), content_type="text/html; charset=utf-8")
+            return
         if path == "/discovered-files":
             self._write_text(render_discovered_files_html(), content_type="text/html; charset=utf-8")
             return
@@ -3113,6 +3117,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "sitemap": sitemap_payload,
                 }
             )
+            return
+        if path == "/api/coord/discovered-target-response":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            url = str((query.get("url") or [""])[0] or "").strip()
+            if not root_domain or not url:
+                self._write_json({"error": "root_domain and url are required"}, status=400)
+                return
+            try:
+                payload = self.coordinator_store.get_discovered_target_response(root_domain, url)
+            except Exception as exc:
+                self.log_message("get_discovered_target_response failed: %r", exc)
+                self._write_json({"error": "discovered target response query failed", "detail": str(exc)}, status=500)
+                return
+            if not payload.get("found"):
+                self._write_json(payload, status=404)
+                return
+            self._write_json(payload)
             return
         if path == "/api/coord/discovered-files":
             if self.coordinator_store is None:
