@@ -12,6 +12,7 @@ from reporting.extractor_reports import build_javascript_extractor_matches_repor
 from reporting.server_pages import (
     render_crawl_progress_html,
     render_dashboard_html,
+    render_discovered_files_html,
     render_docker_status_html,
     render_discovered_targets_html,
     render_extractor_matches_html,
@@ -51,6 +52,15 @@ def test_render_discovered_targets_html_contains_expected_heading():
     assert "Discovered Targets" in html
     assert "/api/coord/discovered-targets" in html
     assert "/api/coord/discovered-target-sitemap" in html
+
+
+def test_render_discovered_files_html_contains_expected_heading():
+    html = render_discovered_files_html()
+    assert "Discovered Files" in html
+    assert "/api/coord/discovered-files" in html
+    assert "payload.rows" in html
+    assert "payload.files" in html
+
 
 def test_render_extractor_matches_html_contains_expected_heading():
     html = render_extractor_matches_html()
@@ -840,3 +850,111 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
     pages = {row["url"]: row for row in sitemap["pages"]}
     assert pages["https://example.com/"]["outbound_count"] == 1
     assert pages["https://example.com/admin"]["inbound_count"] == 1
+
+
+def test_list_discovered_files_returns_template_compatible_keys():
+    now = datetime(2026, 4, 21, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchall = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM coordinator_artifacts a LEFT JOIN coordinator_sessions s ON s.root_domain = a.root_domain" in compact:
+                assert params == (5000,)
+                self._fetchall = [("Example.COM", "nightmare_log", 321, now, "https://example.com/")]
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchall(self):
+            return self._fetchall
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    rows = CoordinatorStore.list_discovered_files(store, limit=5000)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["root_domain"] == "example.com"
+    assert row["artifact_type"] == "nightmare_log"
+    assert row["updated_at_utc"] == now.isoformat()
+    assert row["discovered_at_utc"] == now.isoformat()
+    assert row["content_size_bytes"] == 321
+    assert row["file_size"] == 321
+
+
+def test_list_high_value_files_returns_template_compatible_keys():
+    now = datetime(2026, 4, 21, tzinfo=timezone.utc)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("captures/login.txt", "hello")
+        zf.writestr("captures/ignore.json", "{}")
+    zip_bytes = zip_buffer.getvalue()
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchall = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM coordinator_artifacts WHERE artifact_type = 'nightmare_high_value_zip'" in compact:
+                assert params == (5000,)
+                self._fetchall = [("example.com", zip_bytes, "zip", now)]
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchall(self):
+            return self._fetchall
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    rows = CoordinatorStore.list_high_value_files(store, limit=5000)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["root_domain"] == "example.com"
+    assert row["saved_relative"] == "captures/login.txt"
+    assert row["captured_at_utc"] == now.isoformat()
+    assert row["updated_at_utc"] == now.isoformat()
+    assert row["discovered_at_utc"] == now.isoformat()
+    assert row["content_size_bytes"] == 5
+    assert row["file_size"] == 5

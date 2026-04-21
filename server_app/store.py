@@ -1256,11 +1256,15 @@ LIMIT %s
                 rows = cur.fetchall()
             conn.commit()
         for row in rows:
+            updated_at = row[3].isoformat() if row[3] else None
+            content_size = int(row[2] or 0)
             out.append({
-                "discovered_at_utc": row[3].isoformat() if row[3] else None,
+                "updated_at_utc": updated_at,
+                "discovered_at_utc": updated_at,
                 "root_domain": str(row[0] or "").strip().lower(),
                 "artifact_type": str(row[1] or "").strip(),
-                "file_size": int(row[2] or 0),
+                "content_size_bytes": content_size,
+                "file_size": content_size,
                 "source_url": str(row[4] or "").strip(),
             })
         return out
@@ -1293,11 +1297,15 @@ LIMIT %s
                         if name.endswith("/") or name.lower().endswith(".json"):
                             continue
                         info = zf.getinfo(name)
+                        content_size = int(info.file_size or 0)
                         out.append({
+                            "captured_at_utc": updated_at,
+                            "updated_at_utc": updated_at,
                             "discovered_at_utc": updated_at,
                             "root_domain": root_domain,
                             "saved_relative": name,
-                            "file_size": int(info.file_size or 0),
+                            "content_size_bytes": content_size,
+                            "file_size": content_size,
                             "source_url": "",
                         })
             except Exception:

@@ -2992,7 +2992,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
             limit = _safe_int((query.get("limit") or [5000])[0], 5000)
-            self._write_json({"generated_at_utc": _iso_now(), "rows": self.coordinator_store.list_discovered_files(limit=limit)})
+            rows = self.coordinator_store.list_discovered_files(limit=limit)
+            self._write_json({"generated_at_utc": _iso_now(), "rows": rows, "files": rows})
             return
         if path == "/api/coord/high-value-files":
             if self.coordinator_store is None:
@@ -3002,7 +3003,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
             limit = _safe_int((query.get("limit") or [5000])[0], 5000)
-            self._write_json({"generated_at_utc": _iso_now(), "rows": self.coordinator_store.list_high_value_files(limit=limit)})
+            rows = self.coordinator_store.list_high_value_files(limit=limit)
+            self._write_json({"generated_at_utc": _iso_now(), "rows": rows, "files": rows})
             return
         if path == "/api/coord/discovered-files/download":
             if self.coordinator_store is None:
@@ -4870,4 +4872,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

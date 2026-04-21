@@ -113,6 +113,23 @@
     function esc(v) {
       return String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch]));
     }
+    function getRows(payload) {
+      if (payload && Array.isArray(payload.rows)) return payload.rows;
+      if (payload && Array.isArray(payload.files)) return payload.files;
+      return [];
+    }
+    function rowBytes(row) {
+      const value = row?.content_size_bytes ?? row?.file_size ?? 0;
+      const size = Number(value);
+      return Number.isFinite(size) ? size : 0;
+    }
+    function rowTimestamp(row, keys) {
+      for (const key of keys) {
+        const value = row?.[key];
+        if (value) return String(value);
+      }
+      return "";
+    }
     function authHeaders() {
       const token = document.getElementById("token").value.trim();
       if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
@@ -145,8 +162,8 @@
       highValueGridCtrl?.refresh?.();
     }
     function renderCards() {
-      const artifactBytes = artifactRowsCache.reduce((sum, row) => sum + Number(row.content_size_bytes || 0), 0);
-      const highValueBytes = highValueRowsCache.reduce((sum, row) => sum + Number(row.content_size_bytes || 0), 0);
+      const artifactBytes = artifactRowsCache.reduce((sum, row) => sum + rowBytes(row), 0);
+      const highValueBytes = highValueRowsCache.reduce((sum, row) => sum + rowBytes(row), 0);
       document.getElementById("cards").innerHTML = `
         <div class="card"><div class="k">Stored Artifacts</div><div class="v">${artifactRowsCache.length}</div></div>
         <div class="card"><div class="k">Artifact Bytes</div><div class="v">${artifactBytes}</div></div>
@@ -163,16 +180,20 @@
         bindGridControls();
         return;
       }
-      tbody.innerHTML = artifactRowsCache.map((row) => `
-        <tr>
-          <td>${esc(row.updated_at_utc || "")}</td>
-          <td class="col-domain">${esc(row.root_domain || "")}</td>
-          <td class="col-url">${esc(row.source_url || "")}</td>
-          <td class="col-type">${esc(row.artifact_type || "")}</td>
-          <td class="col-size" data-raw="${Number(row.content_size_bytes || 0)}">${Number(row.content_size_bytes || 0)}</td>
-          <td class="col-dl"><a href="/api/coord/discovered-files/download?root_domain=${encodeURIComponent(row.root_domain || "")}&artifact_type=${encodeURIComponent(row.artifact_type || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
-        </tr>
-      `).join("");
+      tbody.innerHTML = artifactRowsCache.map((row) => {
+        const updatedAt = rowTimestamp(row, ["updated_at_utc", "discovered_at_utc"]);
+        const size = rowBytes(row);
+        return `
+          <tr>
+            <td>${esc(updatedAt)}</td>
+            <td class="col-domain">${esc(row.root_domain || "")}</td>
+            <td class="col-url">${esc(row.source_url || "")}</td>
+            <td class="col-type">${esc(row.artifact_type || "")}</td>
+            <td class="col-size" data-raw="${size}">${size}</td>
+            <td class="col-dl"><a href="/api/coord/discovered-files/download?root_domain=${encodeURIComponent(row.root_domain || "")}&artifact_type=${encodeURIComponent(row.artifact_type || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
+          </tr>
+        `;
+      }).join("");
       renderCards();
       bindGridControls();
     }
@@ -185,15 +206,19 @@
         bindGridControls();
         return;
       }
-      tbody.innerHTML = highValueRowsCache.map((row) => `
-        <tr>
-          <td>${esc(row.captured_at_utc || "")}</td>
-          <td class="col-domain">${esc(row.root_domain || "")}</td>
-          <td class="col-url">${esc(row.source_url || "")}</td>
-          <td class="col-size" data-raw="${Number(row.content_size_bytes || 0)}">${Number(row.content_size_bytes || 0)}</td>
-          <td class="col-dl"><a href="/api/coord/high-value-files/download?root_domain=${encodeURIComponent(row.root_domain || "")}&saved_relative=${encodeURIComponent(row.saved_relative || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
-        </tr>
-      `).join("");
+      tbody.innerHTML = highValueRowsCache.map((row) => {
+        const capturedAt = rowTimestamp(row, ["captured_at_utc", "updated_at_utc", "discovered_at_utc"]);
+        const size = rowBytes(row);
+        return `
+          <tr>
+            <td>${esc(capturedAt)}</td>
+            <td class="col-domain">${esc(row.root_domain || "")}</td>
+            <td class="col-url">${esc(row.source_url || "")}</td>
+            <td class="col-size" data-raw="${size}">${size}</td>
+            <td class="col-dl"><a href="/api/coord/high-value-files/download?root_domain=${encodeURIComponent(row.root_domain || "")}&saved_relative=${encodeURIComponent(row.saved_relative || "")}" target="_blank" rel="noopener noreferrer">Download</a></td>
+          </tr>
+        `;
+      }).join("");
       renderCards();
       bindGridControls();
     }
@@ -211,8 +236,8 @@
       if (!highValueRsp.ok) throw new Error(await highValueRsp.text());
       const artifactPayload = await artifactRsp.json();
       const highValuePayload = await highValueRsp.json();
-      renderArtifacts(Array.isArray(artifactPayload.files) ? artifactPayload.files : []);
-      renderHighValue(Array.isArray(highValuePayload.files) ? highValuePayload.files : []);
+      renderArtifacts(getRows(artifactPayload));
+      renderHighValue(getRows(highValuePayload));
       msg.textContent = `Loaded ${artifactRowsCache.length} artifacts and ${highValueRowsCache.length} high value items.`;
     }
     function hydrateTokenFromCookie() {
