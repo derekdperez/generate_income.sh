@@ -64,7 +64,7 @@
     <table>
       <thead>
         <tr>
-          <th style="min-width:180px;">Time (UTC)</th>
+          <th style="min-width:180px;">Time (EST)</th>
           <th style="min-width:180px;">Event Type</th>
           <th style="min-width:180px;">Source</th>
           <th style="min-width:220px;">Aggregate</th>
@@ -112,6 +112,22 @@
         .replaceAll("'", "&#39;");
     }
 
+
+    const estTimeFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Etc/GMT+5",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+
+    function formatEventTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return estTimeFormatter.format(date);
+    }
+
     function renderRows(events) {
       const body = document.getElementById("eventsBody");
       if (!Array.isArray(events) || events.length === 0) {
@@ -122,7 +138,7 @@
         const payload = escapeHtml(JSON.stringify(event.payload || {}, null, 2));
         return `
           <tr>
-            <td class="mono">${escapeHtml(event.created_at || "")}</td>
+            <td class="mono">${escapeHtml(formatEventTime(event.created_at || ""))}</td>
             <td><span class="type-badge">${escapeHtml(event.event_type || "")}</span></td>
             <td>${escapeHtml(event.source || "")}</td>
             <td class="mono">${escapeHtml(event.aggregate_key || "")}</td>
@@ -137,7 +153,7 @@
       const events = Array.isArray(payload.events) ? payload.events : [];
       document.getElementById("visibleCount").textContent = String(events.length);
       document.getElementById("totalCount").textContent = String(payload.total || 0);
-      document.getElementById("latestEventTime").textContent = events[0]?.created_at || "—";
+      document.getElementById("latestEventTime").textContent = formatEventTime(events[0]?.created_at || "") || "—";
       const activeFilters = ["searchInput", "eventTypeInput", "sourceInput", "aggregateInput"]
         .map((id) => document.getElementById(id).value.trim())
         .filter(Boolean)
