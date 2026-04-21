@@ -1207,16 +1207,17 @@ LIMIT %s;
             })
         return rows_out
 
-    def get_discovered_target_sitemap(self, root_domain: str) -> list[dict[str, Any]]:
+    def get_discovered_target_sitemap(self, root_domain: str) -> dict[str, Any]:
         rd = str(root_domain or "").strip().lower()
         if not rd:
-            return []
+            return {"root_domain": "", "start_url": "", "page_count": 0, "pages": []}
         session = self.load_session(rd) or {}
+        start_url = str(session.get("start_url", "") or "").strip()
         state = session.get("state") if isinstance(session.get("state"), dict) else {}
         link_graph = state.get("link_graph") if isinstance(state.get("link_graph"), dict) else {}
         inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
         discovered_urls = state.get("discovered_urls") if isinstance(state.get("discovered_urls"), list) else []
-        rows: list[dict[str, Any]] = []
+        pages: list[dict[str, Any]] = []
         discovered_set = {str(u or "").strip() for u in discovered_urls if str(u or "").strip()}
         for url in sorted(discovered_set):
             if rd not in str(urlparse(url).hostname or "").lower():
@@ -1229,15 +1230,35 @@ LIMIT %s;
                     src_text = str(src or "").strip()
                     if src_text:
                         parents.append(src_text)
-            rows.append({
+            outbound_targets = link_graph.get(url) if isinstance(link_graph.get(url), list) else []
+            outbound_clean = sorted({str(t or "").strip() for t in outbound_targets if str(t or "").strip()})
+            discovered_from = sorted(set(parents))[:50]
+            crawl_status_code = record.get("status_code")
+            existence_status_code = record.get("existence_status_code")
+            page = {
                 "url": url,
-                "parent_count": len(parents),
-                "parents": sorted(set(parents))[:50],
+                "inbound_count": len(discovered_from),
+                "outbound_count": len(outbound_clean),
                 "discovered_via": discovered_via,
-                "status_code": record.get("status_code"),
+                "discovered_from": discovered_from,
+                "was_crawled": bool(record.get("was_crawled")),
+                "crawl_requested": bool(record.get("crawl_requested")),
+                "exists_confirmed": bool(record.get("exists_confirmed")),
+                "crawl_status_code": crawl_status_code,
+                "existence_status_code": existence_status_code,
+                # Backward-compatible aliases used by older API consumers.
+                "parent_count": len(discovered_from),
+                "parents": discovered_from,
+                "status_code": crawl_status_code,
                 "content_type": str(record.get("content_type", "") or ""),
-            })
-        return rows
+            }
+            pages.append(page)
+        return {
+            "root_domain": rd,
+            "start_url": start_url,
+            "page_count": len(pages),
+            "pages": pages,
+        }
 
     def list_discovered_files(self, *, limit: int = 5000) -> list[dict[str, Any]]:
         safe_limit = max(1, min(20000, int(limit or 5000)))

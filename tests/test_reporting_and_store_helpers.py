@@ -774,7 +774,13 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
 
         def execute(self, sql, params=None):
             compact = " ".join(str(sql).split())
-            if "FROM coordinator_sessions" in compact and "jsonb_array_length(payload #> '{state,discovered_urls}')" in compact:
+            if (
+                "FROM coordinator_sessions" in compact
+                and "jsonb_array_length(payload #> '{state,discovered_urls}')" in compact
+            ) or (
+                "FROM domain_rows" in compact
+                and "SELECT root_domain, start_url, saved_at_utc, payload" in compact
+            ):
                 assert params == (5000,)
                 self._fetchall = [
                     (
@@ -790,19 +796,24 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
                                 },
                             }
                         },
+                        0,  # pending_targets
+                        0,  # running_targets
+                        1,  # completed_targets
+                        0,  # failed_targets
                     )
                 ]
                 return
-            if "FROM coordinator_sessions" in compact and "WHERE root_domain = %s" in compact:
-                assert params == ("example.com",)
-                self._fetchone = (
-                    "example.com",
-                    "https://example.com",
-                    now,
-                    {
-                        "state": {
-                            "discovered_urls": ["https://example.com/", "https://example.com/admin"],
-                            "link_graph": {"https://example.com/": ["https://example.com/admin"]},
+                if "FROM coordinator_sessions" in compact and "WHERE root_domain = %s" in compact:
+                    assert params == ("example.com",)
+                    self._fetchone = (
+                        "example.com",
+                        "https://example.com",
+                        1000,
+                        now,
+                        {
+                            "state": {
+                                "discovered_urls": ["https://example.com/", "https://example.com/admin"],
+                                "link_graph": {"https://example.com/": ["https://example.com/admin"]},
                             "url_inventory": {
                                 "https://example.com/": {"discovered_via": ["seed_input"], "was_crawled": True},
                                 "https://example.com/admin": {"discovered_via": ["internal_link"], "exists_confirmed": True},

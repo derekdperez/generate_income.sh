@@ -158,7 +158,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - `server.py` discovered/high-value endpoints now return both `rows` (canonical) and `files` (compatibility alias) to decouple API evolution from template rollout timing.
 
 - Auth0r overview query robustness:
-  - `CoordinatorStore.auth0r_overview` sorting now uses typed `CASE` branches per sort key family (text vs timestamp) to keep PostgreSQL type resolution deterministic across `completed_only` modes.
+  - `CoordinatorStore.auth0r_overview` now selects static `ORDER BY` clauses per mode (completed-only vs default recency), removing `CASE`-in-`ORDER BY` entirely from this path.
 
 - Extractor page control-plane robustness:
   - `/extractor-matches` now has complete client-side wiring for pattern configuration read/write against server endpoints.

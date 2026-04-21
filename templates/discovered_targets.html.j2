@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -226,10 +226,12 @@
     }
     function renderSitemap(payload) {
       const sitemap = payload && payload.sitemap && typeof payload.sitemap === "object" ? payload.sitemap : {};
-      sitemapRowsCache = Array.isArray(sitemap.pages) ? sitemap.pages.slice() : [];
+      const pagesFromSitemap = Array.isArray(sitemap.pages) ? sitemap.pages : [];
+      const pagesFromPayload = Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload?.pages) ? payload.pages : []);
+      sitemapRowsCache = (pagesFromSitemap.length ? pagesFromSitemap : pagesFromPayload).slice();
       document.getElementById("sitemapTitle").textContent = selectedDomain ? `Sitemap: ${selectedDomain}` : "Sitemap";
       document.getElementById("sitemapMeta").textContent = selectedDomain
-        ? `${Number(sitemap.page_count || sitemapRowsCache.length || 0)} pages • start URL: ${sitemap.start_url || ""}`
+        ? `${Number(sitemap.page_count || sitemapRowsCache.length || 0)} pages â€¢ start URL: ${(sitemap.start_url || payload?.start_url || "")}`
         : "Select a domain above.";
       const tbody = document.getElementById("sitemapRows");
       if (!sitemapRowsCache.length) {
@@ -240,14 +242,14 @@
       tbody.innerHTML = sitemapRowsCache.map((row) => `
         <tr>
           <td class="col-url">${esc(row.url || "")}</td>
-          <td data-raw="${Number(row.inbound_count || 0)}">${Number(row.inbound_count || 0)}</td>
+          <td data-raw="${Number(row.inbound_count ?? row.parent_count ?? 0)}">${Number(row.inbound_count ?? row.parent_count ?? 0)}</td>
           <td data-raw="${Number(row.outbound_count || 0)}">${Number(row.outbound_count || 0)}</td>
           <td>${Array.isArray(row.discovered_via) && row.discovered_via.length ? `<div class="chip-list">${row.discovered_via.map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""}</td>
-          <td>${Array.isArray(row.discovered_from) && row.discovered_from.length ? `<div class="chip-list">${row.discovered_from.slice(0, 8).map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""}</td>
-          <td>${row.was_crawled ? "yes" : ""}</td>
-          <td>${row.crawl_requested ? "yes" : ""}</td>
-          <td>${row.exists_confirmed ? "yes" : ""}</td>
-          <td data-raw="${Number(row.crawl_status_code || 0)}">${esc(row.crawl_status_code ?? "")}</td>
+          <td>${(() => { const discoveredFrom = Array.isArray(row.discovered_from) ? row.discovered_from : (Array.isArray(row.parents) ? row.parents : []); return discoveredFrom.length ? `<div class="chip-list">${discoveredFrom.slice(0, 8).map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""; })()}</td>
+          <td>${(row.was_crawled || row.crawled) ? "yes" : ""}</td>
+          <td>${(row.crawl_requested || row.requested) ? "yes" : ""}</td>
+          <td>${(row.exists_confirmed || row.exists) ? "yes" : ""}</td>
+          <td data-raw="${Number(row.crawl_status_code ?? row.status_code ?? 0)}">${esc(row.crawl_status_code ?? row.status_code ?? "")}</td>
           <td data-raw="${Number(row.existence_status_code || 0)}">${esc(row.existence_status_code ?? "")}</td>
         </tr>
       `).join("");
@@ -255,7 +257,7 @@
     }
     async function refreshDomains() {
       const msg = document.getElementById("msg");
-      msg.textContent = "Loading domains…";
+      msg.textContent = "Loading domainsâ€¦";
       const limit = Math.max(1, Math.min(5000, Number(document.getElementById("limit").value || 2000)));
       const q = document.getElementById("searchText").value.trim();
       const rsp = await fetch(`/api/coord/discovered-targets?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}`, {
@@ -287,7 +289,7 @@
         return;
       }
       const msg = document.getElementById("msg");
-      msg.textContent = `Loading sitemap for ${domain}…`;
+      msg.textContent = `Loading sitemap for ${domain}â€¦`;
       const rsp = await fetch(`/api/coord/discovered-target-sitemap?root_domain=${encodeURIComponent(domain)}`, {
         cache: "no-store",
         headers: authHeaders()
@@ -309,3 +311,5 @@
   </script>
 </body>
 </html>
+
+

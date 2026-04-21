@@ -2977,12 +2977,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "root_domain is required"}, status=400)
                 return
             try:
-                rows = self.coordinator_store.get_discovered_target_sitemap(root_domain)
+                sitemap = self.coordinator_store.get_discovered_target_sitemap(root_domain)
             except Exception as exc:
                 self.log_message("get_discovered_target_sitemap failed: %r", exc)
                 self._write_json({"error": "discovered target sitemap query failed", "detail": str(exc)}, status=500)
                 return
-            self._write_json({"generated_at_utc": _iso_now(), "root_domain": root_domain, "rows": rows})
+            pages: list[dict[str, Any]]
+            if isinstance(sitemap, dict):
+                pages = sitemap.get("pages", []) if isinstance(sitemap.get("pages"), list) else []
+                sitemap_payload = sitemap
+            else:
+                pages = sitemap if isinstance(sitemap, list) else []
+                sitemap_payload = {
+                    "root_domain": root_domain,
+                    "start_url": "",
+                    "page_count": len(pages),
+                    "pages": pages,
+                }
+            self._write_json(
+                {
+                    "generated_at_utc": _iso_now(),
+                    "root_domain": root_domain,
+                    "rows": pages,
+                    "pages": pages,
+                    "sitemap": sitemap_payload,
+                }
+            )
             return
         if path == "/api/coord/discovered-files":
             if self.coordinator_store is None:
