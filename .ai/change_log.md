@@ -1022,3 +1022,18 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Added daemon-access probing (`detect_docker_access_mode`) so readiness-failure diagnostics can still fetch compose `ps` and service logs when direct socket access is denied.
 - Updated compose command resolution to check both invoking-user and current-user contexts.
 - Why: full deploy readiness failures were masking root cause with Docker socket permission errors during diagnostic logging (`permission denied ... /var/run/docker.sock`).
+
+## 2026-04-21
+
+- Fixed central server startup crash on fresh deploys caused by undefined `auth0r_store` in `server.py` main startup path.
+- Root cause:
+  - `_prepare_server(...)` always assigned `srv.auth0r_store = auth0r_store`,
+  - but `auth0r_store` was never initialized in `main()`, causing `NameError` and container restart loop.
+- Change in `server.py`:
+  - initialize `auth0r_store: Auth0rProfileStore | None = None` before server creation,
+  - best-effort instantiate `Auth0rProfileStore(database_url)` with explicit stderr warning on failure,
+  - keep server startup alive even if auth0r store init fails (auth0r APIs return existing 503 unavailable response).
+- Validation:
+  - `python -m py_compile server.py`
+  - `pytest -q tests/test_server_auth_cookie.py tests/test_refactor_modules.py` -> 20 passed.
+- Why: unblock central compose/server startup so readiness check can pass and full deploy can proceed.

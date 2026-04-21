@@ -143,3 +143,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
 - Deploy/runtime boundary refinement:
   - `deploy/full_deploy_command.sh` now separates compose binary detection from daemon-access detection.
   - Compose diagnostics during coordinator readiness failure can run under invoking user, current user, or sudo-noninteractive mode, reducing false diagnostic failures on newly provisioned EC2 hosts.
+
+- Startup dependency boundary refinement for server bootstrap:
+  - Required stores (`CoordinatorStore`, `LogStore`) continue to hard-gate startup.
+  - Optional auth0r profile store is now soft-initialized; failure degrades auth0r endpoints to 503 instead of crashing the whole HTTP server process.

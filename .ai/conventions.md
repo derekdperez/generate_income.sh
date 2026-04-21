@@ -281,3 +281,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - Deploy diagnostic convention: in full-deploy scripts, Docker/Compose diagnostics must detect daemon access mode and fallback to `sudo -n` when invoking-user docker socket access is unavailable (common immediately after docker-group changes on new hosts).
 - Script execution convention: do not assume invoking-user context can access Docker daemon even if `docker compose version` succeeds; probe with `docker info` before choosing execution context.
+
+- Server startup convention: every object referenced inside `_prepare_server(...)` must be initialized in `main()` before listener creation.
+- Optional service-store convention: feature stores (for example auth0r profile store) should be best-effort initialized with explicit warning and `None` fallback, so unrelated coordinator/dashboard APIs remain available when optional subsystem init fails.

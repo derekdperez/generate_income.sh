@@ -4721,6 +4721,15 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 2
+    auth0r_store: Auth0rProfileStore | None = None
+    try:
+        auth0r_store = Auth0rProfileStore(database_url)
+    except Exception as exc:
+        print(
+            f"[server] auth0r store unavailable; auth0r profile/result APIs will return 503: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _prepare_server(port_value: int) -> ThreadingHTTPServer:
         srv = ThreadingHTTPServer((host, port_value), DashboardHandler)
@@ -4798,6 +4807,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
 
