@@ -69,9 +69,11 @@ def test_workflows_template_renders():
     html = render_workflows_html()
     assert "<!doctype html>" in html.lower()
     assert "Workflow Monitor" in html
+    assert "Workflow Timeline" in html
     assert 'href="/workers"' in html
     assert 'href="/database"' in html
     assert "/api/coord/workflow-snapshot" in html
+    assert "/api/coord/events" in html
     assert "/api/coord/stage/enqueue" in html
     assert "/api/coord/stage/reset" in html
     assert "nightmare_coord_token" in html

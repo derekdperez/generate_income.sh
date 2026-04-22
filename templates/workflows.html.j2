@@ -38,6 +38,11 @@
     .b-completed { border-color: #86efac; color: #166534; background: #f0fdf4; }
     .b-failed { border-color: #fca5a5; color: #991b1b; background: #fef2f2; }
     .b-pending { border-color: #cbd5e1; color: #334155; background: #f8fafc; }
+    .tabbar { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab-btn { border: 1px solid #cbd5e1; background: #fff; color: #334155; border-radius: 999px; padding: 6px 12px; font-weight: 600; cursor: pointer; }
+    .tab-btn.active { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    .view-pane { display: none; }
+    .view-pane.active { display: block; }
     .actions { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-top: 12px; }
     .form-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
     .form-grid .full { grid-column: 1 / -1; }
@@ -84,6 +89,12 @@
     <span id="statusPill" class="status-pill"><span class="status-dot"></span><span id="statusText">Idle</span></span>
   </div>
 
+  <div class="tabbar">
+    <button id="tabMonitor" class="tab-btn active" type="button">Monitor</button>
+    <button id="tabTimeline" class="tab-btn" type="button">Timeline</button>
+  </div>
+
+  <div id="monitorPane" class="view-pane active">
   <div class="layout">
     <section class="panel">
       <h2>Domains</h2>
@@ -194,10 +205,50 @@
       <div id="resetResult" class="result-box muted">No reset action yet.</div>
     </section>
   </div>
+  </div>
+
+  <div id="timelinePane" class="view-pane">
+    <section class="panel">
+      <h2>Workflow Timeline</h2>
+      <div class="toolbar">
+        <input id="eventDomainFilter" type="text" placeholder="Domain filter">
+        <input id="eventWorkflowFilter" type="text" placeholder="Workflow filter">
+        <input id="eventPluginFilter" type="text" placeholder="Plugin filter">
+        <input id="eventTextFilter" type="text" placeholder="Search message/payload">
+        <select id="eventLimitSelect">
+          <option value="250">250 events</option>
+          <option value="500" selected>500 events</option>
+          <option value="1000">1000 events</option>
+          <option value="2000">2000 events</option>
+          <option value="5000">5000 events</option>
+        </select>
+        <button type="button" id="applySelectionToTimeline">Use Selected Domain</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Type</th>
+              <th>Workflow</th>
+              <th>Domain</th>
+              <th>Plugin</th>
+              <th>Worker</th>
+              <th>Message</th>
+              <th>Aggregate</th>
+            </tr>
+          </thead>
+          <tbody id="timelineRows">
+            <tr><td colspan="8" class="muted">Loading workflow task events...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
-    const state = { paused: false, timer: null, snapshot: null, selectedDomain: "" };
+    const state = { paused: false, timer: null, snapshot: null, events: [], selectedDomain: "", activeTab: "monitor" };
 
     function readCookie(name) {
       const needle = `${name}=`;
@@ -234,6 +285,14 @@
       if (kind) pill.classList.add(`status-${kind}`);
       label.textContent = text;
     }
+    function setActiveTab(tab) {
+      const next = (tab === "timeline") ? "timeline" : "monitor";
+      state.activeTab = next;
+      document.getElementById("tabMonitor").classList.toggle("active", next === "monitor");
+      document.getElementById("tabTimeline").classList.toggle("active", next === "timeline");
+      document.getElementById("monitorPane").classList.toggle("active", next === "monitor");
+      document.getElementById("timelinePane").classList.toggle("active", next === "timeline");
+    }
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -260,6 +319,50 @@
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return String(value);
       return date.toLocaleString();
+    }
+    function eventMeta(event) {
+      const payload = (event && typeof event === "object" && event.payload && typeof event.payload === "object")
+        ? event.payload
+        : {};
+      const aggregate = String((event && event.aggregate_key) || "");
+      const parts = aggregate.split(":");
+      const workflowFromKey = (parts.length >= 2 && parts[0] === "workflow_task") ? parts[1] : "";
+      const domainFromKey = (parts.length >= 3 && parts[0] === "workflow_task") ? parts[2] : "";
+      const pluginFromKey = (parts.length >= 4 && parts[0] === "workflow_task") ? parts.slice(3).join(":") : "";
+      return {
+        created_at: String((event && event.created_at) || ""),
+        event_type: String((event && event.event_type) || ""),
+        aggregate_key: aggregate,
+        workflow_id: String(payload.workflow_id || workflowFromKey || "").toLowerCase(),
+        root_domain: String(payload.root_domain || domainFromKey || "").toLowerCase(),
+        plugin_name: String(payload.plugin_name || payload.stage || pluginFromKey || "").toLowerCase(),
+        worker_id: String(payload.worker_id || ""),
+        message: String((event && event.message) || payload.message || ""),
+        payload,
+      };
+    }
+    function timelineFiltersMatch(meta) {
+      const domainFilter = document.getElementById("eventDomainFilter").value.trim().toLowerCase();
+      const workflowFilter = document.getElementById("eventWorkflowFilter").value.trim().toLowerCase();
+      const pluginFilter = document.getElementById("eventPluginFilter").value.trim().toLowerCase();
+      const textFilter = document.getElementById("eventTextFilter").value.trim().toLowerCase();
+      if (domainFilter && !String(meta.root_domain || "").includes(domainFilter)) return false;
+      if (workflowFilter && !String(meta.workflow_id || "").includes(workflowFilter)) return false;
+      if (pluginFilter && !String(meta.plugin_name || "").includes(pluginFilter)) return false;
+      if (textFilter) {
+        const haystack = [
+          meta.event_type,
+          meta.aggregate_key,
+          meta.workflow_id,
+          meta.root_domain,
+          meta.plugin_name,
+          meta.worker_id,
+          meta.message,
+          JSON.stringify(meta.payload || {}),
+        ].join(" ").toLowerCase();
+        if (!haystack.includes(textFilter)) return false;
+      }
+      return true;
     }
     function flattenTasks(domain) {
       const out = [];
@@ -421,6 +524,28 @@
         });
       });
     }
+    function renderTimelineRows() {
+      const body = document.getElementById("timelineRows");
+      const rows = (Array.isArray(state.events) ? state.events : [])
+        .map((event) => eventMeta(event))
+        .filter(timelineFiltersMatch);
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="8" class="muted">No workflow task events match current timeline filters.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((item) => `
+        <tr>
+          <td class="mono">${escapeHtml(formatStamp(item.created_at))}</td>
+          <td><span class="badge">${escapeHtml(item.event_type)}</span></td>
+          <td class="mono">${escapeHtml(item.workflow_id || "")}</td>
+          <td class="mono">${escapeHtml(item.root_domain || "")}</td>
+          <td class="mono">${escapeHtml(item.plugin_name || "")}</td>
+          <td class="mono">${escapeHtml(item.worker_id || "")}</td>
+          <td title="${escapeHtml(item.message)}">${escapeHtml(String(item.message || "").slice(0, 220))}</td>
+          <td class="mono">${escapeHtml(item.aggregate_key)}</td>
+        </tr>
+      `).join("");
+    }
     function updateCards(domains) {
       const payload = state.snapshot || {};
       let visibleTaskCount = 0;
@@ -440,20 +565,39 @@
       const domains = filteredDomains();
       renderDomainRows(domains);
       renderTaskRows(domains);
+      renderTimelineRows();
       updateCards(domains);
     }
-    async function fetchSnapshot() {
-      if (state.paused) return;
+    async function fetchWorkflowSnapshotData() {
       const limit = Number(document.getElementById("limitSelect").value || 1000);
+      const response = await fetch(`/api/coord/workflow-snapshot?limit=${encodeURIComponent(limit)}`, {
+        credentials: "same-origin",
+        headers: authHeaders(),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      state.snapshot = payload;
+    }
+    async function fetchWorkflowEventsData() {
+      const limit = Number(document.getElementById("eventLimitSelect").value || 500);
+      const qs = new URLSearchParams({
+        limit: String(Math.max(1, Math.min(5000, limit))),
+        sort_dir: "desc",
+        event_type: "workflow.task.",
+      });
+      const response = await fetch(`/api/coord/events?${qs.toString()}`, {
+        credentials: "same-origin",
+        headers: authHeaders(),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      state.events = Array.isArray(payload.events) ? payload.events : [];
+    }
+    async function refreshAllData() {
+      if (state.paused) return;
       setStatus("loading", "Refreshing...");
       try {
-        const response = await fetch(`/api/coord/workflow-snapshot?limit=${encodeURIComponent(limit)}`, {
-          credentials: "same-origin",
-          headers: authHeaders(),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        state.snapshot = payload;
+        await Promise.all([fetchWorkflowSnapshotData(), fetchWorkflowEventsData()]);
         renderAll();
         setStatus("success", `Live at ${new Date().toLocaleTimeString()}`);
       } catch (error) {
@@ -499,7 +643,7 @@
           resume_mode: resumeMode,
         });
         document.getElementById("enqueueResult").textContent = JSON.stringify(payload, null, 2);
-        await fetchSnapshot();
+        await refreshAllData();
       } catch (error) {
         document.getElementById("enqueueResult").textContent = String(error && error.message ? error.message : error);
       }
@@ -517,22 +661,22 @@
           hard_delete: hardDeleteValue,
         });
         document.getElementById("resetResult").textContent = JSON.stringify(payload, null, 2);
-        await fetchSnapshot();
+        await refreshAllData();
       } catch (error) {
         document.getElementById("resetResult").textContent = String(error && error.message ? error.message : error);
       }
     }
     function scheduleRefresh() {
       if (state.timer) clearInterval(state.timer);
-      state.timer = setInterval(fetchSnapshot, 3000);
+      state.timer = setInterval(refreshAllData, 3000);
     }
 
-    document.getElementById("refreshButton").addEventListener("click", fetchSnapshot);
+    document.getElementById("refreshButton").addEventListener("click", refreshAllData);
     document.getElementById("pauseButton").addEventListener("click", () => {
       state.paused = !state.paused;
       document.getElementById("pauseButton").textContent = state.paused ? "Resume" : "Pause";
       setStatus(state.paused ? "" : "success", state.paused ? "Paused" : "Live");
-      if (!state.paused) fetchSnapshot();
+      if (!state.paused) refreshAllData();
     });
     document.getElementById("enqueueForm").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -545,11 +689,24 @@
     ["searchDomain", "searchWorkflow", "searchPlugin", "statusFilter"].forEach((id) => {
       document.getElementById(id).addEventListener("input", renderAll);
     });
-    document.getElementById("limitSelect").addEventListener("change", fetchSnapshot);
+    ["eventDomainFilter", "eventWorkflowFilter", "eventPluginFilter", "eventTextFilter"].forEach((id) => {
+      document.getElementById(id).addEventListener("input", renderAll);
+    });
+    document.getElementById("limitSelect").addEventListener("change", refreshAllData);
+    document.getElementById("eventLimitSelect").addEventListener("change", refreshAllData);
+    document.getElementById("tabMonitor").addEventListener("click", () => setActiveTab("monitor"));
+    document.getElementById("tabTimeline").addEventListener("click", () => setActiveTab("timeline"));
+    document.getElementById("applySelectionToTimeline").addEventListener("click", () => {
+      document.getElementById("eventDomainFilter").value = String(state.selectedDomain || "");
+      document.getElementById("eventWorkflowFilter").value = document.getElementById("searchWorkflow").value.trim().toLowerCase();
+      document.getElementById("eventPluginFilter").value = document.getElementById("searchPlugin").value.trim().toLowerCase();
+      setActiveTab("timeline");
+      renderAll();
+    });
 
     hydrateTokenFromCookie();
     scheduleRefresh();
-    fetchSnapshot();
+    refreshAllData();
   </script>
 </body>
 </html>

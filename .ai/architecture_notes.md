@@ -190,3 +190,4 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Web UI now has a dedicated workflow operations surface at `/workflows`.
   - Page is read/write against coordinator APIs (`workflow-snapshot`, `stage/enqueue`, `stage/reset`) and does not duplicate scheduler logic in the frontend.
   - Route rendering stays centralized through `reporting/server_pages.py` helpers, matching existing server page decomposition.
+  - `/workflows` now includes a separate timeline pane fed by `/api/coord/events` (`workflow.task.*`) so task lifecycle observability is colocated with workflow controls.

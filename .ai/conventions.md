@@ -327,3 +327,4 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Progress/resume convention: workers should continuously persist resumable checkpoint/progress through `POST /api/coord/stage/progress` and include final checkpoint/progress on `stage/complete`.
 - Coordinator API compatibility convention: legacy stage endpoints remain valid, but should accept optional `workflow_id` and plugin progress payloads.
 - Workflow UI convention: interactive workflow controls live on `/workflows` and must call coordinator endpoints directly (`/api/coord/workflow-snapshot`, `/api/coord/stage/enqueue`, `/api/coord/stage/reset`) with the same `nightmare_coord_token` auth-cookie/header pattern used by other coordinator ops pages.
+- Workflow timeline convention: lifecycle event views in `/workflows` should use `/api/coord/events` with `event_type=workflow.task.` and apply domain/workflow/plugin filtering in UI to preserve backend query compatibility.

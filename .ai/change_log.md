@@ -1251,3 +1251,12 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Validation:
   - `python -m py_compile reporting/server_pages.py server.py`
   - `pytest -q tests/test_refactor_modules.py tests/test_reporting_and_store_helpers.py tests/test_module_decomposition.py`
+
+## 2026-04-22
+
+- Extended `/workflows` with a second `Timeline` tab for workflow task lifecycle events.
+  - Timeline consumes `/api/coord/events` with `event_type=workflow.task.` and client-side filters for domain/workflow/plugin/text.
+  - Added quick action to copy current monitor selection into timeline filters (`Use Selected Domain`).
+  - Kept monitor + control interactions (`enqueue`, `reset`) in same page and shared refresh loop.
+- Validation:
+  - `pytest -q tests/test_refactor_modules.py tests/test_reporting_and_store_helpers.py tests/test_module_decomposition.py`

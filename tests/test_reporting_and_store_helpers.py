@@ -103,7 +103,9 @@ def test_render_events_html_contains_expected_heading():
 def test_render_workflows_html_contains_expected_heading():
     html = render_workflows_html()
     assert "Workflow Monitor" in html
+    assert "Workflow Timeline" in html
     assert "/api/coord/workflow-snapshot" in html
+    assert "/api/coord/events" in html
     assert "/api/coord/stage/enqueue" in html
     assert "/api/coord/stage/reset" in html
 
