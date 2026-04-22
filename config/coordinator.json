@@ -18,5 +18,10 @@
   "extractor_config": "config/extractor.json",
   "auth0r_workers": 2,
   "enable_auth0r": true,
-  "auth0r_config": "config/auth0r.json"
+  "auth0r_config": "config/auth0r.json",
+  "workflow_config": "workflows/coordinator.workflow.json",
+  "workflow_scheduler_enabled": true,
+  "workflow_scheduler_interval_seconds": 15.0,
+  "plugin_workers": 6,
+  "plugin_allowlist": []
 }

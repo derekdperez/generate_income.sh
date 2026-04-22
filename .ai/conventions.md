@@ -322,3 +322,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Stage queueing convention: use `schedule_stage(...)` / `POST /api/coord/stage/enqueue` with retry flags instead of forcing status resets; do not overwrite `running` tasks.
 - Workflow scheduling convention: prerequisites are artifact-based (`artifacts_all` / `artifacts_any`), not strict stage-success sequencing.
 - Tool tuning convention: stage-specific runtime knobs should be read from workflow `parameters` first, then fall back to tool config files.
+- Workflow identity convention: plugin task uniqueness/completion is scoped by `(workflow_id, root_domain, plugin_name)` where `plugin_name` is stored in `coordinator_stage_tasks.stage`.
+- Rerun safety convention: scheduler must not auto-retry failed plugin tasks; reruns require explicit manual reset via `POST /api/coord/stage/reset`.
+- Progress/resume convention: workers should continuously persist resumable checkpoint/progress through `POST /api/coord/stage/progress` and include final checkpoint/progress on `stage/complete`.
+- Coordinator API compatibility convention: legacy stage endpoints remain valid, but should accept optional `workflow_id` and plugin progress payloads.

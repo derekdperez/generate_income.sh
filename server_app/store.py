@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS coordinator_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
+  workflow_id TEXT NOT NULL DEFAULT 'default',
   root_domain TEXT NOT NULL,
   stage TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -488,12 +489,17 @@ CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
   attempt_count INTEGER NOT NULL DEFAULT 0,
   exit_code INTEGER,
   error TEXT,
+  checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  progress_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  progress_artifact_type TEXT NOT NULL DEFAULT '',
+  resume_mode TEXT NOT NULL DEFAULT 'exact',
   created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY(root_domain, stage)
+  PRIMARY KEY(workflow_id, root_domain, stage)
 );
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(stage, status);
+CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(workflow_id, stage, status);
 CREATE INDEX IF NOT EXISTS idx_stage_tasks_lease ON coordinator_stage_tasks(lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_stage_tasks_domain_status ON coordinator_stage_tasks(root_domain, status, lease_expires_at);
 
 CREATE TABLE IF NOT EXISTS coordinator_artifacts (
   root_domain TEXT NOT NULL,
@@ -563,6 +569,29 @@ CREATE INDEX IF NOT EXISTS idx_worker_presence_last_seen
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS media_type TEXT NOT NULL DEFAULT 'application/octet-stream'",
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS compression TEXT NOT NULL DEFAULT 'identity'",
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT 'default'",
+            "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS progress_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS progress_artifact_type TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS resume_mode TEXT NOT NULL DEFAULT 'exact'",
+            """
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'coordinator_stage_tasks_pkey'
+  ) THEN
+    ALTER TABLE coordinator_stage_tasks DROP CONSTRAINT coordinator_stage_tasks_pkey;
+  END IF;
+EXCEPTION WHEN undefined_table THEN
+  NULL;
+END $$;
+""",
+            "ALTER TABLE coordinator_stage_tasks ADD CONSTRAINT coordinator_stage_tasks_pkey PRIMARY KEY(workflow_id, root_domain, stage)",
+            "DROP INDEX IF EXISTS idx_stage_tasks_status_stage",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(workflow_id, stage, status)",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_domain_status ON coordinator_stage_tasks(root_domain, status, lease_expires_at)",
             "CREATE TABLE IF NOT EXISTS coordinator_summary_latest (root_domain TEXT NOT NULL, stage_name TEXT NOT NULL, summary_json JSONB NOT NULL DEFAULT '{}'::jsonb, updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(root_domain, stage_name))",
             "CREATE TABLE IF NOT EXISTS coordinator_projection_state (aggregate_key TEXT PRIMARY KEY, projection_json JSONB NOT NULL DEFAULT '{}'::jsonb, updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW())",
         ]
@@ -1135,10 +1164,11 @@ LIMIT %s;
                 if domains:
                     cur.execute(
                         """
-SELECT root_domain, stage, status, attempt_count, exit_code, error, updated_at_utc, completed_at_utc
+SELECT workflow_id, root_domain, stage, status, attempt_count, exit_code, error, updated_at_utc, completed_at_utc,
+       checkpoint_json, progress_json, progress_artifact_type, resume_mode, worker_id
 FROM coordinator_stage_tasks
 WHERE root_domain = ANY(%s)
-ORDER BY root_domain ASC, stage ASC;
+ORDER BY workflow_id ASC, root_domain ASC, stage ASC;
 """,
                         (domains,),
                     )
@@ -1171,21 +1201,33 @@ ORDER BY root_domain ASC;
                     target_rows = cur.fetchall()
             conn.commit()
 
-        stage_map: dict[str, dict[str, Any]] = {}
+        stage_map: dict[str, dict[str, dict[str, Any]]] = {}
+        legacy_stage_map: dict[str, dict[str, Any]] = {}
         for row in stage_rows:
-            rd = str(row[0] or "").strip().lower()
-            stg = str(row[1] or "").strip().lower()
+            workflow_id = str(row[0] or "default").strip().lower() or "default"
+            rd = str(row[1] or "").strip().lower()
+            stg = str(row[2] or "").strip().lower()
             if not rd or not stg:
                 continue
-            stage_map.setdefault(rd, {})[stg] = {
+            row_payload = {
+                "workflow_id": workflow_id,
                 "stage": stg,
-                "status": str(row[2] or "").strip().lower(),
-                "attempt_count": int(row[3] or 0),
-                "exit_code": (int(row[4]) if row[4] is not None else None),
-                "error": str(row[5] or ""),
-                "updated_at_utc": row[6].isoformat() if row[6] else None,
-                "completed_at_utc": row[7].isoformat() if row[7] else None,
+                "plugin_name": stg,
+                "status": str(row[3] or "").strip().lower(),
+                "attempt_count": int(row[4] or 0),
+                "exit_code": (int(row[5]) if row[5] is not None else None),
+                "error": str(row[6] or ""),
+                "updated_at_utc": row[7].isoformat() if row[7] else None,
+                "completed_at_utc": row[8].isoformat() if row[8] else None,
+                "checkpoint": row[9] if isinstance(row[9], dict) else {},
+                "progress": row[10] if isinstance(row[10], dict) else {},
+                "progress_artifact_type": str(row[11] or ""),
+                "resume_mode": str(row[12] or "exact"),
+                "worker_id": str(row[13] or ""),
             }
+            stage_map.setdefault(rd, {}).setdefault(workflow_id, {})[stg] = row_payload
+            if workflow_id == "default":
+                legacy_stage_map.setdefault(rd, {})[stg] = row_payload
 
         artifact_map: dict[str, list[dict[str, Any]]] = {}
         for row in artifact_rows:
@@ -1219,7 +1261,8 @@ ORDER BY root_domain ASC;
                 {
                     "root_domain": rd,
                     "targets": target_map.get(rd, {"pending": 0, "running": 0, "completed": 0, "failed": 0}),
-                    "stage_tasks": stage_map.get(rd, {}),
+                    "plugin_tasks": stage_map.get(rd, {}),
+                    "stage_tasks": legacy_stage_map.get(rd, {}),
                     "artifact_types": [item["artifact_type"] for item in artifacts],
                     "artifacts": artifacts,
                 }
@@ -1371,7 +1414,9 @@ LIMIT %s;
             if running_targets > 0:
                 phase = "nightmare_running"
             elif running_stage_tasks > 0:
-                if "fozzy" in active_stages:
+                if any(str(item).startswith("nightmare_") for item in active_stages):
+                    phase = "nightmare_plugin_running"
+                elif "fozzy" in active_stages:
                     phase = "fozzy_running"
                 elif "extractor" in active_stages:
                     phase = "extractor_running"
@@ -1380,7 +1425,10 @@ LIMIT %s;
             elif pending_targets > 0:
                 phase = "nightmare_pending"
             elif pending_stage_tasks > 0:
-                phase = "stage_pending"
+                if any(str(item).startswith("nightmare_") for item in active_stages):
+                    phase = "nightmare_plugin_pending"
+                else:
+                    phase = "stage_pending"
             elif failed_targets > 0 or failed_stage_tasks > 0:
                 phase = "failed"
             elif completed_targets > 0 or completed_stage_tasks > 0:
@@ -2372,13 +2420,19 @@ RETURNING command;
         root_domain: str,
         stage: str,
         *,
+        workflow_id: str = "default",
         worker_id: str = "",
         reason: str = "",
         allow_retry_failed: bool = False,
         max_attempts: int = 0,
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "exact",
     ) -> dict[str, Any]:
         rd = str(root_domain or "").strip().lower()
         stg = str(stage or "").strip().lower()
+        widf = str(workflow_id or "").strip().lower() or "default"
         wid = str(worker_id or "").strip()
         source_reason = str(reason or "").strip()
         max_attempts_int = max(0, int(max_attempts or 0))
@@ -2386,12 +2440,18 @@ RETURNING command;
             return {
                 "ok": False,
                 "scheduled": False,
+                "workflow_id": widf,
                 "root_domain": rd,
                 "stage": stg,
+                "plugin_name": stg,
                 "status": "",
                 "reason": "invalid_input",
                 "attempt_count": 0,
             }
+        checkpoint_obj = dict(checkpoint or {}) if isinstance(checkpoint, dict) else {}
+        progress_obj = dict(progress or {}) if isinstance(progress, dict) else {}
+        progress_artifact_type_text = str(progress_artifact_type or "").strip().lower()
+        resume_mode_text = str(resume_mode or "exact").strip().lower() or "exact"
 
         scheduled = False
         status = ""
@@ -2405,19 +2465,29 @@ RETURNING command;
                     """
 SELECT status, attempt_count
 FROM coordinator_stage_tasks
-WHERE root_domain = %s AND stage = %s
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s
 FOR UPDATE;
 """,
-                    (rd, stg),
+                    (widf, rd, stg),
                 )
                 row = cur.fetchone()
                 if row is None:
                     cur.execute(
                         """
-INSERT INTO coordinator_stage_tasks(root_domain, stage, status, updated_at_utc)
-VALUES (%s, %s, 'pending', NOW());
+INSERT INTO coordinator_stage_tasks(
+    workflow_id, root_domain, stage, status, checkpoint_json, progress_json, progress_artifact_type, resume_mode, updated_at_utc
+)
+VALUES (%s, %s, %s, 'pending', %s::jsonb, %s::jsonb, %s, %s, NOW());
 """,
-                        (rd, stg),
+                        (
+                            widf,
+                            rd,
+                            stg,
+                            json.dumps(checkpoint_obj, ensure_ascii=False),
+                            json.dumps(progress_obj, ensure_ascii=False),
+                            progress_artifact_type_text,
+                            resume_mode_text,
+                        ),
                     )
                     scheduled = True
                     status = "pending"
@@ -2446,11 +2516,24 @@ SET status = 'pending',
     heartbeat_at_utc = NULL,
     completed_at_utc = NULL,
     updated_at_utc = NOW(),
-    error = NULL
-WHERE root_domain = %s
+    error = NULL,
+    checkpoint_json = %s::jsonb,
+    progress_json = %s::jsonb,
+    progress_artifact_type = %s,
+    resume_mode = %s
+WHERE workflow_id = %s
+  AND root_domain = %s
   AND stage = %s;
 """,
-                                (rd, stg),
+                                (
+                                    json.dumps(checkpoint_obj, ensure_ascii=False),
+                                    json.dumps(progress_obj, ensure_ascii=False),
+                                    progress_artifact_type_text,
+                                    resume_mode_text,
+                                    widf,
+                                    rd,
+                                    stg,
+                                ),
                             )
                             scheduled = True
                             status = "pending"
@@ -2463,17 +2546,21 @@ WHERE root_domain = %s
 
         if scheduled:
             self.record_system_event(
-                "stage.enqueued",
-                f"stage:{rd}:{stg}",
+                "workflow.task.enqueued",
+                f"workflow_task:{widf}:{rd}:{stg}",
                 {
                     "source": "coordinator_store.schedule_stage",
+                    "workflow_id": widf,
                     "root_domain": rd,
                     "stage": stg,
+                    "plugin_name": stg,
                     "status": "pending",
                     "worker_id": wid,
                     "reason": source_reason or decision_reason,
                     "allow_retry_failed": bool(allow_retry_failed),
                     "max_attempts": max_attempts_int,
+                    "resume_mode": resume_mode_text,
+                    "progress_artifact_type": progress_artifact_type_text,
                     "table": "coordinator_stage_tasks",
                 },
             )
@@ -2481,8 +2568,10 @@ WHERE root_domain = %s
         return {
             "ok": True,
             "scheduled": scheduled,
+            "workflow_id": widf,
             "root_domain": rd,
             "stage": stg,
+            "plugin_name": stg,
             "status": status,
             "reason": decision_reason,
             "attempt_count": attempt_count,
@@ -2493,35 +2582,68 @@ WHERE root_domain = %s
         root_domain: str,
         stage: str,
         *,
+        workflow_id: str = "default",
         worker_id: str = "",
         reason: str = "",
         allow_retry_failed: bool = False,
         max_attempts: int = 0,
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "exact",
     ) -> bool:
         result = self.schedule_stage(
             root_domain,
             stage,
+            workflow_id=workflow_id,
             worker_id=worker_id,
             reason=reason,
             allow_retry_failed=allow_retry_failed,
             max_attempts=max_attempts,
+            checkpoint=checkpoint,
+            progress=progress,
+            progress_artifact_type=progress_artifact_type,
+            resume_mode=resume_mode,
         )
         return bool(result.get("scheduled"))
 
-    def claim_stage(self, stage: str, worker_id: str, lease_seconds: int) -> Optional[dict[str, Any]]:
-        stg = str(stage or "").strip().lower()
+    def claim_next_stage(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        workflow_id: str = "",
+        plugin_allowlist: Optional[list[str]] = None,
+    ) -> Optional[dict[str, Any]]:
         wid = str(worker_id or "").strip()
-        if not stg or not wid:
-            raise ValueError("stage and worker_id are required")
+        widf = str(workflow_id or "").strip().lower()
+        if not wid:
+            raise ValueError("worker_id is required")
         lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        allowlist = [
+            str(item or "").strip().lower()
+            for item in (plugin_allowlist or [])
+            if str(item or "").strip()
+        ]
+        allowlist_param: Optional[list[str]] = allowlist if allowlist else None
         sql = """
 WITH candidate AS (
-    SELECT root_domain
-    FROM coordinator_stage_tasks
-    WHERE stage = %s
-      AND (
+    SELECT workflow_id, root_domain, stage
+    FROM coordinator_stage_tasks t
+    WHERE (
         status = 'pending'
         OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+    )
+      AND (%s = '' OR workflow_id = %s)
+      AND (%s::text[] IS NULL OR stage = ANY(%s))
+      AND NOT EXISTS (
+          SELECT 1
+          FROM coordinator_stage_tasks r
+          WHERE r.root_domain = t.root_domain
+            AND r.status = 'running'
+            AND r.lease_expires_at IS NOT NULL
+            AND r.lease_expires_at >= NOW()
+            AND NOT (r.workflow_id = t.workflow_id AND r.stage = t.stage)
       )
     ORDER BY created_at_utc ASC
     FOR UPDATE SKIP LOCKED
@@ -2538,53 +2660,131 @@ SET status = 'running',
     updated_at_utc = NOW(),
     error = NULL
 FROM candidate
-WHERE t.root_domain = candidate.root_domain
-  AND t.stage = %s
-RETURNING t.root_domain, t.stage, t.status, t.worker_id, t.attempt_count, t.lease_expires_at;
+WHERE t.workflow_id = candidate.workflow_id
+  AND t.root_domain = candidate.root_domain
+  AND t.stage = candidate.stage
+RETURNING
+    t.workflow_id,
+    t.root_domain,
+    t.stage,
+    t.status,
+    t.worker_id,
+    t.attempt_count,
+    t.lease_expires_at,
+    t.checkpoint_json,
+    t.progress_json,
+    t.progress_artifact_type,
+    t.resume_mode;
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                self._touch_worker_presence(cur, wid, f"claim_stage_{stg}")
-                cur.execute(sql, (stg, wid, lease, stg))
+                self._touch_worker_presence(cur, wid, "claim_stage")
+                cur.execute(sql, (widf, widf, allowlist_param, allowlist_param, wid, lease))
                 row = cur.fetchone()
             conn.commit()
         if row is None:
             return None
         self.record_system_event(
-            "stage.claimed",
-            f"stage:{row[0]}:{row[1]}",
+            "workflow.task.claimed",
+            f"workflow_task:{row[0]}:{row[1]}:{row[2]}",
             {
-                "source": "coordinator_store.claim_stage",
-                "root_domain": row[0],
-                "stage": row[1],
-                "status": row[2],
-                "worker_id": row[3],
-                "attempt_count": int(row[4] or 0),
-                "lease_expires_at": row[5].isoformat() if row[5] else None,
+                "source": "coordinator_store.claim_next_stage",
+                "workflow_id": row[0],
+                "root_domain": row[1],
+                "stage": row[2],
+                "plugin_name": row[2],
+                "status": row[3],
+                "worker_id": row[4],
+                "attempt_count": int(row[5] or 0),
+                "lease_expires_at": row[6].isoformat() if row[6] else None,
+                "resume_mode": str(row[10] or "exact"),
             },
         )
         return {
-            "root_domain": row[0],
-            "stage": row[1],
-            "status": row[2],
-            "worker_id": row[3],
-            "attempt_count": int(row[4] or 0),
-            "lease_expires_at": row[5].isoformat() if row[5] else None,
+            "workflow_id": str(row[0] or "default"),
+            "root_domain": str(row[1] or "").strip().lower(),
+            "stage": str(row[2] or "").strip().lower(),
+            "plugin_name": str(row[2] or "").strip().lower(),
+            "status": str(row[3] or "").strip().lower(),
+            "worker_id": str(row[4] or ""),
+            "attempt_count": int(row[5] or 0),
+            "lease_expires_at": row[6].isoformat() if row[6] else None,
+            "checkpoint": row[7] if isinstance(row[7], dict) else {},
+            "progress": row[8] if isinstance(row[8], dict) else {},
+            "progress_artifact_type": str(row[9] or ""),
+            "resume_mode": str(row[10] or "exact"),
         }
 
+    def claim_stage(
+        self,
+        stage: str,
+        worker_id: str,
+        lease_seconds: int,
+        *,
+        workflow_id: str = "default",
+    ) -> Optional[dict[str, Any]]:
+        stg = str(stage or "").strip().lower()
+        if not stg:
+            raise ValueError("stage is required")
+        return self.claim_next_stage(
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            workflow_id=workflow_id,
+            plugin_allowlist=[stg],
+        )
+
     def heartbeat_stage(self, root_domain: str, stage: str, worker_id: str, lease_seconds: int) -> bool:
+        return self.heartbeat_stage_with_workflow(
+            root_domain=root_domain,
+            stage=stage,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            workflow_id="default",
+        )
+
+    def heartbeat_stage_with_workflow(
+        self,
+        *,
+        root_domain: str,
+        stage: str,
+        worker_id: str,
+        lease_seconds: int,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+    ) -> bool:
         rd = str(root_domain or "").strip().lower()
         stg = str(stage or "").strip().lower()
         wid = str(worker_id or "").strip()
+        widf = str(workflow_id or "").strip().lower() or "default"
         lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
         if not rd or not stg or not wid:
             return False
+        checkpoint_json = (
+            json.dumps(dict(checkpoint), ensure_ascii=False)
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        progress_json = (
+            json.dumps(dict(progress), ensure_ascii=False)
+            if isinstance(progress, dict)
+            else None
+        )
+        artifact_type_text = str(progress_artifact_type or "").strip().lower()
         sql = """
 UPDATE coordinator_stage_tasks
 SET heartbeat_at_utc = NOW(),
     lease_expires_at = NOW() + ((%s)::text || ' seconds')::interval,
+    checkpoint_json = COALESCE(%s::jsonb, checkpoint_json),
+    progress_json = COALESCE(%s::jsonb, progress_json),
+    progress_artifact_type = CASE
+      WHEN %s <> '' THEN %s
+      ELSE progress_artifact_type
+    END,
     updated_at_utc = NOW()
-WHERE root_domain = %s
+WHERE workflow_id = %s
+  AND root_domain = %s
   AND stage = %s
   AND worker_id = %s
   AND status = 'running';
@@ -2592,19 +2792,117 @@ WHERE root_domain = %s
         with self._connect() as conn:
             with conn.cursor() as cur:
                 self._touch_worker_presence(cur, wid, f"heartbeat_stage_{stg}")
-                cur.execute(sql, (lease, rd, stg, wid))
+                cur.execute(
+                    sql,
+                    (
+                        lease,
+                        checkpoint_json,
+                        progress_json,
+                        artifact_type_text,
+                        artifact_type_text,
+                        widf,
+                        rd,
+                        stg,
+                        wid,
+                    ),
+                )
                 updated = int(cur.rowcount or 0)
             conn.commit()
         if updated > 0:
             self.record_system_event(
-                "stage.heartbeat",
-                f"stage:{rd}:{stg}",
+                "workflow.task.heartbeat",
+                f"workflow_task:{widf}:{rd}:{stg}",
                 {
-                    "source": "coordinator_store.heartbeat_stage",
+                    "source": "coordinator_store.heartbeat_stage_with_workflow",
+                    "workflow_id": widf,
                     "root_domain": rd,
                     "stage": stg,
+                    "plugin_name": stg,
                     "worker_id": wid,
                     "lease_seconds": lease,
+                    "status": "running",
+                },
+            )
+        return updated > 0
+
+    def update_stage_progress(
+        self,
+        *,
+        root_domain: str,
+        stage: str,
+        worker_id: str,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+    ) -> bool:
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        wid = str(worker_id or "").strip()
+        widf = str(workflow_id or "").strip().lower() or "default"
+        if not rd or not stg or not wid:
+            return False
+        checkpoint_json = (
+            json.dumps(dict(checkpoint), ensure_ascii=False)
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        progress_json = (
+            json.dumps(dict(progress), ensure_ascii=False)
+            if isinstance(progress, dict)
+            else None
+        )
+        artifact_type_text = str(progress_artifact_type or "").strip().lower()
+        sql = """
+UPDATE coordinator_stage_tasks
+SET checkpoint_json = COALESCE(%s::jsonb, checkpoint_json),
+    progress_json = COALESCE(%s::jsonb, progress_json),
+    progress_artifact_type = CASE
+      WHEN %s <> '' THEN %s
+      ELSE progress_artifact_type
+    END,
+    heartbeat_at_utc = NOW(),
+    updated_at_utc = NOW()
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s
+  AND worker_id = %s
+  AND status = 'running';
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                self._touch_worker_presence(cur, wid, f"progress_stage_{stg}")
+                cur.execute(
+                    sql,
+                    (
+                        checkpoint_json,
+                        progress_json,
+                        artifact_type_text,
+                        artifact_type_text,
+                        widf,
+                        rd,
+                        stg,
+                        wid,
+                    ),
+                )
+                updated = int(cur.rowcount or 0)
+            conn.commit()
+        if updated > 0:
+            checkpoint_payload = dict(checkpoint or {}) if isinstance(checkpoint, dict) else {}
+            progress_payload = dict(progress or {}) if isinstance(progress, dict) else {}
+            self.record_system_event(
+                "workflow.task.progress",
+                f"workflow_task:{widf}:{rd}:{stg}",
+                {
+                    "source": "coordinator_store.update_stage_progress",
+                    "workflow_id": widf,
+                    "root_domain": rd,
+                    "stage": stg,
+                    "plugin_name": stg,
+                    "worker_id": wid,
+                    "checkpoint": checkpoint_payload,
+                    "progress": progress_payload,
+                    "progress_artifact_type": artifact_type_text,
                     "status": "running",
                 },
             )
@@ -2616,50 +2914,181 @@ WHERE root_domain = %s
         stage: str,
         worker_id: str,
         *,
+        workflow_id: str = "default",
         exit_code: int,
         error: str = "",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "",
     ) -> bool:
         rd = str(root_domain or "").strip().lower()
         stg = str(stage or "").strip().lower()
         wid = str(worker_id or "").strip()
+        widf = str(workflow_id or "").strip().lower() or "default"
         if not rd or not stg or not wid:
             return False
         ok = int(exit_code) == 0
         next_status = "completed" if ok else "failed"
+        checkpoint_json = (
+            json.dumps(dict(checkpoint), ensure_ascii=False)
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        progress_json = (
+            json.dumps(dict(progress), ensure_ascii=False)
+            if isinstance(progress, dict)
+            else None
+        )
+        progress_artifact_type_text = str(progress_artifact_type or "").strip().lower()
+        resume_mode_text = str(resume_mode or "").strip().lower()
         sql = """
 UPDATE coordinator_stage_tasks
 SET status = %s,
     exit_code = %s,
     error = %s,
+    checkpoint_json = COALESCE(%s::jsonb, checkpoint_json),
+    progress_json = COALESCE(%s::jsonb, progress_json),
+    progress_artifact_type = CASE
+      WHEN %s <> '' THEN %s
+      ELSE progress_artifact_type
+    END,
+    resume_mode = CASE
+      WHEN %s <> '' THEN %s
+      ELSE resume_mode
+    END,
     completed_at_utc = NOW(),
     heartbeat_at_utc = NOW(),
     lease_expires_at = NULL,
     updated_at_utc = NOW()
-WHERE root_domain = %s
+WHERE workflow_id = %s
+  AND root_domain = %s
   AND stage = %s
   AND worker_id = %s;
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
                 self._touch_worker_presence(cur, wid, f"complete_stage_{stg}")
-                cur.execute(sql, (next_status, int(exit_code), str(error or "")[:2000], rd, stg, wid))
+                cur.execute(
+                    sql,
+                    (
+                        next_status,
+                        int(exit_code),
+                        str(error or "")[:2000],
+                        checkpoint_json,
+                        progress_json,
+                        progress_artifact_type_text,
+                        progress_artifact_type_text,
+                        resume_mode_text,
+                        resume_mode_text,
+                        widf,
+                        rd,
+                        stg,
+                        wid,
+                    ),
+                )
                 updated = int(cur.rowcount or 0)
             conn.commit()
         if updated > 0:
             self.record_system_event(
-                f"stage.{next_status}",
-                f"stage:{rd}:{stg}",
+                f"workflow.task.{next_status}",
+                f"workflow_task:{widf}:{rd}:{stg}",
                 {
                     "source": "coordinator_store.complete_stage",
+                    "workflow_id": widf,
                     "root_domain": rd,
                     "stage": stg,
+                    "plugin_name": stg,
                     "worker_id": wid,
                     "status": next_status,
                     "exit_code": int(exit_code),
                     "error": str(error or "")[:2000],
+                    "progress_artifact_type": progress_artifact_type_text,
                 },
             )
         return updated > 0
+
+    def reset_stage_tasks(
+        self,
+        *,
+        workflow_id: str = "",
+        root_domains: Optional[list[str]] = None,
+        plugins: Optional[list[str]] = None,
+        hard_delete: bool = False,
+    ) -> dict[str, Any]:
+        widf = str(workflow_id or "").strip().lower()
+        domains = [
+            str(item or "").strip().lower()
+            for item in (root_domains or [])
+            if str(item or "").strip()
+        ]
+        stages = [
+            str(item or "").strip().lower()
+            for item in (plugins or [])
+            if str(item or "").strip()
+        ]
+        where_sql = ["1=1"]
+        params: list[Any] = []
+        if widf:
+            where_sql.append("workflow_id = %s")
+            params.append(widf)
+        if domains:
+            where_sql.append("root_domain = ANY(%s)")
+            params.append(domains)
+        if stages:
+            where_sql.append("stage = ANY(%s)")
+            params.append(stages)
+        where_clause = " AND ".join(where_sql)
+        if hard_delete:
+            sql = f"""
+DELETE FROM coordinator_stage_tasks
+WHERE {where_clause};
+"""
+        else:
+            sql = f"""
+UPDATE coordinator_stage_tasks
+SET status = 'pending',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    started_at_utc = NULL,
+    completed_at_utc = NULL,
+    heartbeat_at_utc = NULL,
+    attempt_count = 0,
+    exit_code = NULL,
+    error = NULL,
+    checkpoint_json = '{{}}'::jsonb,
+    progress_json = '{{}}'::jsonb,
+    progress_artifact_type = '',
+    resume_mode = 'exact',
+    updated_at_utc = NOW()
+WHERE {where_clause};
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                affected = int(cur.rowcount or 0)
+            conn.commit()
+        self.record_system_event(
+            "workflow.task.reset",
+            "workflow_tasks",
+            {
+                "source": "coordinator_store.reset_stage_tasks",
+                "workflow_id": widf or "",
+                "root_domains": domains,
+                "plugins": stages,
+                "hard_delete": bool(hard_delete),
+                "affected_rows": affected,
+            },
+        )
+        return {
+            "ok": True,
+            "workflow_id": widf or "",
+            "root_domains": domains,
+            "plugins": stages,
+            "hard_delete": bool(hard_delete),
+            "affected_rows": affected,
+            "reset_at_utc": _iso_now(),
+        }
 
     def upload_artifact(
         self,

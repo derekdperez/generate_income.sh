@@ -105,6 +105,8 @@ class CoordinatorConfig:
     workflow_config: Path
     workflow_scheduler_enabled: bool
     workflow_scheduler_interval_seconds: float
+    plugin_workers: int
+    plugin_allowlist: list[str]
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -184,11 +186,29 @@ class CoordinatorClient:
         )
         return bool(rsp.get("ok"))
 
-    def enqueue_stage(self, root_domain: str, stage: str) -> bool:
+    def enqueue_stage(
+        self,
+        root_domain: str,
+        stage: str,
+        *,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "exact",
+    ) -> bool:
         rsp = self._request_json(
             "POST",
             "/api/coord/stage/enqueue",
-            {"root_domain": root_domain, "stage": stage},
+            {
+                "root_domain": root_domain,
+                "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
+                "checkpoint": (dict(checkpoint) if isinstance(checkpoint, dict) else None),
+                "progress": (dict(progress) if isinstance(progress, dict) else None),
+                "progress_artifact_type": str(progress_artifact_type or "").strip().lower(),
+                "resume_mode": str(resume_mode or "exact").strip().lower() or "exact",
+            },
         )
         if not bool(rsp.get("ok")):
             return False
@@ -199,10 +219,15 @@ class CoordinatorClient:
         root_domain: str,
         stage: str,
         *,
+        workflow_id: str = "default",
         worker_id: str = "",
         reason: str = "",
         allow_retry_failed: bool = False,
         max_attempts: int = 0,
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "exact",
     ) -> dict[str, Any]:
         rsp = self._request_json(
             "POST",
@@ -210,10 +235,15 @@ class CoordinatorClient:
             {
                 "root_domain": root_domain,
                 "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
                 "worker_id": str(worker_id or "").strip(),
                 "reason": str(reason or "").strip(),
                 "allow_retry_failed": bool(allow_retry_failed),
                 "max_attempts": int(max_attempts or 0),
+                "checkpoint": (dict(checkpoint) if isinstance(checkpoint, dict) else None),
+                "progress": (dict(progress) if isinstance(progress, dict) else None),
+                "progress_artifact_type": str(progress_artifact_type or "").strip().lower(),
+                "resume_mode": str(resume_mode or "exact").strip().lower() or "exact",
             },
         )
         if not isinstance(rsp, dict):
@@ -221,22 +251,71 @@ class CoordinatorClient:
         return {
             "ok": bool(rsp.get("ok")),
             "scheduled": bool(rsp.get("scheduled", False)),
+            "workflow_id": str(rsp.get("workflow_id", workflow_id) or workflow_id),
             "status": str(rsp.get("status", "") or ""),
             "reason": str(rsp.get("reason", "") or ""),
             "attempt_count": safe_int(rsp.get("attempt_count"), 0),
             "root_domain": str(rsp.get("root_domain", root_domain) or root_domain),
             "stage": str(rsp.get("stage", stage) or stage),
+            "plugin_name": str(rsp.get("plugin_name", stage) or stage),
         }
 
-    def claim_stage(self, worker_id: str, stage: str, lease_seconds: int) -> Optional[dict[str, Any] ]:
+    def claim_stage(
+        self,
+        worker_id: str,
+        stage: str,
+        lease_seconds: int,
+        *,
+        workflow_id: str = "default",
+    ) -> Optional[dict[str, Any] ]:
         rsp = self._request_json(
             "POST",
             "/api/coord/stage/claim",
-            {"worker_id": worker_id, "stage": stage, "lease_seconds": int(lease_seconds)},
+            {
+                "worker_id": worker_id,
+                "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
+                "lease_seconds": int(lease_seconds),
+            },
         )
         return rsp.get("entry") if isinstance(rsp.get("entry"), dict) else None
 
-    def heartbeat_stage(self, worker_id: str, root_domain: str, stage: str, lease_seconds: int) -> bool:
+    def claim_next_stage(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        workflow_id: str = "",
+        plugin_allowlist: Optional[list[str]] = None,
+    ) -> Optional[dict[str, Any]]:
+        rsp = self._request_json(
+            "POST",
+            "/api/coord/stage/claim-next",
+            {
+                "worker_id": worker_id,
+                "workflow_id": str(workflow_id or "").strip().lower(),
+                "lease_seconds": int(lease_seconds),
+                "plugin_allowlist": [
+                    str(item or "").strip().lower()
+                    for item in (plugin_allowlist or [])
+                    if str(item or "").strip()
+                ],
+            },
+        )
+        return rsp.get("entry") if isinstance(rsp.get("entry"), dict) else None
+
+    def heartbeat_stage(
+        self,
+        worker_id: str,
+        root_domain: str,
+        stage: str,
+        lease_seconds: int,
+        *,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+    ) -> bool:
         rsp = self._request_json(
             "POST",
             "/api/coord/stage/heartbeat",
@@ -244,12 +323,55 @@ class CoordinatorClient:
                 "worker_id": worker_id,
                 "root_domain": root_domain,
                 "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
                 "lease_seconds": int(lease_seconds),
+                "checkpoint": (dict(checkpoint) if isinstance(checkpoint, dict) else None),
+                "progress": (dict(progress) if isinstance(progress, dict) else None),
+                "progress_artifact_type": str(progress_artifact_type or "").strip().lower(),
             },
         )
         return bool(rsp.get("ok"))
 
-    def complete_stage(self, worker_id: str, root_domain: str, stage: str, exit_code: int, error: str = "") -> bool:
+    def update_stage_progress(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        stage: str,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+    ) -> bool:
+        rsp = self._request_json(
+            "POST",
+            "/api/coord/stage/progress",
+            {
+                "worker_id": worker_id,
+                "root_domain": root_domain,
+                "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
+                "checkpoint": (dict(checkpoint) if isinstance(checkpoint, dict) else None),
+                "progress": (dict(progress) if isinstance(progress, dict) else None),
+                "progress_artifact_type": str(progress_artifact_type or "").strip().lower(),
+            },
+        )
+        return bool(rsp.get("ok"))
+
+    def complete_stage(
+        self,
+        worker_id: str,
+        root_domain: str,
+        stage: str,
+        exit_code: int,
+        error: str = "",
+        *,
+        workflow_id: str = "default",
+        checkpoint: Optional[dict[str, Any]] = None,
+        progress: Optional[dict[str, Any]] = None,
+        progress_artifact_type: str = "",
+        resume_mode: str = "",
+    ) -> bool:
         rsp = self._request_json(
             "POST",
             "/api/coord/stage/complete",
@@ -257,11 +379,44 @@ class CoordinatorClient:
                 "worker_id": worker_id,
                 "root_domain": root_domain,
                 "stage": stage,
+                "workflow_id": str(workflow_id or "default").strip().lower() or "default",
                 "exit_code": int(exit_code),
                 "error": str(error),
+                "checkpoint": (dict(checkpoint) if isinstance(checkpoint, dict) else None),
+                "progress": (dict(progress) if isinstance(progress, dict) else None),
+                "progress_artifact_type": str(progress_artifact_type or "").strip().lower(),
+                "resume_mode": str(resume_mode or "").strip().lower(),
             },
         )
         return bool(rsp.get("ok"))
+
+    def reset_stage_tasks(
+        self,
+        *,
+        workflow_id: str = "",
+        root_domains: Optional[list[str]] = None,
+        plugins: Optional[list[str]] = None,
+        hard_delete: bool = False,
+    ) -> dict[str, Any]:
+        rsp = self._request_json(
+            "POST",
+            "/api/coord/stage/reset",
+            {
+                "workflow_id": str(workflow_id or "").strip().lower(),
+                "root_domains": [
+                    str(item or "").strip().lower()
+                    for item in (root_domains or [])
+                    if str(item or "").strip()
+                ],
+                "plugins": [
+                    str(item or "").strip().lower()
+                    for item in (plugins or [])
+                    if str(item or "").strip()
+                ],
+                "hard_delete": bool(hard_delete),
+            },
+        )
+        return rsp if isinstance(rsp, dict) else {"ok": False}
 
     def load_session(self, root_domain: str) -> Optional[dict[str, Any] ]:
         query = urlencode({"root_domain": root_domain})
@@ -563,8 +718,25 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
             "workflow_config": BASE_DIR / str(cfg.get("workflow_config", "workflows/coordinator.workflow.json")),
             "workflow_scheduler_enabled": cfg.get("workflow_scheduler_enabled", True),
             "workflow_scheduler_interval_seconds": cfg.get("workflow_scheduler_interval_seconds", 15.0),
+            "plugin_workers": cfg.get("plugin_workers", 0),
+            "plugin_allowlist": cfg.get("plugin_allowlist", []),
         }
     )
+    plugin_allowlist = (
+        [str(item or "").strip().lower() for item in (settings.plugin_allowlist or []) if str(item or "").strip()]
+        if isinstance(settings.plugin_allowlist, list)
+        else []
+    )
+    plugin_workers_value = safe_int(settings.plugin_workers, 0)
+    if plugin_workers_value <= 0:
+        # Compatibility default: if unified plugin workers are not configured,
+        # derive a reasonable pool size from prior per-tool worker knobs.
+        plugin_workers_value = max(
+            1,
+            safe_int(settings.fozzy_workers, 0)
+            + safe_int(settings.extractor_workers, 0)
+            + safe_int(settings.auth0r_workers, 0),
+        )
     output_root = Path(settings.output_root).expanduser()
     if not output_root.is_absolute():
         output_root = (BASE_DIR / output_root).resolve()
@@ -595,4 +767,6 @@ def load_config(args: argparse.Namespace) -> CoordinatorConfig:
         workflow_config=Path(settings.workflow_config).resolve(),
         workflow_scheduler_enabled=bool(settings.workflow_scheduler_enabled),
         workflow_scheduler_interval_seconds=float(settings.workflow_scheduler_interval_seconds),
+        plugin_workers=max(1, plugin_workers_value),
+        plugin_allowlist=plugin_allowlist,
     )

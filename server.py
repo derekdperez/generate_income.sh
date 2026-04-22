@@ -4452,17 +4452,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/coord/stage/enqueue":
             root_domain = str(body.get("root_domain", "") or "").strip().lower()
             stage = str(body.get("stage", "") or "").strip().lower()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
             worker_id = str(body.get("worker_id", "") or "").strip()
             reason = str(body.get("reason", "") or "").strip()
             allow_retry_failed = bool(body.get("allow_retry_failed", False))
             max_attempts = _safe_int(body.get("max_attempts", 0), 0)
+            checkpoint = body.get("checkpoint") if isinstance(body.get("checkpoint"), dict) else None
+            progress = body.get("progress") if isinstance(body.get("progress"), dict) else None
+            progress_artifact_type = str(body.get("progress_artifact_type", "") or "").strip().lower()
+            resume_mode = str(body.get("resume_mode", "exact") or "exact").strip().lower() or "exact"
             result = self.coordinator_store.schedule_stage(
                 root_domain,
                 stage,
+                workflow_id=workflow_id,
                 worker_id=worker_id,
                 reason=reason,
                 allow_retry_failed=allow_retry_failed,
                 max_attempts=max_attempts,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=progress_artifact_type,
+                resume_mode=resume_mode,
             )
             self._write_json(result)
             return
@@ -4470,8 +4480,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/coord/stage/claim":
             worker_id = str(body.get("worker_id", "") or "").strip()
             stage = str(body.get("stage", "") or "").strip().lower()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
             lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
-            item = self.coordinator_store.claim_stage(stage, worker_id, lease_seconds)
+            plugin_allowlist_raw = body.get("plugin_allowlist")
+            plugin_allowlist = (
+                [str(item or "").strip().lower() for item in plugin_allowlist_raw if str(item or "").strip()]
+                if isinstance(plugin_allowlist_raw, list)
+                else None
+            )
+            if stage:
+                item = self.coordinator_store.claim_stage(stage, worker_id, lease_seconds, workflow_id=workflow_id)
+            else:
+                item = self.coordinator_store.claim_next_stage(
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    workflow_id=workflow_id,
+                    plugin_allowlist=plugin_allowlist,
+                )
+            self._write_json({"ok": True, "entry": item})
+            return
+
+        if path == "/api/coord/stage/claim-next":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
+            lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
+            plugin_allowlist_raw = body.get("plugin_allowlist")
+            plugin_allowlist = (
+                [str(item or "").strip().lower() for item in plugin_allowlist_raw if str(item or "").strip()]
+                if isinstance(plugin_allowlist_raw, list)
+                else None
+            )
+            item = self.coordinator_store.claim_next_stage(
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                workflow_id=workflow_id,
+                plugin_allowlist=plugin_allowlist,
+            )
             self._write_json({"ok": True, "entry": item})
             return
 
@@ -4479,8 +4523,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
             worker_id = str(body.get("worker_id", "") or "").strip()
             root_domain = str(body.get("root_domain", "") or "").strip().lower()
             stage = str(body.get("stage", "") or "").strip().lower()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
+            checkpoint = body.get("checkpoint") if isinstance(body.get("checkpoint"), dict) else None
+            progress = body.get("progress") if isinstance(body.get("progress"), dict) else None
+            progress_artifact_type = str(body.get("progress_artifact_type", "") or "").strip().lower()
             lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
-            ok = self.coordinator_store.heartbeat_stage(root_domain, stage, worker_id, lease_seconds)
+            ok = self.coordinator_store.heartbeat_stage_with_workflow(
+                root_domain=root_domain,
+                stage=stage,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                workflow_id=workflow_id,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=progress_artifact_type,
+            )
+            self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/stage/progress":
+            worker_id = str(body.get("worker_id", "") or "").strip()
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            stage = str(body.get("stage", "") or "").strip().lower()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
+            checkpoint = body.get("checkpoint") if isinstance(body.get("checkpoint"), dict) else None
+            progress = body.get("progress") if isinstance(body.get("progress"), dict) else None
+            progress_artifact_type = str(body.get("progress_artifact_type", "") or "").strip().lower()
+            ok = self.coordinator_store.update_stage_progress(
+                root_domain=root_domain,
+                stage=stage,
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=progress_artifact_type,
+            )
             self._write_json({"ok": bool(ok)})
             return
 
@@ -4488,16 +4565,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             worker_id = str(body.get("worker_id", "") or "").strip()
             root_domain = str(body.get("root_domain", "") or "").strip().lower()
             stage = str(body.get("stage", "") or "").strip().lower()
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
             exit_code = _safe_int(body.get("exit_code", 0), 0)
             error = str(body.get("error", "") or "")
+            checkpoint = body.get("checkpoint") if isinstance(body.get("checkpoint"), dict) else None
+            progress = body.get("progress") if isinstance(body.get("progress"), dict) else None
+            progress_artifact_type = str(body.get("progress_artifact_type", "") or "").strip().lower()
+            resume_mode = str(body.get("resume_mode", "") or "").strip().lower()
             ok = self.coordinator_store.complete_stage(
                 root_domain,
                 stage,
                 worker_id,
+                workflow_id=workflow_id,
                 exit_code=exit_code,
                 error=error,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=progress_artifact_type,
+                resume_mode=resume_mode,
             )
             self._write_json({"ok": bool(ok)})
+            return
+
+        if path == "/api/coord/stage/reset":
+            workflow_id = str(body.get("workflow_id", "") or "").strip().lower()
+            root_domains_raw = body.get("root_domains")
+            if isinstance(root_domains_raw, list):
+                root_domains = [str(item or "").strip().lower() for item in root_domains_raw if str(item or "").strip()]
+            else:
+                root_domain_single = str(body.get("root_domain", "") or "").strip().lower()
+                root_domains = [root_domain_single] if root_domain_single else []
+            plugins_raw = body.get("plugins")
+            if isinstance(plugins_raw, list):
+                plugins = [str(item or "").strip().lower() for item in plugins_raw if str(item or "").strip()]
+            else:
+                plugin_single = str(body.get("plugin", "") or "").strip().lower()
+                plugins = [plugin_single] if plugin_single else []
+            hard_delete = bool(body.get("hard_delete", False))
+            result = self.coordinator_store.reset_stage_tasks(
+                workflow_id=workflow_id,
+                root_domains=root_domains,
+                plugins=plugins,
+                hard_delete=hard_delete,
+            )
+            self._write_json(result)
             return
 
         if path == "/api/coord/artifact":

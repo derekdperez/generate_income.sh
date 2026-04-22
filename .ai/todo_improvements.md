@@ -15,3 +15,5 @@
 - Fix `nightmare.py` undefined variable path (`verify_timeout` in `crawl_domain`) and add a regression test so coordinator runs stop failing with repeated `NameError`.
 - Integrate `nightmare_shared/page_classification.py` into crawl/probe existence decisions so catch-all redirect/login/block pages are baseline-classified instead of relying mostly on status-code heuristics.
 - Add guarded exception handling around Auth0r POST handlers in `server.py` (`/api/coord/auth0r/profile/save`, `/identity/save`, etc.) so runtime store errors return structured JSON 500s instead of browser-level fetch failures.
+- Add dedicated integration tests for new workflow plugin APIs/endpoints (`stage/claim-next`, `stage/progress`, `stage/reset`) including workflow_id-scoped behavior.
+- Add crash-handoff resume tests that verify checkpoint/progress continuity across worker interruption and re-claim for each legacy plugin adapter (`fozzy`, `extractor`, `auth0r`).

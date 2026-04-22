@@ -157,6 +157,8 @@ class CoordinatorSettings(BaseModel):
     workflow_config: Path = Path("workflows/coordinator.workflow.json")
     workflow_scheduler_enabled: bool = True
     workflow_scheduler_interval_seconds: float = 15.0
+    plugin_workers: int = 0
+    plugin_allowlist: list[str] = Field(default_factory=list)
 
     @field_validator("server_base_url", mode="before")
     @classmethod
@@ -177,10 +179,31 @@ class CoordinatorSettings(BaseModel):
     def _normalize_floatish(cls, value: Any) -> float:
         return safe_float(value, 0.0)
 
-    @field_validator("lease_seconds", "nightmare_workers", "fozzy_workers", "extractor_workers", "auth0r_workers", "fozzy_process_workers", "extractor_process_workers", mode="before")
+    @field_validator(
+        "lease_seconds",
+        "nightmare_workers",
+        "fozzy_workers",
+        "extractor_workers",
+        "auth0r_workers",
+        "fozzy_process_workers",
+        "extractor_process_workers",
+        "plugin_workers",
+        mode="before",
+    )
     @classmethod
     def _normalize_intish(cls, value: Any) -> int:
         return safe_int(value, 0)
+
+    @field_validator("plugin_allowlist", mode="before")
+    @classmethod
+    def _normalize_plugin_allowlist(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            str(item or "").strip().lower()
+            for item in value
+            if str(item or "").strip()
+        ]
 
     @model_validator(mode="after")
     def _apply_minimums(self) -> "CoordinatorSettings":
@@ -195,6 +218,7 @@ class CoordinatorSettings(BaseModel):
         self.workflow_scheduler_interval_seconds = max(5.0, self.workflow_scheduler_interval_seconds)
         self.fozzy_process_workers = max(1, self.fozzy_process_workers)
         self.extractor_process_workers = max(1, self.extractor_process_workers)
+        self.plugin_workers = max(0, self.plugin_workers)
         self.api_token = str(self.api_token or "").strip()
         self.python_executable = str(self.python_executable or "python3").strip() or "python3"
         return self

@@ -16,5 +16,12 @@
   "nightmare_config": "config/nightmare.json",
   "fozzy_config": "config/fozzy.json",
   "auth0r_config": "config/auth0r.json",
-  "extractor_config": "config/extractor.json"
+  "extractor_config": "config/extractor.json",
+  "workflow_config": "workflows/coordinator.workflow.json",
+  "workflow_scheduler_enabled": true,
+  "workflow_scheduler_interval_seconds": 15.0,
+  "plugin_workers": 2,
+  "plugin_allowlist": [
+    "auth0r"
+  ]
 }

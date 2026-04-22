@@ -17,3 +17,5 @@
 
 - Confirm whether stage retry limits should be globally capped beyond per-stage `max_attempts` in workflow config.
 - Confirm whether Nightmare itself should also move into the workflow definition model (currently still uses coordinator target queue semantics).
+- Current `nightmare_*` plugins are artifact-gate milestones (not direct crawler subprocess steps). Confirm whether these should become active execution plugins with their own resumable runtime checkpoints.
+- Confirm whether manual reset API should support partial reset modes (preserve attempt_count/checkpoint) in addition to current hard reset-to-pending behavior.

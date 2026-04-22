@@ -181,3 +181,8 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - workflow stage lane (Auth0r/Fozzy/Extractor) driven by artifact readiness from central snapshot API.
 - Stage scheduling is now centralized through `CoordinatorStore.schedule_stage(...)` decision logic to keep queue state transitions safe across multiple workers.
 - Workflow definition source: `workflows/coordinator.workflow.json` (plugin-style metadata plus prerequisites/retry/parameters).
+- Workflow/task orchestration boundary update (2026-04-22):
+  - `coordinator_stage_tasks` is now workflow-aware (`workflow_id`) and stores resumable runtime state (`checkpoint_json`, `progress_json`, `progress_artifact_type`, `resume_mode`).
+  - Stage claim path now supports "claim next plugin" semantics with optional plugin allowlist and per-domain running-task exclusion, so only one plugin runs at a time for a domain.
+  - Coordinator worker model now has a unified plugin worker loop (`_plugin_worker_loop`) that claims generic plugin tasks and dispatches by plugin name.
+  - Existing per-tool loops remain as compatibility fallback only when unified plugin worker count is disabled.

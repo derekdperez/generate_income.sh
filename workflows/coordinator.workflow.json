@@ -1,12 +1,174 @@
-﻿{
-  "schema_version": "1.0.0",
-  "workflow_type": "coordinator_stage_scheduler",
-  "description": "Data-readiness scheduler for stage tools. Entries use plugin-style metadata and scheduler policy.",
-  "stages": [
+{
+  "schema_version": "2.0.0",
+  "workflow_type": "coordinator_plugin_scheduler",
+  "workflow_id": "nightmare_default",
+  "description": "Data-readiness workflow scheduler for distributed plugin tasks.",
+  "plugins": [
+    {
+      "name": "nightmare_crawl_core",
+      "display_name": "Nightmare Crawl Core",
+      "description": "Marks crawl completion after target queue work completes.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_crawl_core",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "target_statuses": [
+          "completed"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {},
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
+    {
+      "name": "nightmare_ai_discovery",
+      "display_name": "Nightmare AI Discovery",
+      "description": "Marks discovery-ready state once session artifact exists.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_ai_discovery",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_session_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_crawl_core"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_session_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
+    {
+      "name": "nightmare_ai_probe_execution",
+      "display_name": "Nightmare AI Probe Execution",
+      "description": "Marks probe-ready state once inventory exists.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_ai_probe_execution",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_url_inventory_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_ai_discovery"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_url_inventory_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
+    {
+      "name": "nightmare_url_verification",
+      "display_name": "Nightmare URL Verification",
+      "description": "Marks URL verification readiness.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_url_verification",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_requests_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_ai_probe_execution"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_requests_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
+    {
+      "name": "nightmare_inventory_export",
+      "display_name": "Nightmare Inventory Export",
+      "description": "Marks export readiness for downstream tools.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_inventory_export",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_parameters_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_url_verification"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_parameters_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
+    {
+      "name": "nightmare_report_generation",
+      "display_name": "Nightmare Report Generation",
+      "description": "Marks report generation readiness.",
+      "handler": "nightmare_artifact_gate",
+      "plugin_name": "nightmare_report_generation",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_report_html"
+        ],
+        "requires_plugins_all": [
+          "nightmare_inventory_export"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_report_html"
+        ]
+      },
+      "outputs": {
+        "artifacts": []
+      },
+      "parameters": {}
+    },
     {
       "name": "auth0r",
       "display_name": "Auth0r",
-      "description": "Run auth0r when nightmare session data is available.",
+      "description": "Run auth0r once nightmare session data is available.",
       "category": "builtin",
       "contract_version": "1.0.0",
       "handler": "legacy_step_adapter",
@@ -14,15 +176,30 @@
         "type": "object",
         "additionalProperties": true
       },
-      "stage": "auth0r",
+      "plugin_name": "auth0r",
       "enabled": true,
-      "prerequisites": {
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_session_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_crawl_core"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
         "artifacts_all": [
           "nightmare_session_json"
         ]
       },
-      "retry_failed": true,
-      "max_attempts": 3,
+      "outputs": {
+        "artifacts": [
+          "auth0r_summary_json",
+          "auth0r_log"
+        ]
+      },
       "parameters": {
         "min_delay_seconds": 0.25,
         "max_seed_actions": 200,
@@ -32,7 +209,7 @@
     {
       "name": "fozzy",
       "display_name": "Fozzy",
-      "description": "Run fozzy when nightmare parameter data is available.",
+      "description": "Run fozzy once nightmare parameter data is available.",
       "category": "builtin",
       "contract_version": "1.0.0",
       "handler": "legacy_step_adapter",
@@ -40,15 +217,32 @@
         "type": "object",
         "additionalProperties": true
       },
-      "stage": "fozzy",
+      "plugin_name": "fozzy",
       "enabled": true,
-      "prerequisites": {
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "nightmare_parameters_json"
+        ],
+        "requires_plugins_all": [
+          "nightmare_inventory_export"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
         "artifacts_all": [
           "nightmare_parameters_json"
         ]
       },
-      "retry_failed": true,
-      "max_attempts": 3,
+      "outputs": {
+        "artifacts": [
+          "fozzy_summary_json",
+          "fozzy_inventory_json",
+          "fozzy_results_zip",
+          "fozzy_log"
+        ]
+      },
       "parameters": {
         "max_background_workers": 1,
         "max_workers_per_domain": 1,
@@ -58,7 +252,7 @@
     {
       "name": "extractor",
       "display_name": "Extractor",
-      "description": "Run extractor when fozzy result data is available.",
+      "description": "Run extractor once fozzy outputs are available.",
       "category": "builtin",
       "contract_version": "1.0.0",
       "handler": "legacy_step_adapter",
@@ -66,15 +260,30 @@
         "type": "object",
         "additionalProperties": true
       },
-      "stage": "extractor",
+      "plugin_name": "extractor",
       "enabled": true,
-      "prerequisites": {
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "fozzy_results_zip"
+        ],
+        "requires_plugins_all": [
+          "fozzy"
+        ]
+      },
+      "retry_failed": false,
+      "max_attempts": 1,
+      "inputs": {
         "artifacts_all": [
           "fozzy_results_zip"
         ]
       },
-      "retry_failed": true,
-      "max_attempts": 3,
+      "outputs": {
+        "artifacts": [
+          "extractor_summary_json",
+          "extractor_matches_zip"
+        ]
+      },
       "parameters": {
         "workers": 1,
         "force": true

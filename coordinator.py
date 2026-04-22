@@ -92,6 +92,105 @@ def _now_iso() -> str:
 def _default_workflow_entries() -> list[dict[str, Any]]:
     return [
         {
+            "name": "nightmare_crawl_core",
+            "display_name": "Nightmare Crawl Core",
+            "description": "Marks crawl completion once target queue intake finishes for a domain.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_crawl_core",
+            "enabled": True,
+            "prerequisites": {"target_statuses": ["completed"]},
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
+            "name": "nightmare_ai_discovery",
+            "display_name": "Nightmare AI Discovery",
+            "description": "Marks AI discovery-ready state once nightmare session data exists.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_ai_discovery",
+            "enabled": True,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_session_json"],
+                "requires_plugins_all": ["nightmare_crawl_core"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
+            "name": "nightmare_ai_probe_execution",
+            "display_name": "Nightmare AI Probe Execution",
+            "description": "Marks probe execution readiness once URL inventory exists.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_ai_probe_execution",
+            "enabled": True,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_url_inventory_json"],
+                "requires_plugins_all": ["nightmare_ai_discovery"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
+            "name": "nightmare_url_verification",
+            "display_name": "Nightmare URL Verification",
+            "description": "Marks URL verification readiness once request inventory exists.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_url_verification",
+            "enabled": True,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_requests_json"],
+                "requires_plugins_all": ["nightmare_ai_probe_execution"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
+            "name": "nightmare_inventory_export",
+            "display_name": "Nightmare Inventory Export",
+            "description": "Marks export readiness once nightmare parameter inventory exists.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_inventory_export",
+            "enabled": True,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_parameters_json"],
+                "requires_plugins_all": ["nightmare_url_verification"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
+            "name": "nightmare_report_generation",
+            "display_name": "Nightmare Report Generation",
+            "description": "Marks report generation readiness once report artifact exists.",
+            "handler": "nightmare_artifact_gate",
+            "config_schema": {"type": "object", "additionalProperties": True},
+            "stage": "nightmare_report_generation",
+            "enabled": True,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_report_html"],
+                "requires_plugins_all": ["nightmare_inventory_export"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
+            "parameters": {},
+        },
+        {
             "name": "auth0r",
             "display_name": "Auth0r",
             "description": "Run auth0r once nightmare session data is available.",
@@ -99,9 +198,13 @@ def _default_workflow_entries() -> list[dict[str, Any]]:
             "config_schema": {"type": "object", "additionalProperties": True},
             "stage": "auth0r",
             "enabled": True,
-            "prerequisites": {"artifacts_all": ["nightmare_session_json"]},
-            "retry_failed": True,
-            "max_attempts": 3,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_session_json"],
+                "requires_plugins_all": ["nightmare_crawl_core"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
             "parameters": {
                 "min_delay_seconds": 0.25,
                 "max_seed_actions": 200,
@@ -116,9 +219,13 @@ def _default_workflow_entries() -> list[dict[str, Any]]:
             "config_schema": {"type": "object", "additionalProperties": True},
             "stage": "fozzy",
             "enabled": True,
-            "prerequisites": {"artifacts_all": ["nightmare_parameters_json"]},
-            "retry_failed": True,
-            "max_attempts": 3,
+            "prerequisites": {
+                "artifacts_all": ["nightmare_parameters_json"],
+                "requires_plugins_all": ["nightmare_inventory_export"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
             "parameters": {
                 "max_background_workers": 1,
                 "max_workers_per_domain": 1,
@@ -133,9 +240,13 @@ def _default_workflow_entries() -> list[dict[str, Any]]:
             "config_schema": {"type": "object", "additionalProperties": True},
             "stage": "extractor",
             "enabled": True,
-            "prerequisites": {"artifacts_all": ["fozzy_results_zip"]},
-            "retry_failed": True,
-            "max_attempts": 3,
+            "prerequisites": {
+                "artifacts_all": ["fozzy_results_zip"],
+                "requires_plugins_all": ["fozzy"],
+            },
+            "retry_failed": False,
+            "max_attempts": 1,
+            "resume_mode": "exact",
             "parameters": {"force": True},
         },
     ]
@@ -144,42 +255,59 @@ def _default_workflow_entries() -> list[dict[str, Any]]:
 def _normalize_workflow_entry(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    name = str(raw.get("name") or raw.get("type") or raw.get("stage") or "").strip().lower()
-    stage = str(raw.get("stage") or name).strip().lower()
-    if not stage:
+    name = str(raw.get("name") or raw.get("type") or raw.get("plugin_name") or raw.get("stage") or "").strip().lower()
+    plugin_name = str(raw.get("plugin_name") or raw.get("stage") or raw.get("name") or name).strip().lower()
+    if not plugin_name:
         return None
     prereq = raw.get("prerequisites", {})
     if not isinstance(prereq, dict):
         prereq = {}
     artifacts_all = prereq.get("artifacts_all", raw.get("requires_artifacts_all", []))
     artifacts_any = prereq.get("artifacts_any", raw.get("requires_artifacts_any", []))
+    requires_plugins_all = prereq.get("requires_plugins_all", prereq.get("plugins_all", []))
+    requires_plugins_any = prereq.get("requires_plugins_any", prereq.get("plugins_any", []))
+    target_statuses = prereq.get("target_statuses", raw.get("target_statuses", []))
+    require_target_completed = bool(
+        prereq.get("require_target_completed", raw.get("require_target_completed", False))
+    )
     params = raw.get("parameters", raw.get("config", {}))
     return {
-        "name": name or stage,
-        "display_name": str(raw.get("display_name") or raw.get("name") or stage).strip(),
+        "name": name or plugin_name,
+        "display_name": str(raw.get("display_name") or raw.get("name") or plugin_name).strip(),
         "description": str(raw.get("description") or "").strip(),
-        "handler": str(raw.get("handler") or "legacy_step_adapter").strip(),
+        "handler": str(raw.get("handler") or "legacy_step_adapter").strip().lower(),
         "config_schema": (
             dict(raw.get("config_schema"))
             if isinstance(raw.get("config_schema"), dict)
             else {"type": "object", "additionalProperties": True}
         ),
-        "stage": stage,
+        "stage": plugin_name,
+        "plugin_name": plugin_name,
         "enabled": bool(raw.get("enabled", True)),
         "prerequisites": {
             "artifacts_all": [str(item).strip().lower() for item in (artifacts_all if isinstance(artifacts_all, list) else []) if str(item).strip()],
             "artifacts_any": [str(item).strip().lower() for item in (artifacts_any if isinstance(artifacts_any, list) else []) if str(item).strip()],
+            "requires_plugins_all": [str(item).strip().lower() for item in (requires_plugins_all if isinstance(requires_plugins_all, list) else []) if str(item).strip()],
+            "requires_plugins_any": [str(item).strip().lower() for item in (requires_plugins_any if isinstance(requires_plugins_any, list) else []) if str(item).strip()],
+            "target_statuses": [str(item).strip().lower() for item in (target_statuses if isinstance(target_statuses, list) else []) if str(item).strip()],
+            "require_target_completed": bool(require_target_completed),
         },
-        "retry_failed": bool(raw.get("retry_failed", True)),
+        "retry_failed": bool(raw.get("retry_failed", False)),
         "max_attempts": max(0, _safe_int(raw.get("max_attempts", 0), 0)),
+        "inputs": dict(raw.get("inputs") or {}) if isinstance(raw.get("inputs"), dict) else {},
+        "outputs": dict(raw.get("outputs") or {}) if isinstance(raw.get("outputs"), dict) else {},
+        "resume_mode": str(raw.get("resume_mode") or "exact").strip().lower() or "exact",
         "parameters": dict(params) if isinstance(params, dict) else {},
     }
 
 
-def _load_workflow_entries(path: Path, logger: Any) -> list[dict[str, Any]]:
+def _load_workflow_entries(path: Path, logger: Any) -> tuple[str, list[dict[str, Any]]]:
     payload = _read_json_dict(path)
+    workflow_id = str(payload.get("workflow_id") or payload.get("id") or "default").strip().lower() or "default"
     candidates: list[Any] = []
-    if isinstance(payload.get("stages"), list):
+    if isinstance(payload.get("plugins"), list):
+        candidates = list(payload.get("plugins") or [])
+    elif isinstance(payload.get("stages"), list):
         candidates = list(payload.get("stages") or [])
     elif isinstance(payload.get("steps"), list):
         candidates = list(payload.get("steps") or [])
@@ -188,25 +316,25 @@ def _load_workflow_entries(path: Path, logger: Any) -> list[dict[str, Any]]:
             "workflow_config_missing_or_empty_using_defaults",
             workflow_config=str(path),
         )
-        return _default_workflow_entries()
+        return workflow_id, _default_workflow_entries()
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in candidates:
         normalized = _normalize_workflow_entry(raw)
         if not normalized:
             continue
-        stage = str(normalized.get("stage") or "").strip().lower()
-        if not stage or stage in seen:
+        plugin_name = str(normalized.get("plugin_name") or normalized.get("stage") or "").strip().lower()
+        if not plugin_name or plugin_name in seen:
             continue
-        seen.add(stage)
+        seen.add(plugin_name)
         out.append(normalized)
     if not out:
         logger.warning(
             "workflow_config_entries_invalid_using_defaults",
             workflow_config=str(path),
         )
-        return _default_workflow_entries()
-    return out
+        return workflow_id, _default_workflow_entries()
+    return workflow_id, out
 
 
 class DistributedCoordinator:
@@ -225,17 +353,19 @@ class DistributedCoordinator:
         self._fleet_lock = threading.Lock()
         self._worker_state_lock = threading.Lock()
         self._worker_states: dict[str, str] = {}
-        self._workflow_entries = _load_workflow_entries(self.cfg.workflow_config, self.logger)
+        self._workflow_id, self._workflow_entries = _load_workflow_entries(self.cfg.workflow_config, self.logger)
         self._workflow_stage_map: dict[str, dict[str, Any]] = {
-            str(item.get("stage") or "").strip().lower(): item for item in self._workflow_entries
+            str(item.get("plugin_name") or item.get("stage") or "").strip().lower(): item
+            for item in self._workflow_entries
         }
         self.logger.info(
             "workflow_scheduler_config_loaded",
             workflow_config=str(self.cfg.workflow_config),
+            workflow_id=self._workflow_id,
             workflow_scheduler_enabled=bool(self.cfg.workflow_scheduler_enabled),
             workflow_scheduler_interval_seconds=float(self.cfg.workflow_scheduler_interval_seconds),
             workflow_stage_count=len(self._workflow_entries),
-            workflow_stages=[str(item.get("stage") or "") for item in self._workflow_entries],
+            workflow_stages=[str(item.get("plugin_name") or item.get("stage") or "") for item in self._workflow_entries],
         )
 
     def _begin_job(self) -> None:
@@ -369,13 +499,16 @@ class DistributedCoordinator:
 
     def _is_stage_runtime_enabled(self, stage: str) -> bool:
         stg = str(stage or "").strip().lower()
+        if stg.startswith("nightmare_"):
+            # These are workflow gate/milestone plugins, not direct crawler workers.
+            return True
         if stg == "fozzy":
             return bool(self.cfg.enable_fozzy)
         if stg == "extractor":
             return bool(self.cfg.enable_extractor)
         if stg == "auth0r":
             return bool(self.cfg.enable_auth0r)
-        return False
+        return True
 
     def _workflow_stage_parameters(self, stage: str) -> dict[str, Any]:
         entry = self._workflow_stage_map.get(str(stage or "").strip().lower(), {})
@@ -383,7 +516,13 @@ class DistributedCoordinator:
         return dict(params) if isinstance(params, dict) else {}
 
     @staticmethod
-    def _has_stage_prerequisites(artifacts: set[str], entry: dict[str, Any]) -> bool:
+    def _has_stage_prerequisites(
+        artifacts: set[str],
+        entry: dict[str, Any],
+        *,
+        workflow_tasks: dict[str, dict[str, Any]],
+        target_counts: dict[str, Any],
+    ) -> bool:
         prereq = entry.get("prerequisites") if isinstance(entry, dict) else {}
         if not isinstance(prereq, dict):
             prereq = {}
@@ -397,9 +536,53 @@ class DistributedCoordinator:
             for item in (prereq.get("artifacts_any") or [])
             if str(item or "").strip()
         }
+        required_plugins_all = {
+            str(item or "").strip().lower()
+            for item in (prereq.get("requires_plugins_all") or [])
+            if str(item or "").strip()
+        }
+        required_plugins_any = {
+            str(item or "").strip().lower()
+            for item in (prereq.get("requires_plugins_any") or [])
+            if str(item or "").strip()
+        }
+        required_target_statuses = {
+            str(item or "").strip().lower()
+            for item in (prereq.get("target_statuses") or [])
+            if str(item or "").strip()
+        }
+        require_target_completed = bool(prereq.get("require_target_completed", False))
+
+        def _task_status(name: str) -> str:
+            row = workflow_tasks.get(name) if isinstance(workflow_tasks.get(name), dict) else {}
+            return str(row.get("status") or "").strip().lower()
+
+        pending_targets = _safe_int(target_counts.get("pending"), 0)
+        running_targets = _safe_int(target_counts.get("running"), 0)
+        completed_targets = _safe_int(target_counts.get("completed"), 0)
+        failed_targets = _safe_int(target_counts.get("failed"), 0)
+        if running_targets > 0:
+            current_target_status = "running"
+        elif pending_targets > 0:
+            current_target_status = "pending"
+        elif failed_targets > 0 and completed_targets <= 0:
+            current_target_status = "failed"
+        elif completed_targets > 0:
+            current_target_status = "completed"
+        else:
+            current_target_status = "unknown"
+
         if required_all and not required_all.issubset(artifacts):
             return False
         if required_any and artifacts.isdisjoint(required_any):
+            return False
+        if required_plugins_all and any(_task_status(item) != "completed" for item in required_plugins_all):
+            return False
+        if required_plugins_any and not any(_task_status(item) == "completed" for item in required_plugins_any):
+            return False
+        if required_target_statuses and current_target_status not in required_target_statuses:
+            return False
+        if require_target_completed and completed_targets <= 0:
             return False
         return True
 
@@ -412,46 +595,57 @@ class DistributedCoordinator:
             for item in (domain_row.get("artifact_types") if isinstance(domain_row.get("artifact_types"), list) else [])
             if str(item or "").strip()
         }
-        stage_tasks = domain_row.get("stage_tasks") if isinstance(domain_row.get("stage_tasks"), dict) else {}
+        plugin_tasks_all = domain_row.get("plugin_tasks") if isinstance(domain_row.get("plugin_tasks"), dict) else {}
+        workflow_tasks = plugin_tasks_all.get(self._workflow_id) if isinstance(plugin_tasks_all.get(self._workflow_id), dict) else {}
+        target_counts = domain_row.get("targets") if isinstance(domain_row.get("targets"), dict) else {}
         scheduled_count = 0
         for entry in self._workflow_entries:
-            stage = str(entry.get("stage") or "").strip().lower()
-            if not stage or not bool(entry.get("enabled", True)):
+            plugin_name = str(entry.get("plugin_name") or entry.get("stage") or "").strip().lower()
+            if not plugin_name or not bool(entry.get("enabled", True)):
                 continue
-            if not self._is_stage_runtime_enabled(stage):
+            if not self._is_stage_runtime_enabled(plugin_name):
                 continue
-            if not self._has_stage_prerequisites(artifacts, entry):
+            if not self._has_stage_prerequisites(
+                artifacts,
+                entry,
+                workflow_tasks=workflow_tasks,
+                target_counts=target_counts,
+            ):
                 continue
-            task_row = stage_tasks.get(stage) if isinstance(stage_tasks.get(stage), dict) else {}
+            task_row = workflow_tasks.get(plugin_name) if isinstance(workflow_tasks.get(plugin_name), dict) else {}
             status = str(task_row.get("status", "") or "").strip().lower()
             attempt_count = _safe_int(task_row.get("attempt_count", 0), 0)
-            retry_failed = bool(entry.get("retry_failed", True))
+            retry_failed = bool(entry.get("retry_failed", False))
             max_attempts = max(0, _safe_int(entry.get("max_attempts", 0), 0))
-            if status in {"pending", "running", "completed"}:
+            if status in {"pending", "running", "completed", "failed"}:
                 continue
-            allow_retry_failed = status == "failed" and retry_failed
-            if status == "failed" and max_attempts > 0 and attempt_count >= max_attempts:
-                continue
-            if status == "failed" and not allow_retry_failed:
-                continue
+            allow_retry_failed = False
+            resume_mode = str(entry.get("resume_mode") or "exact").strip().lower() or "exact"
             details = self.client.enqueue_stage_detailed(
                 root_domain,
-                stage,
+                plugin_name,
+                workflow_id=self._workflow_id,
                 worker_id=worker_id,
-                reason=f"workflow:{entry.get('name', stage)}",
+                reason=f"workflow:{entry.get('name', plugin_name)}",
                 allow_retry_failed=allow_retry_failed,
                 max_attempts=max_attempts,
+                checkpoint={"schema_version": 1, "resume_mode": resume_mode, "state": "queued"},
+                progress={"status": "queued", "plugin_name": plugin_name},
+                progress_artifact_type=f"workflow_progress_{plugin_name}",
+                resume_mode=resume_mode,
             )
             if bool(details.get("scheduled")):
                 scheduled_count += 1
                 self.logger.info(
                     "workflow_task_scheduled",
                     worker_id=worker_id,
+                    workflow_id=self._workflow_id,
                     root_domain=root_domain,
-                    stage=stage,
+                    stage=plugin_name,
                     prior_status=status or "none",
                     attempt_count=attempt_count,
                     max_attempts=max_attempts,
+                    retry_failed=retry_failed,
                     artifacts_available=sorted(artifacts),
                 )
         return scheduled_count
@@ -462,6 +656,7 @@ class DistributedCoordinator:
         self.logger.info(
             "workflow_scheduler_loop_started",
             worker_id=worker_id,
+            workflow_id=self._workflow_id,
             workflow_config=str(self.cfg.workflow_config),
             interval_seconds=float(self.cfg.workflow_scheduler_interval_seconds),
         )
@@ -499,6 +694,7 @@ class DistributedCoordinator:
             self.logger.info(
                 "workflow_scheduler_cycle_complete",
                 worker_id=worker_id,
+                workflow_id=self._workflow_id,
                 domains_checked=len(domain_rows),
                 tasks_scheduled=scheduled,
             )
@@ -814,7 +1010,7 @@ class DistributedCoordinator:
 
                 if exit_code == 0 and not self.cfg.workflow_scheduler_enabled:
                     try:
-                        self.client.enqueue_stage(root_domain, "auth0r")
+                        self.client.enqueue_stage(root_domain, "auth0r", workflow_id=self._workflow_id)
                         self.logger.info(
                             "nightmare_stage_enqueued",
                             worker_id=worker_id,
@@ -832,7 +1028,7 @@ class DistributedCoordinator:
                             error=str(exc),
                         )
                     try:
-                        self.client.enqueue_stage(root_domain, "fozzy")
+                        self.client.enqueue_stage(root_domain, "fozzy", workflow_id=self._workflow_id)
                         self.logger.info(
                             "nightmare_stage_enqueued",
                             worker_id=worker_id,
@@ -871,6 +1067,416 @@ class DistributedCoordinator:
             finally:
                 self._end_job()
 
+    def _update_plugin_progress(
+        self,
+        *,
+        worker_id: str,
+        workflow_id: str,
+        root_domain: str,
+        plugin_name: str,
+        checkpoint: dict[str, Any],
+        progress: dict[str, Any],
+    ) -> None:
+        try:
+            self.client.update_stage_progress(
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=f"workflow_progress_{plugin_name}",
+            )
+        except Exception as exc:
+            self.logger.error(
+                "workflow_task_progress_update_failed",
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                error=str(exc),
+            )
+
+    def _run_nightmare_artifact_gate_plugin(
+        self,
+        *,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        entry = self._workflow_stage_map.get(plugin_name, {})
+        prereq = entry.get("prerequisites") if isinstance(entry, dict) else {}
+        if not isinstance(prereq, dict):
+            prereq = {}
+        required_artifacts = [
+            str(item or "").strip().lower()
+            for item in (prereq.get("artifacts_all") or [])
+            if str(item or "").strip()
+        ]
+        for artifact_type in required_artifacts:
+            artifact = self.client.download_artifact(root_domain, artifact_type)
+            if artifact is None:
+                return 1, f"missing required artifact {artifact_type}"
+        return 0, ""
+
+    def _run_fozzy_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        params_path = paths["nightmare_parameters_json"]
+        if not params_path.is_file():
+            self._download_file_artifact(root_domain, "nightmare_parameters_json", params_path)
+        if not params_path.is_file():
+            return 1, "missing parameters artifact"
+
+        hv_dir = paths.get("nightmare_high_value_dir")
+        if hv_dir is not None:
+            hv_dir.mkdir(parents=True, exist_ok=True)
+            self._download_zip_artifact(root_domain, "nightmare_high_value_zip", hv_dir)
+        self._download_file_artifact(root_domain, "nightmare_post_requests_json", paths["nightmare_post_requests_json"])
+
+        fozzy_params = self._workflow_stage_parameters(plugin_name)
+        max_background_workers = max(
+            1,
+            _safe_int(
+                fozzy_params.get("max_background_workers", self.cfg.fozzy_process_workers),
+                max(1, int(self.cfg.fozzy_process_workers)),
+            ),
+        )
+        max_workers_per_domain = max(1, _safe_int(fozzy_params.get("max_workers_per_domain", 1), 1))
+        max_workers_per_subdomain = max(1, _safe_int(fozzy_params.get("max_workers_per_subdomain", 1), 1))
+
+        cmd = [
+            self.cfg.python_executable,
+            "fozzy.py",
+            str(params_path),
+            "--config",
+            str(self.cfg.fozzy_config),
+            "--max-background-workers",
+            str(max_background_workers),
+            "--max-workers-per-domain",
+            str(max_workers_per_domain),
+            "--max-workers-per-subdomain",
+            str(max_workers_per_subdomain),
+        ]
+        log_path = _domain_output_dir(root_domain, self.cfg.output_root) / "coordinator.fozzy.log"
+        self.logger.info(
+            "fozzy_subprocess_start",
+            worker_id=worker_id,
+            root_domain=root_domain,
+            stage=plugin_name,
+            command=cmd,
+            log_path=str(log_path),
+        )
+        try:
+            exit_code = run_subprocess(cmd, cwd=BASE_DIR, log_path=log_path)
+            err_text = summarize_subprocess_failure("fozzy", log_path, exit_code) if exit_code != 0 else ""
+        except Exception as exc:
+            return 1, str(exc)
+
+        try:
+            self._upload_file_artifact(root_domain, "fozzy_summary_json", paths["fozzy_summary_json"], worker_id)
+            self._upload_file_artifact(root_domain, "fozzy_inventory_json", paths["fozzy_inventory_json"], worker_id)
+            self._upload_file_artifact(root_domain, "fozzy_log", paths["fozzy_log"], worker_id)
+            self._upload_zip_artifact(root_domain, "fozzy_results_zip", paths["fozzy_results_dir"], worker_id)
+        except Exception as exc:
+            self.logger.error(
+                "fozzy_artifact_upload_failed",
+                worker_id=worker_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                error=str(exc),
+            )
+        return int(exit_code), str(err_text or "")
+
+    def _run_auth0r_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        nightmare_session_path = paths["nightmare_session_json"]
+        if not nightmare_session_path.is_file():
+            self._download_file_artifact(root_domain, "nightmare_session_json", nightmare_session_path)
+        if not nightmare_session_path.is_file():
+            return 1, "missing nightmare session artifact"
+
+        cmd = [
+            self.cfg.python_executable,
+            "auth0r.py",
+            root_domain,
+            "--nightmare-session",
+            str(nightmare_session_path),
+            "--summary-json",
+            str(paths["auth0r_summary_json"]),
+        ]
+        auth0r_database_url = os.getenv("AUTH0R_DATABASE_URL", "") or os.getenv("DATABASE_URL", "") or os.getenv("COORDINATOR_DATABASE_URL", "")
+        if auth0r_database_url:
+            cmd.extend(["--database-url", auth0r_database_url])
+        if not self.client.verify_ssl:
+            cmd.append("--insecure-tls")
+        auth0r_cfg = _read_json_dict(self.cfg.auth0r_config)
+        auth0r_params = self._workflow_stage_parameters(plugin_name)
+        min_delay = auth0r_params.get("min_delay_seconds", auth0r_cfg.get("min_delay_seconds", 0.25))
+        max_seed_actions = auth0r_params.get("max_seed_actions", auth0r_cfg.get("max_seed_actions", 200))
+        timeout_seconds = auth0r_params.get("timeout_seconds", auth0r_cfg.get("timeout_seconds", 20.0))
+        cmd.extend(["--min-delay-seconds", str(min_delay)])
+        cmd.extend(["--max-seed-actions", str(max_seed_actions)])
+        cmd.extend(["--timeout-seconds", str(timeout_seconds)])
+        log_path = paths["auth0r_log"]
+        self.logger.info(
+            "auth0r_subprocess_start",
+            worker_id=worker_id,
+            root_domain=root_domain,
+            stage=plugin_name,
+            command=cmd,
+            log_path=str(log_path),
+        )
+        try:
+            exit_code = run_subprocess(cmd, cwd=BASE_DIR, log_path=log_path)
+            err_text = summarize_subprocess_failure("auth0r", log_path, exit_code) if exit_code != 0 else ""
+        except Exception as exc:
+            return 1, str(exc)
+        try:
+            self._upload_file_artifact(root_domain, "auth0r_summary_json", paths["auth0r_summary_json"], worker_id)
+            self._upload_file_artifact(root_domain, "auth0r_log", paths["auth0r_log"], worker_id)
+        except Exception as exc:
+            self.logger.error(
+                "auth0r_artifact_upload_failed",
+                worker_id=worker_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                error=str(exc),
+            )
+        return int(exit_code), str(err_text or "")
+
+    def _run_extractor_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        domain_dir = _domain_output_dir(root_domain, self.cfg.output_root)
+        fozzy_results_dir = paths["fozzy_results_dir"]
+        if not fozzy_results_dir.is_dir():
+            self._download_zip_artifact(root_domain, "fozzy_results_zip", fozzy_results_dir)
+        if not fozzy_results_dir.is_dir():
+            return 1, "missing fozzy results artifact"
+
+        extractor_params = self._workflow_stage_parameters(plugin_name)
+        extractor_workers = max(
+            1,
+            _safe_int(
+                extractor_params.get("workers", self.cfg.extractor_process_workers),
+                max(1, int(self.cfg.extractor_process_workers)),
+            ),
+        )
+        force_extractor = bool(extractor_params.get("force", True))
+        cmd = [
+            self.cfg.python_executable,
+            "extractor.py",
+            root_domain,
+            "--config",
+            str(self.cfg.extractor_config),
+            "--scan-root",
+            str(self.cfg.output_root),
+            "--workers",
+            str(extractor_workers),
+        ]
+        if force_extractor:
+            cmd.append("--force")
+        log_path = domain_dir / "coordinator.extractor.log"
+        self.logger.info(
+            "extractor_subprocess_start",
+            worker_id=worker_id,
+            root_domain=root_domain,
+            stage=plugin_name,
+            command=cmd,
+            log_path=str(log_path),
+        )
+        try:
+            exit_code = run_subprocess(cmd, cwd=BASE_DIR, log_path=log_path)
+            err_text = summarize_subprocess_failure("extractor", log_path, exit_code) if exit_code != 0 else ""
+        except Exception as exc:
+            return 1, str(exc)
+        try:
+            self._upload_file_artifact(root_domain, "extractor_summary_json", paths["extractor_summary_json"], worker_id)
+            self._upload_zip_artifact(root_domain, "extractor_matches_zip", paths["extractor_matches_dir"], worker_id)
+        except Exception as exc:
+            self.logger.error(
+                "extractor_artifact_upload_failed",
+                worker_id=worker_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                error=str(exc),
+            )
+        return int(exit_code), str(err_text or "")
+
+    def _run_plugin_task(self, *, worker_id: str, entry: dict[str, Any]) -> None:
+        workflow_id = str(entry.get("workflow_id") or self._workflow_id or "default").strip().lower() or "default"
+        root_domain = str(entry.get("root_domain", "") or "").strip().lower()
+        plugin_name = str(entry.get("plugin_name") or entry.get("stage") or "").strip().lower()
+        if not root_domain or not plugin_name:
+            self.logger.error(
+                "workflow_task_invalid_entry",
+                worker_id=worker_id,
+                entry=entry,
+            )
+            return
+        checkpoint = dict(entry.get("checkpoint") or {}) if isinstance(entry.get("checkpoint"), dict) else {}
+        progress = dict(entry.get("progress") or {}) if isinstance(entry.get("progress"), dict) else {}
+        checkpoint.update({"status": "running", "started_at_utc": _now_iso(), "plugin_name": plugin_name})
+        progress.update({"status": "running", "plugin_name": plugin_name, "root_domain": root_domain})
+        self._begin_job()
+        heartbeat = LeaseHeartbeat(
+            tick_fn=lambda: self.client.heartbeat_stage(
+                worker_id,
+                root_domain,
+                plugin_name,
+                self.cfg.lease_seconds,
+                workflow_id=workflow_id,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=f"workflow_progress_{plugin_name}",
+            ),
+            interval_seconds=self.cfg.heartbeat_interval_seconds,
+            logger=self.logger,
+            heartbeat_kind=f"{plugin_name}_stage",
+        )
+        heartbeat.start()
+        try:
+            self._update_plugin_progress(
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                checkpoint=checkpoint,
+                progress=progress,
+            )
+            if plugin_name == "fozzy":
+                exit_code, err_text = self._run_fozzy_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
+            elif plugin_name == "auth0r":
+                exit_code, err_text = self._run_auth0r_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
+            elif plugin_name == "extractor":
+                exit_code, err_text = self._run_extractor_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
+            elif plugin_name.startswith("nightmare_"):
+                exit_code, err_text = self._run_nightmare_artifact_gate_plugin(root_domain=root_domain, plugin_name=plugin_name)
+            else:
+                exit_code, err_text = 1, f"unsupported plugin: {plugin_name}"
+
+            checkpoint["completed_at_utc"] = _now_iso()
+            checkpoint["status"] = "completed" if int(exit_code) == 0 else "failed"
+            progress["status"] = checkpoint["status"]
+            progress["error"] = str(err_text or "")
+            self._update_plugin_progress(
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                checkpoint=checkpoint,
+                progress=progress,
+            )
+            self.client.complete_stage(
+                worker_id,
+                root_domain,
+                plugin_name,
+                int(exit_code),
+                str(err_text or ""),
+                workflow_id=workflow_id,
+                checkpoint=checkpoint,
+                progress=progress,
+                progress_artifact_type=f"workflow_progress_{plugin_name}",
+                resume_mode="exact",
+            )
+            self.logger.info(
+                "workflow_task_complete",
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                exit_code=int(exit_code),
+                error=str(err_text or ""),
+            )
+        except Exception as exc:
+            self.logger.error(
+                "workflow_task_run_failed",
+                worker_id=worker_id,
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                stage=plugin_name,
+                error=str(exc),
+            )
+            try:
+                self.client.complete_stage(
+                    worker_id,
+                    root_domain,
+                    plugin_name,
+                    1,
+                    str(exc),
+                    workflow_id=workflow_id,
+                    checkpoint={"status": "failed", "error": str(exc), "completed_at_utc": _now_iso()},
+                    progress={"status": "failed", "error": str(exc)},
+                    progress_artifact_type=f"workflow_progress_{plugin_name}",
+                    resume_mode="exact",
+                )
+            except Exception as complete_exc:
+                self.logger.error(
+                    "workflow_task_complete_failed_after_exception",
+                    worker_id=worker_id,
+                    workflow_id=workflow_id,
+                    root_domain=root_domain,
+                    stage=plugin_name,
+                    error=str(complete_exc),
+                )
+        finally:
+            heartbeat.stop()
+            self._end_job()
+
+    def _plugin_worker_loop(self, idx: int) -> None:
+        worker_id = f"{self.worker_prefix}-plugin-{idx}"
+        self._set_worker_state(worker_id, "running")
+        self.logger.info(
+            "workflow_plugin_worker_loop_started",
+            worker_id=worker_id,
+            worker_index=idx,
+            workflow_id=self._workflow_id,
+            plugin_allowlist=self.cfg.plugin_allowlist,
+        )
+        while not self.stop_event.is_set():
+            state = self._poll_worker_commands(worker_id)
+            if state in {"paused", "stopped", "errored"}:
+                self.logger.warning(
+                    "workflow_plugin_worker_waiting_due_to_state",
+                    worker_id=worker_id,
+                    worker_state=state,
+                    poll_interval_seconds=self.cfg.poll_interval_seconds,
+                )
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            self._maybe_apply_fleet_output_clear()
+            try:
+                entry = self.client.claim_next_stage(
+                    worker_id=worker_id,
+                    lease_seconds=self.cfg.lease_seconds,
+                    workflow_id=self._workflow_id,
+                    plugin_allowlist=self.cfg.plugin_allowlist,
+                )
+            except Exception as exc:
+                self.logger.error("workflow_plugin_claim_failed", worker_id=worker_id, error=str(exc))
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            if not entry:
+                self.stop_event.wait(self.cfg.poll_interval_seconds)
+                continue
+            self._run_plugin_task(worker_id=worker_id, entry=entry)
+
     def _fozzy_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-fozzy-{idx}"
         self._set_worker_state(worker_id, "running")
@@ -888,7 +1494,12 @@ class DistributedCoordinator:
                 continue
             self._maybe_apply_fleet_output_clear()
             try:
-                entry = self.client.claim_stage(worker_id, "fozzy", self.cfg.lease_seconds)
+                entry = self.client.claim_stage(
+                    worker_id,
+                    "fozzy",
+                    self.cfg.lease_seconds,
+                    workflow_id=self._workflow_id,
+                )
             except Exception as exc:
                 self.logger.error("fozzy_claim_failed", worker_id=worker_id, error=str(exc))
                 self.stop_event.wait(self.cfg.poll_interval_seconds)
@@ -912,7 +1523,14 @@ class DistributedCoordinator:
             if not params_path.is_file():
                 self._download_file_artifact(root_domain, "nightmare_parameters_json", params_path)
             if not params_path.is_file():
-                self.client.complete_stage(worker_id, root_domain, "fozzy", 1, "missing parameters artifact")
+                self.client.complete_stage(
+                    worker_id,
+                    root_domain,
+                    "fozzy",
+                    1,
+                    "missing parameters artifact",
+                    workflow_id=self._workflow_id,
+                )
                 self.logger.error(
                     "fozzy_parameters_missing",
                     worker_id=worker_id,
@@ -930,7 +1548,13 @@ class DistributedCoordinator:
             self._begin_job()
             try:
                 heartbeat = LeaseHeartbeat(
-                    tick_fn=lambda: self.client.heartbeat_stage(worker_id, root_domain, "fozzy", self.cfg.lease_seconds),
+                    tick_fn=lambda: self.client.heartbeat_stage(
+                        worker_id,
+                        root_domain,
+                        "fozzy",
+                        self.cfg.lease_seconds,
+                        workflow_id=self._workflow_id,
+                    ),
                     interval_seconds=self.cfg.heartbeat_interval_seconds,
                     logger=self.logger,
                     heartbeat_kind="fozzy_stage",
@@ -1013,7 +1637,7 @@ class DistributedCoordinator:
 
                 if exit_code == 0 and not self.cfg.workflow_scheduler_enabled:
                     try:
-                        self.client.enqueue_stage(root_domain, "extractor")
+                        self.client.enqueue_stage(root_domain, "extractor", workflow_id=self._workflow_id)
                         self.logger.info(
                             "fozzy_stage_enqueued",
                             worker_id=worker_id,
@@ -1029,7 +1653,14 @@ class DistributedCoordinator:
                             error=str(exc),
                         )
                 try:
-                    self.client.complete_stage(worker_id, root_domain, "fozzy", exit_code, err_text)
+                    self.client.complete_stage(
+                        worker_id,
+                        root_domain,
+                        "fozzy",
+                        exit_code,
+                        err_text,
+                        workflow_id=self._workflow_id,
+                    )
                     self.logger.info(
                         "fozzy_job_complete",
                         worker_id=worker_id,
@@ -1066,7 +1697,12 @@ class DistributedCoordinator:
                 continue
             self._maybe_apply_fleet_output_clear()
             try:
-                entry = self.client.claim_stage(worker_id, "auth0r", self.cfg.lease_seconds)
+                entry = self.client.claim_stage(
+                    worker_id,
+                    "auth0r",
+                    self.cfg.lease_seconds,
+                    workflow_id=self._workflow_id,
+                )
             except Exception as exc:
                 self.logger.error("auth0r_claim_failed", worker_id=worker_id, error=str(exc))
                 self.stop_event.wait(self.cfg.poll_interval_seconds)
@@ -1085,7 +1721,14 @@ class DistributedCoordinator:
             if not nightmare_session_path.is_file():
                 self._download_file_artifact(root_domain, "nightmare_session_json", nightmare_session_path)
             if not nightmare_session_path.is_file():
-                self.client.complete_stage(worker_id, root_domain, "auth0r", 1, "missing nightmare session artifact")
+                self.client.complete_stage(
+                    worker_id,
+                    root_domain,
+                    "auth0r",
+                    1,
+                    "missing nightmare session artifact",
+                    workflow_id=self._workflow_id,
+                )
                 self.logger.error(
                     "auth0r_session_missing",
                     worker_id=worker_id,
@@ -1097,7 +1740,13 @@ class DistributedCoordinator:
             self._begin_job()
             try:
                 heartbeat = LeaseHeartbeat(
-                    tick_fn=lambda: self.client.heartbeat_stage(worker_id, root_domain, "auth0r", self.cfg.lease_seconds),
+                    tick_fn=lambda: self.client.heartbeat_stage(
+                        worker_id,
+                        root_domain,
+                        "auth0r",
+                        self.cfg.lease_seconds,
+                        workflow_id=self._workflow_id,
+                    ),
                     interval_seconds=self.cfg.heartbeat_interval_seconds,
                     logger=self.logger,
                     heartbeat_kind="auth0r_stage",
@@ -1169,7 +1818,14 @@ class DistributedCoordinator:
                         error=str(exc),
                     )
                 try:
-                    self.client.complete_stage(worker_id, root_domain, "auth0r", exit_code, err_text)
+                    self.client.complete_stage(
+                        worker_id,
+                        root_domain,
+                        "auth0r",
+                        exit_code,
+                        err_text,
+                        workflow_id=self._workflow_id,
+                    )
                 except Exception as exc:
                     self.logger.error(
                         "auth0r_complete_failed",
@@ -1197,7 +1853,12 @@ class DistributedCoordinator:
                 continue
             self._maybe_apply_fleet_output_clear()
             try:
-                entry = self.client.claim_stage(worker_id, "extractor", self.cfg.lease_seconds)
+                entry = self.client.claim_stage(
+                    worker_id,
+                    "extractor",
+                    self.cfg.lease_seconds,
+                    workflow_id=self._workflow_id,
+                )
             except Exception as exc:
                 self.logger.error("extractor_claim_failed", worker_id=worker_id, error=str(exc))
                 self.stop_event.wait(self.cfg.poll_interval_seconds)
@@ -1222,7 +1883,14 @@ class DistributedCoordinator:
             if not fozzy_results_dir.is_dir():
                 self._download_zip_artifact(root_domain, "fozzy_results_zip", fozzy_results_dir)
             if not fozzy_results_dir.is_dir():
-                self.client.complete_stage(worker_id, root_domain, "extractor", 1, "missing fozzy results artifact")
+                self.client.complete_stage(
+                    worker_id,
+                    root_domain,
+                    "extractor",
+                    1,
+                    "missing fozzy results artifact",
+                    workflow_id=self._workflow_id,
+                )
                 self.logger.error(
                     "extractor_results_missing",
                     worker_id=worker_id,
@@ -1234,7 +1902,13 @@ class DistributedCoordinator:
             self._begin_job()
             try:
                 heartbeat = LeaseHeartbeat(
-                    tick_fn=lambda: self.client.heartbeat_stage(worker_id, root_domain, "extractor", self.cfg.lease_seconds),
+                    tick_fn=lambda: self.client.heartbeat_stage(
+                        worker_id,
+                        root_domain,
+                        "extractor",
+                        self.cfg.lease_seconds,
+                        workflow_id=self._workflow_id,
+                    ),
                     interval_seconds=self.cfg.heartbeat_interval_seconds,
                     logger=self.logger,
                     heartbeat_kind="extractor_stage",
@@ -1307,7 +1981,14 @@ class DistributedCoordinator:
                     )
 
                 try:
-                    self.client.complete_stage(worker_id, root_domain, "extractor", exit_code, err_text)
+                    self.client.complete_stage(
+                        worker_id,
+                        root_domain,
+                        "extractor",
+                        exit_code,
+                        err_text,
+                        workflow_id=self._workflow_id,
+                    )
                     self.logger.info(
                         "extractor_job_complete",
                         worker_id=worker_id,
@@ -1334,18 +2015,25 @@ class DistributedCoordinator:
             for idx in range(1, max(1, self.cfg.nightmare_workers) + 1):
                 t = threading.Thread(target=self._nightmare_worker_loop, args=(idx,), daemon=True)
                 threads.append(t)
-        if self.cfg.enable_fozzy:
-            for idx in range(1, max(1, self.cfg.fozzy_workers) + 1):
-                t = threading.Thread(target=self._fozzy_worker_loop, args=(idx,), daemon=True)
+        # Unified plugin worker pool replaces per-tool stage loops.
+        if self.cfg.plugin_workers > 0:
+            for idx in range(1, max(1, int(self.cfg.plugin_workers)) + 1):
+                t = threading.Thread(target=self._plugin_worker_loop, args=(idx,), daemon=True)
                 threads.append(t)
-        if self.cfg.enable_auth0r:
-            for idx in range(1, max(1, self.cfg.auth0r_workers) + 1):
-                t = threading.Thread(target=self._auth0r_worker_loop, args=(idx,), daemon=True)
-                threads.append(t)
-        if self.cfg.enable_extractor:
-            for idx in range(1, max(1, self.cfg.extractor_workers) + 1):
-                t = threading.Thread(target=self._extractor_worker_loop, args=(idx,), daemon=True)
-                threads.append(t)
+        else:
+            # Backward-compatible fallback for one release.
+            if self.cfg.enable_fozzy:
+                for idx in range(1, max(1, self.cfg.fozzy_workers) + 1):
+                    t = threading.Thread(target=self._fozzy_worker_loop, args=(idx,), daemon=True)
+                    threads.append(t)
+            if self.cfg.enable_auth0r:
+                for idx in range(1, max(1, self.cfg.auth0r_workers) + 1):
+                    t = threading.Thread(target=self._auth0r_worker_loop, args=(idx,), daemon=True)
+                    threads.append(t)
+            if self.cfg.enable_extractor:
+                for idx in range(1, max(1, self.cfg.extractor_workers) + 1):
+                    t = threading.Thread(target=self._extractor_worker_loop, args=(idx,), daemon=True)
+                    threads.append(t)
 
         for t in threads:
             t.start()
@@ -1354,7 +2042,11 @@ class DistributedCoordinator:
             worker_prefix=self.worker_prefix,
             workflow_scheduler_enabled=bool(self.cfg.workflow_scheduler_enabled),
             workflow_scheduler_interval_seconds=float(self.cfg.workflow_scheduler_interval_seconds),
+            workflow_id=self._workflow_id,
             nightmare_workers=(self.cfg.nightmare_workers if self.cfg.enable_nightmare else 0),
+            plugin_workers=int(self.cfg.plugin_workers or 0),
+            plugin_allowlist=self.cfg.plugin_allowlist,
+            legacy_stage_workers_enabled=bool(int(self.cfg.plugin_workers or 0) <= 0),
             fozzy_workers=(self.cfg.fozzy_workers if self.cfg.enable_fozzy else 0),
             auth0r_workers=(self.cfg.auth0r_workers if self.cfg.enable_auth0r else 0),
             extractor_workers=(self.cfg.extractor_workers if self.cfg.enable_extractor else 0),
@@ -1391,6 +2083,8 @@ def main(argv: Optional[list[str] ] = None) -> int:
         workflow_config=str(cfg.workflow_config),
         workflow_scheduler_enabled=bool(cfg.workflow_scheduler_enabled),
         workflow_scheduler_interval_seconds=float(cfg.workflow_scheduler_interval_seconds),
+        plugin_workers=int(cfg.plugin_workers or 0),
+        plugin_allowlist=cfg.plugin_allowlist,
         nightmare_workers=cfg.nightmare_workers,
         fozzy_workers=cfg.fozzy_workers,
         auth0r_workers=cfg.auth0r_workers,

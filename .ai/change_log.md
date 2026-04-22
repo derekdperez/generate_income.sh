@@ -1207,3 +1207,31 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - Prevents accidental task clobber/re-enqueue while still allowing controlled retries for failed stages.
 - Validation:
   - `pytest -q tests/test_config_utils.py tests/test_runtime_unit.py tests/test_reporting_and_store_helpers.py` (56 passed).
+
+## 2026-04-22
+
+- Implemented workflow-driven, queue-safe plugin orchestration foundation across coordinator/store/API/runtime.
+- `server_app/store.py`:
+  - Stage-task schema now includes workflow/progress/checkpoint fields and workflow-scoped primary key.
+  - Added workflow-aware claim-next behavior, workflow-aware heartbeat/completion, explicit progress update API method, and manual stage-task reset API method.
+  - Workflow snapshot now returns `plugin_tasks` grouped by workflow while preserving legacy `stage_tasks` compatibility for default workflow views.
+- `server.py`:
+  - Extended stage APIs to accept `workflow_id`, checkpoint/progress payloads, and resume metadata.
+  - Added `POST /api/coord/stage/claim-next`, `POST /api/coord/stage/progress`, and `POST /api/coord/stage/reset`.
+- `coordinator_app/runtime.py`:
+  - Added workflow-aware client methods for claim-next/progress/reset and propagated workflow/progress fields through existing stage methods.
+  - Added unified plugin worker config support (`plugin_workers`, `plugin_allowlist`) with compatibility fallback derivation from legacy per-tool worker counts.
+- `coordinator.py`:
+  - Workflow loader now supports `workflow_id` + plugin entries (`plugins`/`stages`/`steps` compatibility).
+  - Scheduler now evaluates plugin preconditions including artifact gates, plugin completion dependencies, and target-status requirements.
+  - Added unified plugin worker loop and plugin dispatch execution path (`fozzy`, `extractor`, `auth0r`, plus nightmare artifact-gate plugins).
+  - Existing per-tool stage loops retained as compatibility fallback only when unified plugin workers are disabled.
+- `workflows/coordinator.workflow.json`:
+  - Reworked to workflow v2 shape with explicit `workflow_id`, fine-grained nightmare plugin chain, plugin dependencies/preconditions, and manual-rerun-safe defaults.
+- `config/coordinator*.json`:
+  - Added workflow scheduler/plugin worker settings and allowlist support.
+- Validation:
+  - `python -m py_compile coordinator.py coordinator_app/runtime.py nightmare_shared/config.py server.py server_app/store.py`
+  - `pytest -q tests/test_runtime_unit.py tests/test_config_utils.py`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "workflow or stage or crawl_progress"`
+  - `pytest -q tests/test_refactor_modules.py tests/test_server_auth_cookie.py`
