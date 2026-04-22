@@ -186,3 +186,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Stage claim path now supports "claim next plugin" semantics with optional plugin allowlist and per-domain running-task exclusion, so only one plugin runs at a time for a domain.
   - Coordinator worker model now has a unified plugin worker loop (`_plugin_worker_loop`) that claims generic plugin tasks and dispatches by plugin name.
   - Existing per-tool loops remain as compatibility fallback only when unified plugin worker count is disabled.
+- Workflow operations UI boundary update (2026-04-22):
+  - Web UI now has a dedicated workflow operations surface at `/workflows`.
+  - Page is read/write against coordinator APIs (`workflow-snapshot`, `stage/enqueue`, `stage/reset`) and does not duplicate scheduler logic in the frontend.
+  - Route rendering stays centralized through `reporting/server_pages.py` helpers, matching existing server page decomposition.

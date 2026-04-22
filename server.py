@@ -65,6 +65,7 @@ from reporting.server_pages import (
     render_extractor_matches_html,
     render_fuzzing_html,
     render_view_logs_html,
+    render_workflows_html,
     render_workers_html,
 )
 from server_app.store import CoordinatorStore
@@ -3030,6 +3031,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/events":
             self._write_text(render_events_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/workflows":
+            self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/crawl-progress":
             self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")

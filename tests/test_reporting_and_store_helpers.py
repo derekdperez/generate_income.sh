@@ -19,6 +19,7 @@ from reporting.server_pages import (
     render_extractor_matches_html,
     render_fuzzing_html,
     render_view_logs_html,
+    render_workflows_html,
     render_workers_html,
 )
 from server import (
@@ -97,6 +98,14 @@ def test_render_events_html_contains_expected_heading():
     html = render_events_html()
     assert "System Events" in html
     assert "/api/coord/events" in html
+
+
+def test_render_workflows_html_contains_expected_heading():
+    html = render_workflows_html()
+    assert "Workflow Monitor" in html
+    assert "/api/coord/workflow-snapshot" in html
+    assert "/api/coord/stage/enqueue" in html
+    assert "/api/coord/stage/reset" in html
 
 
 def test_extractor_report_html_escapes_script_content():

@@ -1235,3 +1235,19 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `pytest -q tests/test_runtime_unit.py tests/test_config_utils.py`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "workflow or stage or crawl_progress"`
   - `pytest -q tests/test_refactor_modules.py tests/test_server_auth_cookie.py`
+
+## 2026-04-22
+
+- Added dedicated workflow operations UI page for monitor + control:
+  - New page/template: `templates/workflows.html.j2`.
+  - New route: `GET /workflows`.
+  - Navbar updated with `Workflows` entry.
+  - UI integrates existing workflow APIs: `/api/coord/workflow-snapshot`, `/api/coord/stage/enqueue`, `/api/coord/stage/reset`.
+- Added render helper `render_workflows_html()` in `reporting/server_pages.py` and wired import usage in `server.py`.
+- Added/updated tests:
+  - `tests/test_refactor_modules.py`
+  - `tests/test_reporting_and_store_helpers.py`
+  - `tests/test_module_decomposition.py`
+- Validation:
+  - `python -m py_compile reporting/server_pages.py server.py`
+  - `pytest -q tests/test_refactor_modules.py tests/test_reporting_and_store_helpers.py tests/test_module_decomposition.py`

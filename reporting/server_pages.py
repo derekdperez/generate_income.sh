@@ -58,5 +58,9 @@ def render_events_html() -> str:
     return render_template("events.html.j2")
 
 
+def render_workflows_html() -> str:
+    return render_template("workflows.html.j2")
+
+
 def render_discovered_target_response_html() -> str:
     return render_template("discovered_target_response.html.j2")

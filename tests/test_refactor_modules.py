@@ -10,6 +10,7 @@ from reporting.server_pages import (
     render_extractor_matches_html,
     render_fuzzing_html,
     render_view_logs_html,
+    render_workflows_html,
     render_workers_html,
 )
 
@@ -58,8 +59,21 @@ def test_worker_template_renders_database_link():
     assert "<!doctype html>" in html.lower()
     assert "Worker Control Center" in html
     assert 'href="/database"' in html
+    assert 'href="/workflows"' in html
     assert 'href="/crawl-progress"' in html
     assert 'encodeURIComponent(l.relative).replace(/%2F/g, "/")' in html
+    assert "nightmare_coord_token" in html
+
+
+def test_workflows_template_renders():
+    html = render_workflows_html()
+    assert "<!doctype html>" in html.lower()
+    assert "Workflow Monitor" in html
+    assert 'href="/workers"' in html
+    assert 'href="/database"' in html
+    assert "/api/coord/workflow-snapshot" in html
+    assert "/api/coord/stage/enqueue" in html
+    assert "/api/coord/stage/reset" in html
     assert "nightmare_coord_token" in html
 
 
