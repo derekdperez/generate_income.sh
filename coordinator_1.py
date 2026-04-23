@@ -19,12 +19,12 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
-import tempfile
 import uuid
 import zipfile
 from pathlib import Path
@@ -382,6 +382,169 @@ def _load_workflow_catalog(path: Path, logger: Any) -> tuple[str, dict[str, list
     return primary_workflow_id, catalog
 
 
+
+
+_SUBDOMAIN_TAKEOVER_FINGERPRINTS: list[dict[str, Any]] = [
+    {
+        "provider": "AWS S3 / CloudFront",
+        "cname_suffixes": [".s3.amazonaws.com", ".s3-website", ".cloudfront.net"],
+        "body_patterns": [
+            r"The specified bucket does not exist",
+            r"NoSuchBucket",
+            r"The request could not be satisfied",
+        ],
+    },
+    {
+        "provider": "GitHub Pages",
+        "cname_suffixes": [".github.io"],
+        "body_patterns": [r"There isn't a GitHub Pages site here\."],
+    },
+    {
+        "provider": "Heroku",
+        "cname_suffixes": [".herokudns.com", ".herokuapp.com"],
+        "body_patterns": [r"no such app", r"there is no app configured at that hostname"],
+    },
+    {
+        "provider": "Fastly",
+        "cname_suffixes": [".fastly.net", ".fastlylb.net", ".map.fastly.net"],
+        "body_patterns": [r"Fastly error: unknown domain", r"unknown domain: ?"],
+    },
+    {
+        "provider": "Pantheon",
+        "cname_suffixes": [".pantheonsite.io"],
+        "body_patterns": [r"The gods are wise, but do not know of the site which you seek"],
+    },
+    {
+        "provider": "Shopify",
+        "cname_suffixes": [".myshopify.com"],
+        "body_patterns": [r"Sorry, this shop is currently unavailable"],
+    },
+    {
+        "provider": "Zendesk",
+        "cname_suffixes": [".zendesk.com"],
+        "body_patterns": [r"Help Center Closed", r"this help center no longer exists"],
+    },
+    {
+        "provider": "Surge",
+        "cname_suffixes": [".surge.sh"],
+        "body_patterns": [r"project not found"],
+    },
+    {
+        "provider": "Tumblr",
+        "cname_suffixes": [".tumblr.com"],
+        "body_patterns": [r"There's nothing here\.", r"Whatever you were looking for doesn't currently exist"],
+    },
+    {
+        "provider": "WordPress",
+        "cname_suffixes": [".wordpress.com"],
+        "body_patterns": [r"Do you want to register"],
+    },
+    {
+        "provider": "Unbounce",
+        "cname_suffixes": [".unbouncepages.com"],
+        "body_patterns": [r"The requested URL was not found on this server"],
+    },
+    {
+        "provider": "Readme",
+        "cname_suffixes": [".readme.io"],
+        "body_patterns": [r"Project doesnt exist", r"Project doesn't exist"],
+    },
+    {
+        "provider": "Statuspage",
+        "cname_suffixes": [".statuspage.io"],
+        "body_patterns": [r"You are being redirected", r"page not found"],
+    },
+]
+
+
+def _truncate_text(value: str, limit: int = 240) -> str:
+    raw = str(value or "").strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 3)] + "..."
+
+
+def _lookup_cname_chain(hostname: str) -> list[str]:
+    host = str(hostname or "").strip().rstrip(".")
+    if not host:
+        return []
+    commands: list[list[str]] = []
+    if shutil.which("dig"):
+        commands.append(["dig", "+short", "cname", host])
+    if shutil.which("host"):
+        commands.append(["host", "-t", "CNAME", host])
+    if shutil.which("nslookup"):
+        commands.append(["nslookup", "-type=CNAME", host])
+    seen: set[str] = set()
+    discovered: list[str] = []
+    for cmd in commands:
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:
+            continue
+        output = "\n".join([result.stdout or "", result.stderr or ""])
+        for line in output.splitlines():
+            lowered = line.strip().lower()
+            if not lowered:
+                continue
+            candidates = re.findall(r"([a-z0-9][a-z0-9._-]*\.[a-z]{2,})\.?", lowered)
+            for candidate in candidates:
+                if candidate == host.lower():
+                    continue
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                discovered.append(candidate)
+    return discovered
+
+
+def _match_takeover_fingerprint(
+    *,
+    cname_chain: list[str],
+    status_code: int | None,
+    response_text: str,
+) -> dict[str, Any] | None:
+    lowered_chain = [str(item or "").strip().lower().rstrip(".") for item in cname_chain if str(item or "").strip()]
+    body = str(response_text or "")
+    for fingerprint in _SUBDOMAIN_TAKEOVER_FINGERPRINTS:
+        provider = str(fingerprint.get("provider", "") or "").strip()
+        suffixes = [str(item).strip().lower() for item in fingerprint.get("cname_suffixes", []) if str(item).strip()]
+        provider_cname_matches = [
+            cname for cname in lowered_chain
+            if any(cname.endswith(suffix) for suffix in suffixes)
+        ]
+        body_match = None
+        for pattern in fingerprint.get("body_patterns", []):
+            try:
+                match = re.search(pattern, body, flags=re.IGNORECASE)
+            except re.error:
+                match = None
+            if match:
+                body_match = _truncate_text(match.group(0), 180)
+                break
+        if body_match or provider_cname_matches:
+            confidence = "low"
+            if body_match and provider_cname_matches:
+                confidence = "high"
+            elif body_match:
+                confidence = "medium"
+            elif status_code in {404, 410, 421, 500, 502, 503}:
+                confidence = "medium"
+            return {
+                "provider": provider,
+                "matched_cname_suffixes": provider_cname_matches,
+                "body_fingerprint_match": body_match or "",
+                "confidence": confidence,
+            }
+    return None
+
+
 class DistributedCoordinator:
     def __init__(self, cfg: CoordinatorConfig, *, logger: Any | None = None):
         self.cfg = cfg
@@ -502,6 +665,8 @@ class DistributedCoordinator:
             return 0
         try:
             snapshot = self.client.get_workflow_domain(safe_domain)
+            domain_payload = snapshot.get("domain") if isinstance(snapshot, dict) else None
+            rows = [domain_payload] if isinstance(domain_payload, dict) and domain_payload else []
         except Exception as exc:
             self.logger.error(
                 "workflow_domain_snapshot_refresh_failed",
@@ -517,25 +682,29 @@ class DistributedCoordinator:
                 mark_errored=False,
             )
             return 0
-        if not bool(snapshot.get("found")):
-            return 0
-        try:
-            return self._schedule_domain_workflows(snapshot, worker_id=worker_id)
-        except Exception as exc:
-            self.logger.error(
-                "workflow_domain_reschedule_failed",
-                worker_id=worker_id,
-                root_domain=safe_domain,
-                error=str(exc),
-            )
-            self._record_worker_error(
-                worker_id=worker_id,
-                description=f"Failed to schedule downstream workflow tasks for {safe_domain}",
-                exception=exc,
-                metadata={"root_domain": safe_domain, "source": "_refresh_domain_workflow_schedule"},
-                mark_errored=False,
-            )
-            return 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("root_domain", "") or "").strip().lower() != safe_domain:
+                continue
+            try:
+                return self._schedule_domain_workflows(row, worker_id=worker_id)
+            except Exception as exc:
+                self.logger.error(
+                    "workflow_domain_reschedule_failed",
+                    worker_id=worker_id,
+                    root_domain=safe_domain,
+                    error=str(exc),
+                )
+                self._record_worker_error(
+                    worker_id=worker_id,
+                    description=f"Failed to schedule downstream workflow tasks for {safe_domain}",
+                    exception=exc,
+                    metadata={"root_domain": safe_domain, "source": "_refresh_domain_workflow_schedule"},
+                    mark_errored=False,
+                )
+                return 0
+        return 0
 
     def _poll_worker_commands(self, worker_id: str) -> str:
         state = self._get_worker_state(worker_id)
@@ -978,43 +1147,23 @@ class DistributedCoordinator:
                 artifact_path=str(path),
             )
             return
+        size_bytes = int(path.stat().st_size if path.exists() else 0)
         self.logger.info(
             "artifact_file_upload_start",
             root_domain=root_domain,
             worker_id=worker_id,
             artifact_type=artifact_type,
             artifact_path=str(path),
-            bytes=path.stat().st_size,
+            bytes=size_bytes,
         )
-        manifest = {
-            "local_path": str(path),
-            "size_bytes": int(path.stat().st_size),
-            "mtime_ns": int(path.stat().st_mtime_ns),
-        }
-        self.client.upload_artifact_from_file(
-            root_domain,
-            artifact_type,
-            path,
-            source_worker=worker_id,
-            content_encoding="identity",
-            retention_class="derived_rebuildable",
-            media_type="application/octet-stream",
-        )
-        self.client.upload_artifact_manifest(
-            root_domain,
-            f"{artifact_type}_manifest",
-            manifest,
-            source_worker=worker_id,
-            media_type="application/json",
-            retention_class="summary_index",
-        )
+        self.client.upload_artifact_from_path(root_domain, artifact_type, path, source_worker=worker_id)
         self.logger.info(
             "artifact_file_upload_complete",
             root_domain=root_domain,
             worker_id=worker_id,
             artifact_type=artifact_type,
             artifact_path=str(path),
-            bytes=path.stat().st_size,
+            bytes=size_bytes,
         )
 
     def _upload_zip_artifact(self, root_domain: str, artifact_type: str, path: Path, worker_id: str) -> None:
@@ -1027,56 +1176,29 @@ class DistributedCoordinator:
                 source_path=str(path),
             )
             return
-        shard_manifest = {"files": []}
-        for file_path in sorted(path.rglob("*")):
-            if not file_path.is_file():
-                continue
-            rel = file_path.relative_to(path).as_posix()
-            size = int(file_path.stat().st_size)
-            shard_manifest["files"].append({"path": rel, "size_bytes": size, "mtime_ns": int(file_path.stat().st_mtime_ns)})
-        self.client.upload_artifact_manifest(
-            root_domain,
-            f"{artifact_type}_manifest",
-            {
-                "format": "directory_manifest",
-                "root": str(path),
-                "file_count": len(shard_manifest["files"]),
-                "files": shard_manifest["files"],
-            },
-            source_worker=worker_id,
-            media_type="application/json",
-            retention_class="summary_index",
+        self.logger.info(
+            "artifact_zip_upload_start",
+            root_domain=root_domain,
+            worker_id=worker_id,
+            artifact_type=artifact_type,
+            source_path=str(path),
         )
-        with tempfile.NamedTemporaryFile(prefix="artifact-", suffix=".zip", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        try:
-            with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-                for file_path in sorted(path.rglob("*")):
-                    if file_path.is_file():
-                        zf.write(file_path, arcname=file_path.relative_to(path).as_posix())
-            self.client.upload_artifact_from_file(
-                root_domain,
-                artifact_type,
-                tmp_path,
-                source_worker=worker_id,
-                content_encoding="zip",
-                retention_class="derived_rebuildable",
-                media_type="application/zip",
-            )
-            self.logger.info(
-                "artifact_zip_upload_complete",
-                root_domain=root_domain,
-                worker_id=worker_id,
-                artifact_type=artifact_type,
-                source_path=str(path),
-                bytes=tmp_path.stat().st_size,
-                file_count=len(shard_manifest["files"]),
-            )
-        finally:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        payload = _zip_directory_bytes(path)
+        self.client.upload_artifact(
+            root_domain,
+            artifact_type,
+            payload,
+            source_worker=worker_id,
+            content_encoding="zip",
+        )
+        self.logger.info(
+            "artifact_zip_upload_complete",
+            root_domain=root_domain,
+            worker_id=worker_id,
+            artifact_type=artifact_type,
+            source_path=str(path),
+            bytes=len(payload),
+        )
 
     def _download_file_artifact(self, root_domain: str, artifact_type: str, path: Path) -> bool:
         self.logger.info(
@@ -1085,8 +1207,8 @@ class DistributedCoordinator:
             artifact_type=artifact_type,
             target_path=str(path),
         )
-        ok = self.client.download_artifact_to_file(root_domain, artifact_type, path)
-        if not ok:
+        artifact = self.client.download_artifact(root_domain, artifact_type)
+        if artifact is None:
             self.logger.warning(
                 "artifact_file_download_missing",
                 root_domain=root_domain,
@@ -1094,12 +1216,15 @@ class DistributedCoordinator:
                 target_path=str(path),
             )
             return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = bytes(artifact["content"])
+        path.write_bytes(content)
         self.logger.info(
             "artifact_file_download_complete",
             root_domain=root_domain,
             artifact_type=artifact_type,
             target_path=str(path),
-            bytes=path.stat().st_size if path.exists() else 0,
+            bytes=len(content),
         )
         return True
 
@@ -1110,34 +1235,25 @@ class DistributedCoordinator:
             artifact_type=artifact_type,
             target_dir=str(target_dir),
         )
-        with tempfile.NamedTemporaryFile(prefix="artifact-", suffix=".zip", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        try:
-            ok = self.client.download_artifact_to_file(root_domain, artifact_type, tmp_path)
-            if not ok:
-                self.logger.warning(
-                    "artifact_zip_download_missing",
-                    root_domain=root_domain,
-                    artifact_type=artifact_type,
-                    target_dir=str(target_dir),
-                )
-                return False
-            target_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(tmp_path, mode="r") as zf:
-                zf.extractall(target_dir)
-            self.logger.info(
-                "artifact_zip_download_complete",
+        artifact = self.client.download_artifact(root_domain, artifact_type)
+        if artifact is None:
+            self.logger.warning(
+                "artifact_zip_download_missing",
                 root_domain=root_domain,
                 artifact_type=artifact_type,
                 target_dir=str(target_dir),
-                bytes=tmp_path.stat().st_size,
             )
-            return True
-        finally:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            return False
+        content = bytes(artifact["content"])
+        _unzip_bytes_to_directory(content, target_dir)
+        self.logger.info(
+            "artifact_zip_download_complete",
+            root_domain=root_domain,
+            artifact_type=artifact_type,
+            target_dir=str(target_dir),
+            bytes=len(content),
+        )
+        return True
 
     @staticmethod
     def _recon_progress_artifact_type(plugin_name: str) -> str:
@@ -1759,6 +1875,204 @@ class DistributedCoordinator:
         )
         return 0, ""
 
+
+    def _run_recon_subdomain_takeover_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        recon_dir = paths["recon_dir"]
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        subdomains_payload = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type="recon_subdomains_json",
+            path=paths["recon_subdomains_json"],
+        )
+        if not subdomains_payload:
+            return 1, "missing recon_subdomains_json artifact"
+
+        progress_path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
+        progress_state = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type=self._recon_progress_artifact_type(plugin_name),
+            path=progress_path,
+        )
+        if not progress_state:
+            progress_state = {
+                "schema_version": 1,
+                "plugin_name": plugin_name,
+                "root_domain": root_domain,
+                "status": "running",
+                "phase": "analysis",
+                "started_at_utc": _now_iso(),
+                "requests_made": [],
+                "results": [],
+            }
+
+        params = self._workflow_stage_parameters(plugin_name)
+        probe_timeout = max(1.0, _safe_float(params.get("probe_timeout_seconds", 8.0), 8.0))
+        probe_verify_tls = bool(params.get("probe_verify_tls", True))
+        max_response_bytes = max(512, _safe_int(params.get("max_response_bytes", 16384), 16384))
+        max_logged_requests = max(100, _safe_int(params.get("max_request_log_entries", 4000), 4000))
+        log_path = paths["recon_subdomain_takeover_log"]
+        summary_path = paths["recon_subdomain_takeover_summary_json"]
+
+        entries = subdomains_payload.get("entries") if isinstance(subdomains_payload.get("entries"), list) else []
+        prior_results = {
+            str(item.get("subdomain", "")).strip().lower(): dict(item)
+            for item in (progress_state.get("results") if isinstance(progress_state.get("results"), list) else [])
+            if isinstance(item, dict) and str(item.get("subdomain", "")).strip()
+        }
+        results: list[dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
+
+        progress_state["status"] = "running"
+        progress_state["phase"] = "analysis"
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            subdomain = str(entry.get("subdomain", "") or "").strip().lower().lstrip("*.").rstrip(".")
+            if not subdomain:
+                continue
+            row = dict(prior_results.get(subdomain) or {})
+            if row.get("analyzed") is True:
+                results.append(row)
+                if bool(row.get("suspected_takeover")):
+                    findings.append(dict(row))
+                continue
+
+            attempts = entry.get("attempts") if isinstance(entry.get("attempts"), list) else []
+            selected_url = str(entry.get("start_url", "") or "").strip()
+            if not selected_url:
+                for attempt in attempts:
+                    if not isinstance(attempt, dict):
+                        continue
+                    candidate = str(attempt.get("resolved_url", attempt.get("url", "")) or "").strip()
+                    if candidate.startswith("http://") or candidate.startswith("https://"):
+                        selected_url = candidate
+                        break
+            if not selected_url:
+                selected_url = f"https://{subdomain}/"
+
+            probe_status = None
+            probe_url = selected_url
+            response_snippet = ""
+            request_error = ""
+            try:
+                probe_rsp = request_capped(
+                    "GET",
+                    selected_url,
+                    timeout_seconds=probe_timeout,
+                    read_limit=max_response_bytes,
+                    follow_redirects=True,
+                    verify=probe_verify_tls,
+                )
+                probe_status = int(probe_rsp.status_code)
+                probe_url = str(probe_rsp.url or selected_url)
+                response_snippet = (probe_rsp.text or "")[:max_response_bytes]
+                progress_state.setdefault("requests_made", []).append(
+                    {
+                        "type": "takeover_probe",
+                        "subdomain": subdomain,
+                        "url": probe_url,
+                        "status_code": probe_status,
+                        "started_at_utc": _now_iso(),
+                    }
+                )
+            except Exception as exc:
+                request_error = str(exc)
+                progress_state.setdefault("requests_made", []).append(
+                    {
+                        "type": "takeover_probe",
+                        "subdomain": subdomain,
+                        "url": selected_url,
+                        "error": request_error,
+                        "started_at_utc": _now_iso(),
+                    }
+                )
+            progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
+
+            cname_chain = _lookup_cname_chain(subdomain)
+            fingerprint = _match_takeover_fingerprint(
+                cname_chain=cname_chain,
+                status_code=probe_status,
+                response_text=response_snippet,
+            )
+            row = {
+                "subdomain": subdomain,
+                "analyzed": True,
+                "start_url": str(entry.get("start_url", "") or "").strip(),
+                "probe_url": probe_url,
+                "probe_status_code": probe_status,
+                "request_error": request_error,
+                "cname_chain": cname_chain,
+                "suspected_takeover": bool(fingerprint),
+                "provider": str((fingerprint or {}).get("provider", "") or ""),
+                "confidence": str((fingerprint or {}).get("confidence", "") or ""),
+                "matched_cname_suffixes": list((fingerprint or {}).get("matched_cname_suffixes", []) or []),
+                "body_fingerprint_match": str((fingerprint or {}).get("body_fingerprint_match", "") or ""),
+            }
+            if response_snippet:
+                row["response_snippet"] = _truncate_text(response_snippet, 400)
+            results.append(row)
+            if row["suspected_takeover"]:
+                findings.append(dict(row))
+                try:
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+            progress_state["results"] = results
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+
+        summary_payload = {
+            "schema_version": 1,
+            "plugin_name": plugin_name,
+            "root_domain": root_domain,
+            "generated_at_utc": _now_iso(),
+            "result_count": len(results),
+            "suspected_takeover_count": len(findings),
+            "findings": findings,
+            "results": results,
+        }
+        _atomic_write_json(summary_path, summary_payload)
+        self._upload_file_artifact(root_domain, "recon_subdomain_takeover_summary_json", summary_path, worker_id)
+
+        progress_state["phase"] = "complete"
+        progress_state["status"] = "completed"
+        progress_state["results"] = results
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+        self._write_recon_completion_flag(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            details={
+                "result_count": len(results),
+                "suspected_takeover_count": len(findings),
+            },
+        )
+        return 0, ""
+
     def _extract_recon_start_urls(self, *, root_domain: str, payload: dict[str, Any]) -> list[str]:
         urls: list[str] = []
         entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
@@ -1786,354 +2100,6 @@ class DistributedCoordinator:
             seen.add(clean)
             deduped.append(clean)
         return deduped
-
-    @staticmethod
-    def _recon_takeover_fingerprints() -> list[dict[str, Any]]:
-        return [
-            {
-                "provider": "GitHub Pages",
-                "cname_suffixes": ("github.io",),
-                "body_markers": ("there isn't a github pages site here", "for root urls (like http://example.com/) you must provide an index.html file"),
-                "confidence": "high",
-            },
-            {
-                "provider": "Heroku",
-                "cname_suffixes": ("herokuapp.com", "herokudns.com", "herokussl.com"),
-                "body_markers": ("no such app", "heroku | no such app"),
-                "confidence": "high",
-            },
-            {
-                "provider": "Fastly",
-                "cname_suffixes": ("fastly.net", "fastlylb.net"),
-                "body_markers": ("fastly error: unknown domain",),
-                "confidence": "high",
-            },
-            {
-                "provider": "Pantheon",
-                "cname_suffixes": ("pantheonsite.io",),
-                "body_markers": ("the gods are wise", "404 error unknown site!"),
-                "confidence": "medium",
-            },
-            {
-                "provider": "Shopify",
-                "cname_suffixes": ("myshopify.com",),
-                "body_markers": ("sorry, this shop is currently unavailable",),
-                "confidence": "high",
-            },
-            {
-                "provider": "Zendesk",
-                "cname_suffixes": ("zendesk.com",),
-                "body_markers": ("help center closed", "this zendesk account is no longer available"),
-                "confidence": "medium",
-            },
-            {
-                "provider": "Surge",
-                "cname_suffixes": ("surge.sh",),
-                "body_markers": ("project not found",),
-                "confidence": "medium",
-            },
-            {
-                "provider": "Tumblr",
-                "cname_suffixes": ("domains.tumblr.com",),
-                "body_markers": ("there's nothing here",),
-                "confidence": "medium",
-            },
-            {
-                "provider": "WordPress.com",
-                "cname_suffixes": ("wordpress.com",),
-                "body_markers": ("do you want to register",),
-                "confidence": "medium",
-            },
-            {
-                "provider": "ReadMe",
-                "cname_suffixes": ("readme.io",),
-                "body_markers": ("project doesnt exist", "project doesn't exist"),
-                "confidence": "medium",
-            },
-            {
-                "provider": "Statuspage",
-                "cname_suffixes": ("statuspage.io",),
-                "body_markers": ("you are being redirected", "statuspage"),
-                "confidence": "low",
-            },
-            {
-                "provider": "AWS S3",
-                "cname_suffixes": ("amazonaws.com",),
-                "body_markers": ("nosuchbucket", "the specified bucket does not exist"),
-                "confidence": "high",
-            },
-            {
-                "provider": "AWS CloudFront",
-                "cname_suffixes": ("cloudfront.net",),
-                "body_markers": ("the request could not be satisfied", "bad request."),
-                "confidence": "low",
-            },
-        ]
-
-    @staticmethod
-    def _lookup_cname_records(hostname: str, timeout_seconds: float = 8.0) -> tuple[list[str], str]:
-        host = str(hostname or "").strip().rstrip(".")
-        if not host:
-            return [], "empty hostname"
-        commands = (
-            ["dig", "+short", "CNAME", host],
-            ["host", "-t", "CNAME", host],
-            ["nslookup", "-type=CNAME", host],
-        )
-        errors: list[str] = []
-        records: set[str] = set()
-        for command in commands:
-            try:
-                completed = subprocess.run(
-                    command,
-                    cwd=BASE_DIR,
-                    capture_output=True,
-                    text=True,
-                    timeout=max(1.0, timeout_seconds),
-                    check=False,
-                )
-            except FileNotFoundError:
-                continue
-            except Exception as exc:
-                errors.append(str(exc))
-                continue
-            output = "\n".join([completed.stdout or "", completed.stderr or ""])
-            for line in output.splitlines():
-                clean = str(line or "").strip().lower().rstrip(".")
-                if not clean:
-                    continue
-                if "canonical name =" in clean:
-                    clean = clean.split("canonical name =", 1)[1].strip().rstrip(".")
-                elif "is an alias for" in clean:
-                    clean = clean.split("is an alias for", 1)[1].strip().rstrip(".")
-                elif "name =" in clean:
-                    clean = clean.split("name =", 1)[1].strip().rstrip(".")
-                elif "can't find" in clean or "not found" in clean or "nxdomain" in clean:
-                    errors.append(clean)
-                    continue
-                if clean and " " not in clean and "." in clean:
-                    records.add(clean)
-            if records:
-                return sorted(records), ""
-        return sorted(records), "; ".join(errors[-3:])
-
-    def _run_recon_subdomain_takeover_plugin_task(
-        self,
-        *,
-        worker_id: str,
-        root_domain: str,
-        plugin_name: str,
-    ) -> tuple[int, str]:
-        paths = self._artifact_paths(root_domain)
-        recon_dir = paths["recon_dir"]
-        recon_dir.mkdir(parents=True, exist_ok=True)
-        subdomains_payload = self._load_json_file_or_artifact(
-            root_domain=root_domain,
-            artifact_type="recon_subdomains_json",
-            path=paths["recon_subdomains_json"],
-        )
-        if not subdomains_payload:
-            return 1, "missing recon_subdomains_json artifact"
-
-        params = self._workflow_stage_parameters(plugin_name)
-        probe_timeout = max(1.0, _safe_float(params.get("probe_timeout_seconds", 10.0), 10.0))
-        dns_timeout = max(1.0, _safe_float(params.get("dns_timeout_seconds", 8.0), 8.0))
-        probe_verify_tls = bool(params.get("probe_verify_tls", True))
-        response_read_limit = max(4096, _safe_int(params.get("response_read_limit_bytes", 131072), 131072))
-        max_logged_requests = max(100, _safe_int(params.get("max_request_log_entries", 4000), 4000))
-
-        progress_path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
-        progress_state = self._load_json_file_or_artifact(
-            root_domain=root_domain,
-            artifact_type=self._recon_progress_artifact_type(plugin_name),
-            path=progress_path,
-        )
-        if not progress_state:
-            progress_state = {
-                "schema_version": 1,
-                "plugin_name": plugin_name,
-                "root_domain": root_domain,
-                "status": "running",
-                "phase": "takeover_probe",
-                "started_at_utc": _now_iso(),
-                "requests_made": [],
-                "results": {},
-            }
-
-        subdomains: set[str] = set()
-        for item in (subdomains_payload.get("subdomains") if isinstance(subdomains_payload.get("subdomains"), list) else []):
-            host = str(item or "").strip().lower().lstrip("*.").rstrip(".")
-            if host and (host == root_domain or host.endswith(f".{root_domain}")):
-                subdomains.add(host)
-        for row in (subdomains_payload.get("entries") if isinstance(subdomains_payload.get("entries"), list) else []):
-            if not isinstance(row, dict):
-                continue
-            host = str(row.get("subdomain", "") or "").strip().lower().lstrip("*.").rstrip(".")
-            if host and (host == root_domain or host.endswith(f".{root_domain}")):
-                subdomains.add(host)
-        if not subdomains:
-            return 1, "recon_subdomains_json did not contain any in-scope subdomains"
-
-        entries_by_host = {
-            str(row.get("subdomain", "") or "").strip().lower().lstrip("*.").rstrip("."): row
-            for row in (subdomains_payload.get("entries") if isinstance(subdomains_payload.get("entries"), list) else [])
-            if isinstance(row, dict)
-        }
-        fingerprints = self._recon_takeover_fingerprints()
-        results = dict(progress_state.get("results") or {}) if isinstance(progress_state.get("results"), dict) else {}
-
-        progress_state["status"] = "running"
-        progress_state["phase"] = "takeover_probe"
-        progress_state["subdomain_count"] = len(subdomains)
-        self._persist_recon_progress(
-            worker_id=worker_id,
-            root_domain=root_domain,
-            plugin_name=plugin_name,
-            payload=progress_state,
-        )
-
-        for subdomain in sorted(subdomains):
-            prior = results.get(subdomain)
-            if isinstance(prior, dict) and bool(prior.get("checked")):
-                continue
-
-            cname_records, cname_error = self._lookup_cname_records(subdomain, dns_timeout)
-            candidate_urls: list[str] = []
-            row = entries_by_host.get(subdomain) if isinstance(entries_by_host.get(subdomain), dict) else {}
-            start_url = str(row.get("start_url", "") or "").strip()
-            if start_url:
-                candidate_urls.append(start_url)
-            candidate_urls.extend([f"https://{subdomain}/", f"http://{subdomain}/"])
-
-            seen_urls: set[str] = set()
-            http_observations: list[dict[str, Any]] = []
-            body_text = ""
-            for url in candidate_urls:
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                attempt = {
-                    "type": "takeover_probe",
-                    "url": url,
-                    "started_at_utc": _now_iso(),
-                }
-                try:
-                    rsp = request_capped(
-                        "GET",
-                        url,
-                        timeout_seconds=probe_timeout,
-                        read_limit=response_read_limit,
-                        follow_redirects=True,
-                        verify=probe_verify_tls,
-                    )
-                    raw_body = bytes(rsp.body or b"")
-                    decoded = raw_body.decode("utf-8", errors="replace")
-                    if not body_text and decoded:
-                        body_text = decoded
-                    attempt.update(
-                        {
-                            "status_code": int(rsp.status_code),
-                            "resolved_url": str(rsp.url or url),
-                            "content_type": str(rsp.headers.get("content-type", "") if hasattr(rsp, "headers") else ""),
-                            "body_sample_sha256": hashlib.sha256(raw_body[:response_read_limit]).hexdigest() if raw_body else "",
-                        }
-                    )
-                except Exception as exc:
-                    attempt["error"] = str(exc)
-                http_observations.append(attempt)
-                progress_state.setdefault("requests_made", []).append(attempt)
-                progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
-
-            normalized_body = body_text.lower()
-            normalized_cnames = [record.lower().rstrip(".") for record in cname_records]
-            matches: list[dict[str, Any]] = []
-            for fingerprint in fingerprints:
-                cname_hit = any(
-                    cname.endswith(str(suffix).lower().rstrip("."))
-                    for cname in normalized_cnames
-                    for suffix in fingerprint.get("cname_suffixes", ())
-                )
-                marker_hits = [
-                    marker
-                    for marker in fingerprint.get("body_markers", ())
-                    if str(marker or "").lower() in normalized_body
-                ]
-                if cname_hit or marker_hits:
-                    matches.append(
-                        {
-                            "provider": fingerprint.get("provider"),
-                            "confidence": fingerprint.get("confidence", "medium"),
-                            "cname_match": bool(cname_hit),
-                            "body_marker_matches": marker_hits,
-                        }
-                    )
-
-            vulnerable = any(
-                bool(match.get("cname_match")) and bool(match.get("body_marker_matches"))
-                for match in matches
-            )
-            suspected = bool(matches)
-            results[subdomain] = {
-                "subdomain": subdomain,
-                "checked": True,
-                "cname_records": cname_records,
-                "cname_error": cname_error,
-                "http_observations": http_observations,
-                "matches": matches,
-                "suspected_takeover": suspected,
-                "probable_takeover": vulnerable,
-            }
-            progress_state["results"] = results
-            self._persist_recon_progress(
-                worker_id=worker_id,
-                root_domain=root_domain,
-                plugin_name=plugin_name,
-                payload=progress_state,
-            )
-
-        findings = [
-            result
-            for result in results.values()
-            if isinstance(result, dict) and bool(result.get("suspected_takeover"))
-        ]
-        summary_payload = {
-            "schema_version": 1,
-            "plugin_name": plugin_name,
-            "root_domain": root_domain,
-            "generated_at_utc": _now_iso(),
-            "subdomain_count": len(subdomains),
-            "checked_count": len([r for r in results.values() if isinstance(r, dict) and bool(r.get("checked"))]),
-            "suspected_count": len(findings),
-            "probable_count": len([r for r in findings if bool(r.get("probable_takeover"))]),
-            "findings": sorted(findings, key=lambda item: (not bool(item.get("probable_takeover")), str(item.get("subdomain", "")))),
-            "results": results,
-        }
-        summary_path = paths["recon_subdomain_takeover_summary_json"]
-        _atomic_write_json(summary_path, summary_payload)
-        self._upload_file_artifact(root_domain, "recon_subdomain_takeover_summary_json", summary_path, worker_id)
-
-        progress_state["phase"] = "complete"
-        progress_state["status"] = "completed"
-        progress_state["suspected_count"] = summary_payload["suspected_count"]
-        progress_state["probable_count"] = summary_payload["probable_count"]
-        self._persist_recon_progress(
-            worker_id=worker_id,
-            root_domain=root_domain,
-            plugin_name=plugin_name,
-            payload=progress_state,
-        )
-        self._write_recon_completion_flag(
-            worker_id=worker_id,
-            root_domain=root_domain,
-            plugin_name=plugin_name,
-            details={
-                "subdomain_count": summary_payload["subdomain_count"],
-                "checked_count": summary_payload["checked_count"],
-                "suspected_count": summary_payload["suspected_count"],
-                "probable_count": summary_payload["probable_count"],
-            },
-        )
-        return 0, ""
 
     def _run_recon_spider_plugin_task(
         self,

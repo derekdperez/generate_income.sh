@@ -45,24 +45,24 @@
     {
       "name": "recon_subdomain_takeover",
       "display_name": "Recon Subdomain Takeover",
-      "description": "Probe enumerated subdomains for dangling DNS and provider fingerprints that may indicate subdomain takeover risk.",
+      "description": "Analyze enumerated subdomains for likely dangling-service takeover fingerprints before spidering begins.",
       "handler": "recon_subdomain_takeover",
       "plugin_name": "recon_subdomain_takeover",
       "enabled": true,
       "resume_mode": "exact",
       "preconditions": {
-        "target_statuses": [
-          "pending",
-          "running",
-          "completed"
+        "artifacts_all": [
+          "recon_subdomain_enumeration_complete_flag"
+        ],
+        "requires_plugins_all": [
+          "recon_subdomain_enumeration"
         ]
       },
       "retry_failed": true,
       "max_attempts": 0,
       "inputs": {
         "artifacts_all": [
-          "recon_subdomains_json",
-          "recon_subdomain_enumeration_complete_flag"
+          "recon_subdomains_json"
         ]
       },
       "outputs": {
@@ -73,10 +73,9 @@
         ]
       },
       "parameters": {
-        "probe_timeout_seconds": 10,
-        "dns_timeout_seconds": 8,
+        "probe_timeout_seconds": 8.0,
         "probe_verify_tls": true,
-        "response_read_limit_bytes": 131072,
+        "max_response_bytes": 16384,
         "max_request_log_entries": 4000
       }
     },
@@ -90,15 +89,18 @@
       "resume_mode": "exact",
       "preconditions": {
         "artifacts_all": [
-          "recon_subdomain_enumeration_complete_flag"
+          "recon_subdomain_enumeration_complete_flag",
+          "recon_subdomain_takeover_complete_flag"
+        ],
+        "requires_plugins_all": [
+          "recon_subdomain_takeover"
         ]
       },
       "retry_failed": true,
       "max_attempts": 0,
       "inputs": {
         "artifacts_all": [
-          "recon_subdomains_json",
-          "recon_subdomain_takeover_complete_flag"
+          "recon_subdomains_json"
         ]
       },
       "outputs": {
@@ -130,9 +132,11 @@
       "resume_mode": "exact",
       "preconditions": {
         "artifacts_all": [
-          "recon_subdomain_enumeration_complete_flag"
+          "recon_subdomain_enumeration_complete_flag",
+          "recon_subdomain_takeover_complete_flag"
         ],
         "requires_plugins_all": [
+          "recon_subdomain_takeover",
           "recon_spider_source_tags"
         ]
       },
@@ -172,9 +176,11 @@
       "resume_mode": "exact",
       "preconditions": {
         "artifacts_all": [
-          "recon_subdomain_enumeration_complete_flag"
+          "recon_subdomain_enumeration_complete_flag",
+          "recon_subdomain_takeover_complete_flag"
         ],
         "requires_plugins_all": [
+          "recon_subdomain_takeover",
           "recon_spider_script_links"
         ]
       },
@@ -215,9 +221,11 @@
       "resume_mode": "exact",
       "preconditions": {
         "artifacts_all": [
-          "recon_subdomain_enumeration_complete_flag"
+          "recon_subdomain_enumeration_complete_flag",
+          "recon_subdomain_takeover_complete_flag"
         ],
         "requires_plugins_all": [
+          "recon_subdomain_takeover",
           "recon_spider_wordlist"
         ]
       },
