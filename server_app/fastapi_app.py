@@ -134,6 +134,12 @@ class WorkerCommandCompleteRequest(BaseModel):
     error: str = ""
 
 
+class WorkersCommandRequest(BaseModel):
+    command: str
+    worker_ids: list[str]
+    payload: Optional[dict[str, Any]] = None
+
+
 def create_app(
     *,
     output_root: str | Path,
@@ -161,6 +167,30 @@ def create_app(
     @app.get("/api/coord/workers")
     def worker_statuses(_: None = Depends(auth)) -> dict[str, Any]:
         return store.worker_statuses()
+
+    @app.get("/api/coord/database-status")
+    def database_status(_: None = Depends(auth)) -> dict[str, Any]:
+        return store.database_status()
+
+    @app.get("/api/coord/worker-control")
+    def worker_control(_: None = Depends(auth)) -> dict[str, Any]:
+        return store.worker_control_snapshot()
+
+    @app.post("/api/coord/workers/command")
+    def workers_command(payload: WorkersCommandRequest, _: None = Depends(auth)) -> dict[str, Any]:
+        command = str(payload.command or "").strip().lower()
+        if command not in {"start", "pause", "stop", "reload"}:
+            raise HTTPException(status_code=400, detail="command must be one of: start, pause, stop, reload")
+        worker_ids = [str(item or "").strip() for item in (payload.worker_ids or []) if str(item or "").strip()]
+        if not worker_ids:
+            raise HTTPException(status_code=400, detail="at least one worker_id is required")
+        queued = 0
+        command_payload = dict(payload.payload or {})
+        command_payload.setdefault("source", "worker-control-ui")
+        for worker_id in worker_ids:
+            if store.queue_worker_command(worker_id, command, payload=command_payload):
+                queued += 1
+        return {"ok": True, "queued": queued, "command": command, "worker_ids": worker_ids}
 
     @app.post("/api/coord/claim")
     def claim_target(payload: TargetClaimRequest, _: None = Depends(auth)) -> dict[str, Any]:
