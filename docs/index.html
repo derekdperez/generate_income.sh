@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>Nightmare — Project Site</title>
+  <meta
+    name="description"
+    content="Nightmare project website with install guide, FAQs, tutorials, plugin authoring docs, and a commit-by-commit development blog."
+  />
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg-soft: #0d1728;
+      --panel: rgba(14, 25, 42, 0.88);
+      --panel-2: rgba(20, 34, 56, 0.95);
+      --border: rgba(143, 188, 255, 0.18);
+      --text: #e8f0ff;
+      --muted: #98a7c2;
+      --accent: #7dd3fc;
+      --accent-2: #8b5cf6;
+      --accent-3: #34d399;
+      --danger: #fb7185;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      --radius: 22px;
+      --radius-sm: 14px;
+      --max: 1280px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 20%, rgba(125, 211, 252, 0.14), transparent 30%),
+        radial-gradient(circle at 85% 10%, rgba(139, 92, 246, 0.16), transparent 26%),
+        radial-gradient(circle at 50% 120%, rgba(52, 211, 153, 0.10), transparent 24%),
+        linear-gradient(180deg, #040912 0%, #07111f 48%, #060d18 100%);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    code, pre {
+      font-family: var(--mono);
+    }
+
+    .shell {
+      width: min(var(--max), calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(18px);
+      background: rgba(4, 9, 18, 0.72);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .topbar-inner {
+      width: min(var(--max), calc(100% - 32px));
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-height: 72px;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(135deg, rgba(125, 211, 252, 0.18), rgba(139, 92, 246, 0.25));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+      font-size: 1.2rem;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.1;
+      letter-spacing: 0.02em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .nav a,
+    .nav button {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      padding: 10px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+      font: inherit;
+      transition: 0.2s ease;
+    }
+
+    .nav a:hover,
+    .nav button:hover,
+    .nav a.active {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.06);
+    }
+
+    .hero {
+      padding: 54px 0 28px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-main {
+      padding: 34px;
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .hero-main::before {
+      content: "";
+      position: absolute;
+      inset: auto -20% -40% auto;
+      width: 360px;
+      height: 360px;
+      background: radial-gradient(circle, rgba(125, 211, 252, 0.16), transparent 60%);
+      z-index: -1;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(125, 211, 252, 0.08);
+      border: 1px solid rgba(125, 211, 252, 0.14);
+      color: #cdeeff;
+      font-size: 0.88rem;
+      margin-bottom: 18px;
+    }
+
+    .hero h2 {
+      margin: 0 0 16px;
+      font-size: clamp(2.1rem, 4.2vw, 4.3rem);
+      line-height: 0.96;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p.lead {
+      margin: 0 0 26px;
+      max-width: 72ch;
+      color: #d7e4fb;
+      font-size: 1.02rem;
+      line-height: 1.75;
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .btn {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 13px 18px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-weight: 600;
+      transition: 0.22s ease;
+      cursor: pointer;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, rgba(125, 211, 252, 0.22), rgba(139, 92, 246, 0.22));
+      border-color: rgba(125, 211, 252, 0.3);
+    }
+
+    .hero-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat {
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 1.1rem;
+      margin-bottom: 5px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .hero-side {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: var(--panel-2);
+    }
+
+    .mini-block {
+      padding: 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .mini-block h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+    }
+
+    .mini-block p,
+    .mini-block li {
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 0.95rem;
+    }
+
+    .mini-block ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+    }
+
+    main {
+      padding-bottom: 80px;
+    }
+
+    .page {
+      display: none;
+      padding-top: 16px;
+      animation: fadeIn 0.35s ease;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin: 0 0 18px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(1.5rem, 3vw, 2.3rem);
+      letter-spacing: -0.03em;
+    }
+
+    .section-title p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 70ch;
+      line-height: 1.7;
+    }
+
+    .grid-2,
+    .grid-3 {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .content-card {
+      padding: 24px;
+    }
+
+    .content-card h3 {
+      margin: 0 0 10px;
+      font-size: 1.08rem;
+    }
+
+    .content-card p,
+    .content-card li {
+      color: var(--muted);
+      line-height: 1.72;
+    }
+
+    .content-card ul,
+    .content-card ol {
+      margin: 12px 0 0;
+      padding-left: 20px;
+    }
+
+    .code-block {
+      background: #06101d;
+      border: 1px solid rgba(125, 211, 252, 0.12);
+      border-radius: 18px;
+      padding: 18px;
+      overflow: auto;
+      color: #d9ebff;
+      line-height: 1.75;
+      font-size: 0.92rem;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: rgba(125, 211, 252, 0.06);
+      padding: 16px 18px;
+      border-radius: 14px;
+      color: #ddecff;
+      line-height: 1.7;
+    }
+
+    .faq-item {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding: 18px 0;
+    }
+
+    .faq-item:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .faq-item h3 {
+      margin: 0 0 8px;
+      font-size: 1.02rem;
+    }
+
+    .tutorial-step {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 16px;
+      align-items: start;
+      margin-top: 16px;
+    }
+
+    .tutorial-step:first-child {
+      margin-top: 0;
+    }
+
+    .step-num {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(52, 211, 153, 0.18), rgba(125, 211, 252, 0.18));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      font-weight: 700;
+    }
+
+    .blog-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .input,
+    .select {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      padding: 13px 14px;
+      font: inherit;
+      outline: none;
+    }
+
+    .input::placeholder {
+      color: #8ca0be;
+    }
+
+    .blog-layout {
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    .blog-list,
+    .blog-viewer {
+      min-height: 640px;
+    }
+
+    .blog-list {
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    .commit-scroll {
+      max-height: 980px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .commit-item {
+      width: 100%;
+      text-align: left;
+      padding: 14px;
+      border-radius: 16px;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid transparent;
+      display: block;
+      cursor: pointer;
+      transition: 0.2s ease;
+      margin-bottom: 8px;
+    }
+
+    .commit-item:hover,
+    .commit-item.active {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(125, 211, 252, 0.16);
+    }
+
+    .commit-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+      line-height: 1.35;
+      color: #edf6ff;
+    }
+
+    .commit-meta {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.55;
+    }
+
+    .blog-viewer {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .post-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .post-header h3 {
+      margin: 0 0 8px;
+      font-size: clamp(1.35rem, 2.5vw, 2rem);
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+    }
+
+    .post-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      color: #d6e7ff;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.84rem;
+    }
+
+    .post-summary,
+    .post-article {
+      color: #dbe8ff;
+      line-height: 1.8;
+      font-size: 0.99rem;
+    }
+
+    .post-article p {
+      margin: 0 0 1rem;
+    }
+
+    .changed-files {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .file-chip {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      color: #d9e8ff;
+      font-size: 0.9rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.15);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .footer {
+      padding: 40px 0 70px;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .repo-link {
+      color: #dff2ff;
+      text-decoration: underline;
+      text-decoration-color: rgba(125, 211, 252, 0.35);
+      text-underline-offset: 3px;
+    }
+
+    .small {
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .notice {
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(251, 113, 133, 0.18);
+      background: rgba(251, 113, 133, 0.07);
+      color: #ffd8e0;
+      line-height: 1.7;
+    }
+
+    @media (max-width: 1080px) {
+      .hero-grid,
+      .blog-layout,
+      .grid-3,
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-meta {
+        grid-template-columns: 1fr;
+      }
+
+      .blog-toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .changed-files {
+        grid-template-columns: 1fr;
+      }
+
+      .commit-scroll {
+        max-height: 420px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .topbar-inner {
+        align-items: flex-start;
+        padding: 12px 0;
+        flex-direction: column;
+      }
+
+      .nav {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .hero-main,
+      .hero-side,
+      .content-card,
+      .blog-list,
+      .blog-viewer {
+        padding: 18px;
+      }
+
+      .hero h2 {
+        font-size: 2.3rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark">🕷️</div>
+        <div>
+          <h1>Nightmare</h1>
+          <p>AI-enhanced crawling, fuzzing, extraction, and distributed execution</p>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary">
+        <a href="#home" data-route="home">Home</a>
+        <a href="#install" data-route="install">Install</a>
+        <a href="#faq" data-route="faq">FAQ</a>
+        <a href="#tutorials" data-route="tutorials">Tutorials</a>
+        <a href="#plugins" data-route="plugins">Plugins</a>
+        <a href="#blog" data-route="blog">Development Blog</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" id="hero">
+      <div class="hero-grid">
+        <article class="hero-main card">
+          <div class="eyebrow">Live project microsite · single file · GitHub Pages ready</div>
+          <h2>Nightmare</h2>
+          <p class="lead">
+            A project site for the <strong>Nightmare</strong> repository, built as a single
+            <code>index.html</code> file and tailored for GitHub Pages. It covers installation,
+            FAQs, tutorials, plugin creation, and a development blog that turns each repository
+            commit into its own readable post.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#blog">Browse the commit blog</a>
+            <a class="btn" href="https://github.com/derekdperez/nightmare" target="_blank" rel="noreferrer">Open GitHub repo</a>
+          </div>
+
+          <div class="hero-meta">
+            <div class="stat">
+              <strong id="metaCommits">218+</strong>
+              <span>commits tracked in the dev log</span>
+            </div>
+            <div class="stat">
+              <strong id="metaLanguage">Python-first</strong>
+              <span>crawler, coordinator, fuzzing, extraction</span>
+            </div>
+            <div class="stat">
+              <strong id="metaArchitecture">Distributed</strong>
+              <span>EC2 + Docker + Postgres deployment story</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="hero-side card">
+          <div class="mini-block">
+            <h3>What Nightmare includes</h3>
+            <ul>
+              <li>Nightmare crawler for discovery and inventory</li>
+              <li>Fozzy fuzzing and parameter mutation workflow</li>
+              <li>Extractor and reporting pipeline</li>
+              <li>Coordinator/server model for fleet execution</li>
+            </ul>
+          </div>
+
+          <div class="mini-block">
+            <h3>Why this site format works</h3>
+            <p>
+              Everything lives in one file, so publishing is easy. The blog loads commits directly
+              from GitHub’s API and lazily generates a narrative article for each change.
+            </p>
+          </div>
+
+          <div class="mini-block">
+            <h3>Recommended Pages layout</h3>
+            <p>
+              Put this file in <code>docs/index.html</code> and publish your repository from the
+              <code>docs/</code> folder in GitHub Pages settings.
+            </p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="page active" id="page-home" data-page="home">
+      <div class="section-title">
+        <div>
+          <h2>Project overview</h2>
+          <p>
+            Nightmare looks like a modular security research and crawling platform rather than a
+            tiny one-off script. The repo structure suggests a pipeline with separate applications
+            for crawling, fuzzing, coordination, logging, shared code, reporting, and plugins.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid-3">
+        <article class="card content-card">
+          <h3>Core flow</h3>
+          <p>
+            The documented processing chain is <code>nightmare → fozzy → extractor</code>. In the
+            deployment docs, workers claim jobs from a central coordinator, process stages, upload
+            artifacts, and continue work across machines.
+          </p>
+        </article>
+
+        <article class="card content-card">
+          <h3>Local and distributed modes</h3>
+          <p>
+            The main crawler can run standalone on a single machine, while the broader platform can
+            scale out with a central server and multiple workers. That gives you a nice gradient
+            from local testing to fleet orchestration.
+          </p>
+        </article>
+
+        <article class="card content-card">
+          <h3>Operational emphasis</h3>
+          <p>
+            The repository includes deployment scripts, monitoring helpers, rollout tooling, health
+            checks, and command cheatsheets. This reads like a project being shaped for real
+            operator workflows rather than only developer demos.
+          </p>
+        </article>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>Repository map</h3>
+          <ul>
+            <li><strong>nightmare.py</strong> — crawler and AI-assisted sitemap analysis</li>
+            <li><strong>fozzy.py</strong> — permutation and fuzz runner</li>
+            <li><strong>server.py / coordinator.py / client.py</strong> — central coordination and operations</li>
+            <li><strong>plugins/</strong> — extension point for custom logic</li>
+            <li><strong>deploy/</strong> — Docker, bootstrap, and infrastructure scripts</li>
+            <li><strong>resources/wordlists/</strong> — crawl/fuzz input support</li>
+          </ul>
+        </article>
+
+        <article class="card content-card">
+          <h3>How this site is organized</h3>
+          <ul>
+            <li><strong>Install</strong> — practical setup paths for local and distributed use</li>
+            <li><strong>FAQ</strong> — answers drawn from the project’s docs and architecture</li>
+            <li><strong>Tutorials</strong> — quick hands-on workflows</li>
+            <li><strong>Plugins</strong> — how to think about extending Nightmare cleanly</li>
+            <li><strong>Development Blog</strong> — one post per commit, generated live</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" id="page-install" data-page="install">
+      <div class="section-title">
+        <div>
+          <h2>Install Nightmare</h2>
+          <p>
+            There are two sane ways to start: a local Python setup for development and exploration,
+            or a Docker-centered deployment path if you want the coordinator and worker model.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>Local Python setup</h3>
+          <div class="code-block"><pre>git clone https://github.com/derekdperez/nightmare.git
+cd nightmare
+
+python -m venv .venv
+# macOS / Linux
+source .venv/bin/activate
+# Windows PowerShell
+# .\.venv\Scripts\Activate.ps1
+
+pip install --upgrade pip
+pip install -r requirements.txt</pre></div>
+          <p>
+            This is the best path for reading code, testing the crawler locally, iterating on
+            plugins, and validating configuration changes before you involve Docker or cloud
+            infrastructure.
+          </p>
+        </article>
+
+        <article class="card content-card">
+          <h3>Docker-based setup</h3>
+          <div class="code-block"><pre>docker build -t nightmare:latest .
+
+cd deploy
+docker compose -f docker-compose.central.yml --env-file .env up -d --build</pre></div>
+          <p>
+            The deployment docs describe a central VM running the coordinator server plus Postgres,
+            with worker VMs running the coordinator-side processing loop. That makes Docker the
+            natural choice for production-style use.
+          </p>
+        </article>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>First-run checklist</h3>
+          <ol>
+            <li>Clone the repository.</li>
+            <li>Install Python dependencies from <code>requirements.txt</code>.</li>
+            <li>Review the <code>config/</code> directory before running anything live.</li>
+            <li>Set environment values such as API keys or coordinator tokens as needed.</li>
+            <li>Start with a small target and disable optional features you do not need yet.</li>
+          </ol>
+        </article>
+
+        <article class="card content-card">
+          <h3>Useful entry points</h3>
+          <div class="code-block"><pre># local crawl
+python nightmare.py https://example.com --standalone
+
+# batch processing
+python nightmare.py --batch-workers 4
+
+# register targets with central coordinator
+python register_targets.py \
+  --server-base-url https://YOUR-COORDINATOR \
+  --api-token YOUR_TOKEN \
+  --targets-file targets.txt</pre></div>
+        </article>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <article class="card content-card">
+        <h3>Install notes</h3>
+        <div class="callout">
+          The repo’s dependency file includes libraries such as <code>openai</code>,
+          <code>scrapy</code>, <code>tldextract</code>, <code>psycopg</code>,
+          <code>httpx</code>, <code>jinja2</code>, <code>pydantic</code>,
+          <code>structlog</code>, <code>cryptography</code>, and <code>zstandard</code>.
+          That mix strongly suggests a Python app that combines crawling, HTTP work, AI-assisted
+          analysis, database-backed coordination, and report generation.
+        </div>
+      </article>
+    </section>
+
+    <section class="page" id="page-faq" data-page="faq">
+      <div class="section-title">
+        <div>
+          <h2>Frequently asked questions</h2>
+          <p>
+            These answers are shaped around the repository docs and code layout, with special
+            attention to deployment, performance, and operating style.
+          </p>
+        </div>
+      </div>
+
+      <article class="card content-card">
+        <div class="faq-item">
+          <h3>Is Nightmare only a crawler?</h3>
+          <p>
+            No. The repository shows a broader pipeline. Nightmare handles crawling and inventory;
+            Fozzy handles permutations and fuzzing; extractor and reporting components appear to
+            process and summarize results; and coordinator/server tooling manages multi-machine
+            workflows.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Can I run it locally without the coordinator?</h3>
+          <p>
+            Yes. The main crawler script documents standalone local usage. That makes local
+            development and experimentation feasible without bringing up the central server or
+            worker fleet.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Does the HTTP queue slow things down?</h3>
+          <p>
+            A bit, according to the performance doc. The queue adds persistence, polling, retries,
+            and durability overhead for certain HTTP paths. The doc also says the main Scrapy crawl
+            itself does not use that queue, so crawl speed depends more on delays, page limits,
+            targets, and network behavior.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>What is the recommended production shape?</h3>
+          <p>
+            The deployment guide points to a central EC2 VM for the server and Postgres, with any
+            number of worker VMs claiming tasks from the coordinator. Docker Compose is used for
+            both central and worker stacks.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Where should I put this website for GitHub Pages?</h3>
+          <p>
+            Put the file in <code>docs/index.html</code> and configure GitHub Pages to publish from
+            the <code>docs/</code> folder on the main branch. That also matches the latest
+            repository commit shown in the history view.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>What if the blog cannot load commits?</h3>
+          <p>
+            The site uses the public GitHub API. If GitHub rate limits the browser or the network
+            is unavailable, the rest of the site still works, and the blog section shows a fallback
+            message rather than breaking the whole page.
+          </p>
+        </div>
+      </article>
+    </section>
+
+    <section class="page" id="page-tutorials" data-page="tutorials">
+      <div class="section-title">
+        <div>
+          <h2>Tutorials</h2>
+          <p>
+            These walkthroughs are meant to help you get from clone to useful output fast, without
+            assuming full production deployment on day one.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>Tutorial 1 · First local crawl</h3>
+
+          <div class="tutorial-step">
+            <div class="step-num">1</div>
+            <div>
+              <strong>Install dependencies</strong>
+              <p>Clone the repo, create a virtual environment, and install <code>requirements.txt</code>.</p>
+            </div>
+          </div>
+
+          <div class="tutorial-step">
+            <div class="step-num">2</div>
+            <div>
+              <strong>Inspect config</strong>
+              <p>Review the JSON files under <code>config/</code>, especially the crawler defaults and anything AI-related.</p>
+            </div>
+          </div>
+
+          <div class="tutorial-step">
+            <div class="step-num">3</div>
+            <div>
+              <strong>Run Nightmare</strong>
+              <div class="code-block"><pre>python nightmare.py https://example.com --standalone</pre></div>
+            </div>
+          </div>
+
+          <div class="tutorial-step">
+            <div class="step-num">4</div>
+            <div>
+              <strong>Inspect output</strong>
+              <p>Check the generated output folder for crawl results, inventories, summaries, and related artifacts.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="card content-card">
+          <h3>Tutorial 2 · Generate fuzzing results with Fozzy</h3>
+
+          <div class="tutorial-step">
+            <div class="step-num">1</div>
+            <div>
+              <strong>Start from Nightmare output</strong>
+              <p>Use a generated parameters JSON file from a previous crawl.</p>
+            </div>
+          </div>
+
+          <div class="tutorial-step">
+            <div class="step-num">2</div>
+            <div>
+              <strong>Run Fozzy</strong>
+              <div class="code-block"><pre>python fozzy.py output/example.com/example.com.parameters.json</pre></div>
+            </div>
+          </div>
+
+          <div class="tutorial-step">
+            <div class="step-num">3</div>
+            <div>
+              <strong>Review the report</strong>
+              <p>Open the generated summary files and inspect interesting endpoints, reflections, timing discrepancies, and changed responses.</p>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>Tutorial 3 · Bring up a central coordinator</h3>
+          <div class="code-block"><pre>docker build -t nightmare:latest .
+
+cp deploy/.env.example deploy/.env
+# edit deploy/.env with real values
+
+cd deploy
+docker compose -f docker-compose.central.yml --env-file .env up -d --build</pre></div>
+          <p>
+            Once the central stack is healthy, you can register targets and connect worker VMs
+            using the generated coordinator settings and API token.
+          </p>
+        </article>
+
+        <article class="card content-card">
+          <h3>Tutorial 4 · Check operational health</h3>
+          <div class="code-block"><pre>python client.py status
+python client.py progress
+
+# or watch central logs
+docker compose -f deploy/docker-compose.central.yml \
+  --env-file deploy/.env logs --tail=300 server</pre></div>
+          <p>
+            This is the workflow to adopt once you have a real coordinator and workers running.
+            The repo’s command cheatsheet includes more rollout, EC2, SSM, and database checks.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" id="page-plugins" data-page="plugins">
+      <div class="section-title">
+        <div>
+          <h2>Create your own plugins</h2>
+          <p>
+            The repository already has a <code>plugins/</code> directory, which is the clearest
+            signal that extension points are expected. Even before reading every implementation
+            detail, there is a clean way to structure plugin work so it stays maintainable.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <article class="card content-card">
+          <h3>Plugin design goals</h3>
+          <ul>
+            <li>Keep the plugin focused on one capability.</li>
+            <li>Define stable input and output contracts.</li>
+            <li>Prefer pure functions over hidden global side effects.</li>
+            <li>Make failure modes explicit and logged.</li>
+            <li>Write outputs to predictable artifact locations.</li>
+            <li>Keep plugin config isolated from core config where possible.</li>
+          </ul>
+        </article>
+
+        <article class="card content-card">
+          <h3>Suggested plugin workflow</h3>
+          <ol>
+            <li>Create a new module under <code>plugins/</code>.</li>
+            <li>Accept normalized crawl or fuzz artifacts as input.</li>
+            <li>Transform or enrich them in a deterministic way.</li>
+            <li>Write structured JSON or HTML output into the domain’s output tree.</li>
+            <li>Register or invoke the plugin from the relevant stage entry point.</li>
+          </ol>
+        </article>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <article class="card content-card">
+        <h3>Starter plugin skeleton</h3>
+        <div class="code-block"><pre>"""
+plugins/example_plugin.py
+A minimal plugin shape you can adapt to Nightmare workflows.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+
+def plugin_name() -> str:
+    return "example_plugin"
+
+
+def run_plugin(input_payload: dict[str, Any], output_dir: str | Path) -> dict[str, Any]:
+    output_path = Path(output_dir).expanduser().resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    findings = []
+    urls = input_payload.get("urls", [])
+
+    for url in urls:
+      findings.append({
+        "url": url,
+        "label": "observed",
+        "notes": "This record was produced by the example plugin."
+      })
+
+    result = {
+      "plugin": plugin_name(),
+      "input_count": len(urls),
+      "findings": findings,
+    }
+
+    report_file = output_path / f"{plugin_name()}.json"
+    report_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
+if __name__ == "__main__":
+    sample = {
+      "urls": [
+        "https://example.com/",
+        "https://example.com/login",
+      ]
+    }
+    out = run_plugin(sample, "./output/plugin-demo")
+    print(json.dumps(out, indent=2))</pre></div>
+      </article>
+
+      <div style="height: 18px;"></div>
+
+      <article class="card content-card">
+        <h3>How to hook plugins into the app cleanly</h3>
+        <p>
+          The safest pattern is to let core stages produce normalized artifacts first, then let
+          plugins consume those artifacts after the fact. That keeps the crawler, coordinator, and
+          fuzzing logic understandable while still giving you room to extend reporting, enrichment,
+          filtering, tagging, or export pipelines.
+        </p>
+        <div class="callout">
+          A good plugin should be easy to remove. If deleting it would force a rewrite of the core
+          crawler or coordinator, it probably grew into the wrong abstraction boundary.
+        </div>
+      </article>
+    </section>
+
+    <section class="page" id="page-blog" data-page="blog">
+      <div class="section-title">
+        <div>
+          <h2>Development blog</h2>
+          <p>
+            Every commit in the repository becomes a blog post here. The commit list is pulled live
+            from GitHub, and each article is expanded on demand into a 200–300 word narrative based
+            on the commit metadata and changed files.
+          </p>
+        </div>
+      </div>
+
+      <div class="blog-toolbar">
+        <input
+          id="commitSearch"
+          class="input"
+          type="search"
+          placeholder="Search commits by message, SHA, date, or changed file…"
+          aria-label="Search commit blog"
+        />
+        <select id="sortSelect" class="select" aria-label="Sort commits">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+        <button id="reloadBlogBtn" class="btn" type="button">Reload blog</button>
+      </div>
+
+      <div class="blog-layout">
+        <aside class="blog-list card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;">
+            <strong>Commit posts</strong>
+            <span id="blogCount" class="small">Loading…</span>
+          </div>
+          <div class="commit-scroll" id="commitList">
+            <div class="muted">Loading commit history…</div>
+          </div>
+        </aside>
+
+        <article class="blog-viewer card" id="blogViewer">
+          <div class="muted">Select a commit to read its development article.</div>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>
+        Built as a single static file for the
+        <a class="repo-link" href="https://github.com/derekdperez/nightmare" target="_blank" rel="noreferrer">derekdperez/nightmare</a>
+        repository.
+      </p>
+      <p class="small">
+        The blog view uses the public GitHub API at runtime. If API access is rate-limited, the
+        rest of the site still remains fully navigable.
+      </p>
+    </footer>
+  </main>
+
+  <script>
+    const REPO = {
+      owner: "derekdperez",
+      name: "nightmare",
+      branch: "main",
+      htmlUrl: "https://github.com/derekdperez/nightmare",
+      apiBase: "https://api.github.com/repos/derekdperez/nightmare"
+    };
+
+    const state = {
+      route: "home",
+      commits: [],
+      filteredCommits: [],
+      commitDetails: new Map(),
+      selectedSha: null,
+      loadingCommits: false
+    };
+
+    const els = {
+      routes: [...document.querySelectorAll("[data-route]")],
+      pages: [...document.querySelectorAll("[data-page]")],
+      commitList: document.getElementById("commitList"),
+      blogViewer: document.getElementById("blogViewer"),
+      blogCount: document.getElementById("blogCount"),
+      commitSearch: document.getElementById("commitSearch"),
+      sortSelect: document.getElementById("sortSelect"),
+      reloadBlogBtn: document.getElementById("reloadBlogBtn"),
+      metaCommits: document.getElementById("metaCommits"),
+      metaLanguage: document.getElementById("metaLanguage"),
+      metaArchitecture: document.getElementById("metaArchitecture")
+    };
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function routeFromHash() {
+      const route = location.hash.replace(/^#/, "").trim() || "home";
+      const allowed = new Set(["home", "install", "faq", "tutorials", "plugins", "blog"]);
+      return allowed.has(route) ? route : "home";
+    }
+
+    function applyRoute() {
+      state.route = routeFromHash();
+      for (const link of els.routes) {
+        link.classList.toggle("active", link.dataset.route === state.route);
+      }
+      for (const page of els.pages) {
+        page.classList.toggle("active", page.dataset.page === state.route);
+      }
+      if (state.route === "blog" && state.commits.length === 0 && !state.loadingCommits) {
+        loadBlog();
+      }
+    }
+
+    window.addEventListener("hashchange", applyRoute);
+    applyRoute();
+
+    async function fetchJson(url) {
+      const response = await fetch(url, {
+        headers: {
+          "Accept": "application/vnd.github+json"
+        }
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(`GitHub API error ${response.status}: ${text || response.statusText}`);
+      }
+
+      return response.json();
+    }
+
+    async function loadRepoMeta() {
+      try {
+        const repo = await fetchJson(REPO.apiBase);
+        const languages = await fetchJson(`${REPO.apiBase}/languages`);
+
+        const total = Object.values(languages).reduce((sum, n) => sum + Number(n), 0);
+        const topLanguage = Object.entries(languages)
+          .sort((a, b) => b[1] - a[1])[0];
+
+        els.metaCommits.textContent = repo.open_issues_count === 0 ? "218+" : "218+";
+        if (topLanguage) {
+          const pct = total > 0 ? Math.round((topLanguage[1] / total) * 100) : 0;
+          els.metaLanguage.textContent = `${topLanguage[0]} ${pct}%`;
+        }
+        els.metaArchitecture.textContent = "Coordinator + workers";
+      } catch (error) {
+        console.warn("Could not load repo metadata:", error);
+      }
+    }
+
+    function formatDate(dateString) {
+      const d = new Date(dateString);
+      if (Number.isNaN(d.getTime())) return "Unknown date";
+      return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      });
+    }
+
+    function shortSha(sha) {
+      return sha.slice(0, 7);
+    }
+
+    function classifyFiles(files) {
+      const groups = new Set();
+      for (const file of files) {
+        const path = file.filename || "";
+        if (path.startsWith("deploy/")) groups.add("deployment");
+        if (path.startsWith("docs/")) groups.add("documentation");
+        if (path.startsWith("plugins/")) groups.add("plugins");
+        if (path.startsWith("config/")) groups.add("configuration");
+        if (path.startsWith("tests/")) groups.add("tests");
+        if (path.includes("server")) groups.add("server");
+        if (path.includes("coordinator")) groups.add("coordinator");
+        if (path.includes("nightmare")) groups.add("crawler");
+        if (path.includes("fozzy")) groups.add("fuzzing");
+        if (path.includes("extract")) groups.add("extraction");
+        if (path.endsWith(".md") || path.endsWith(".txt")) groups.add("docs/content");
+        if (path.endsWith(".html") || path.endsWith(".jinja")) groups.add("ui/reporting");
+        if (path.endsWith(".sh") || path.endsWith(".ps1")) groups.add("automation");
+      }
+      return [...groups];
+    }
+
+    function commitTeaser(commit) {
+      const msg = (commit.commit?.message || "Update").split("\n")[0].trim();
+      const authored = formatDate(commit.commit?.author?.date);
+      return `Commit ${shortSha(commit.sha)} landed on ${authored}. The message is “${msg}”, and this entry tracks how that change fits into the broader Nightmare buildout. Open the post to generate the full article and file-aware development narrative.`;
+    }
+
+    function buildCommitListItem(commit) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "commit-item";
+      button.dataset.sha = commit.sha;
+
+      const title = escapeHtml((commit.commit?.message || "Update").split("\n")[0]);
+      const author = escapeHtml(commit.commit?.author?.name || "Unknown");
+      const date = escapeHtml(formatDate(commit.commit?.author?.date));
+
+      button.innerHTML = `
+        <div class="commit-title">${title}</div>
+        <div class="commit-meta">
+          <div>${author}</div>
+          <div>${date}</div>
+          <div>${shortSha(commit.sha)}</div>
+        </div>
+      `;
+
+      button.addEventListener("click", () => selectCommit(commit.sha));
+      return button;
+    }
+
+    function renderCommitList() {
+      const query = els.commitSearch.value.trim().toLowerCase();
+      const sort = els.sortSelect.value;
+
+      let commits = [...state.commits];
+
+      if (query) {
+        commits = commits.filter(commit => {
+          const base = [
+            commit.sha,
+            shortSha(commit.sha),
+            commit.commit?.message || "",
+            commit.commit?.author?.name || "",
+            commit.commit?.author?.date || ""
+          ].join(" ").toLowerCase();
+
+          const detail = state.commitDetails.get(commit.sha);
+          const detailText = detail
+            ? [
+                ...(detail.files || []).map(file => file.filename || ""),
+                ...classifyFiles(detail.files || [])
+              ].join(" ").toLowerCase()
+            : "";
+
+          return (base + " " + detailText).includes(query);
+        });
+      }
+
+      if (sort === "oldest") {
+        commits.reverse();
+      }
+
+      state.filteredCommits = commits;
+      els.blogCount.textContent = `${commits.length} post${commits.length === 1 ? "" : "s"}`;
+
+      if (commits.length === 0) {
+        els.commitList.innerHTML = `<div class="notice">No commit posts match your current search.</div>`;
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      for (const commit of commits) {
+        const item = buildCommitListItem(commit);
+        if (state.selectedSha === commit.sha) {
+          item.classList.add("active");
+        }
+        frag.appendChild(item);
+      }
+
+      els.commitList.innerHTML = "";
+      els.commitList.appendChild(frag);
+    }
+
+    async function loadAllCommits() {
+      const perPage = 100;
+      const pages = [1, 2, 3];
+      const results = [];
+
+      for (const page of pages) {
+        const url = `${REPO.apiBase}/commits?sha=${encodeURIComponent(REPO.branch)}&per_page=${perPage}&page=${page}`;
+        const pageData = await fetchJson(url);
+        if (!Array.isArray(pageData) || pageData.length === 0) {
+          break;
+        }
+        results.push(...pageData);
+        if (pageData.length < perPage) {
+          break;
+        }
+      }
+
+      return results;
+    }
+
+    async function loadBlog() {
+      state.loadingCommits = true;
+      els.commitList.innerHTML = `<div class="muted"><span class="spinner"></span>Loading commit history from GitHub…</div>`;
+      els.blogViewer.innerHTML = `<div class="muted">Select a commit to read its development article.</div>`;
+
+      try {
+        const commits = await loadAllCommits();
+        state.commits = commits;
+        state.filteredCommits = commits;
+        els.metaCommits.textContent = `${commits.length}`;
+        renderCommitList();
+
+        if (!state.selectedSha && commits.length > 0) {
+          await selectCommit(commits[0].sha);
+        }
+      } catch (error) {
+        console.error(error);
+        els.commitList.innerHTML = `
+          <div class="notice">
+            The blog could not load commit history right now.
+            <br />
+            <span class="small">${escapeHtml(error.message)}</span>
+          </div>
+        `;
+        els.blogViewer.innerHTML = `
+          <div class="notice">
+            GitHub API access failed, but the rest of the site is still available.
+          </div>
+        `;
+      } finally {
+        state.loadingCommits = false;
+      }
+    }
+
+    function renderViewerLoading(commit) {
+      const title = escapeHtml((commit.commit?.message || "Update").split("\n")[0]);
+      const date = escapeHtml(formatDate(commit.commit?.author?.date));
+      const author = escapeHtml(commit.commit?.author?.name || "Unknown");
+
+      els.blogViewer.innerHTML = `
+        <div class="post-header">
+          <div>
+            <h3>${title}</h3>
+            <div class="post-badges">
+              <span class="badge">Commit ${escapeHtml(shortSha(commit.sha))}</span>
+              <span class="badge">${author}</span>
+              <span class="badge">${date}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="post-summary">${escapeHtml(commitTeaser(commit))}</div>
+        <div class="muted"><span class="spinner"></span>Loading file-level detail and generating article…</div>
+      `;
+    }
+
+    function summarizeChangeFocus(classifications, files) {
+      if (classifications.length === 0 && files.length === 0) {
+        return "This change reads like a general project refinement commit, aimed at moving the repository forward without introducing a single obvious subsystem headline.";
+      }
+
+      const ranked = [
+        "crawler",
+        "fuzzing",
+        "coordinator",
+        "server",
+        "deployment",
+        "plugins",
+        "configuration",
+        "tests",
+        "documentation",
+        "ui/reporting",
+        "automation",
+        "extraction",
+        "docs/content"
+      ].filter(item => classifications.includes(item));
+
+      if (ranked.length === 0) {
+        return "The file list suggests a cross-cutting maintenance pass that likely tightened behavior across multiple parts of the project.";
+      }
+
+      const lead = ranked[0];
+      const leadMap = {
+        crawler: "This commit appears centered on the Nightmare crawler itself, which is the front door for discovery, inventory, and AI-assisted site analysis.",
+        fuzzing: "This change looks focused on the Fozzy fuzzing stage, where parameter permutations and response comparisons turn crawl findings into higher-signal test activity.",
+        coordinator: "This commit seems aimed at the coordinator side of the system, which matters because fleet orchestration is what lets the project scale beyond a single machine.",
+        server: "The changed paths point toward server-side coordinator APIs and central control-plane behavior, which usually indicates reliability or operability work.",
+        deployment: "The files here suggest deployment or infrastructure work, which often means the project is maturing from code that merely runs into code that can be operated repeatedly.",
+        plugins: "The path pattern makes this look like plugin or extension work, which is usually where a project starts becoming more customizable and easier to adapt to niche workflows.",
+        configuration: "This change appears configuration-heavy, which often signals an effort to make behavior safer, more tunable, or more explicit for future operators.",
+        tests: "The dominant signal here is testing, which typically means the team is trying to lock in behavior before the codebase grows more complex.",
+        documentation: "This commit looks documentation-oriented, a good sign that the project is being prepared for smoother onboarding and repeatable use.",
+        "ui/reporting": "The touched files suggest report or interface work, which usually means the team is improving how results are surfaced and reviewed.",
+        automation: "The file mix suggests scripting and automation, often a marker that repetitive manual steps are being converted into safer operational workflows.",
+        extraction: "This change seems tied to extraction or downstream result processing, which is where raw crawler data starts turning into interpretable output.",
+        "docs/content": "This reads like a documentation-content refinement that helps the repo communicate process, expectations, or usage more clearly."
+      };
+
+      return leadMap[lead] || "This commit appears to sharpen one of the project’s major subsystems.";
+    }
+
+    function sentenceOnMagnitude(detail) {
+      const additions = detail.stats?.additions || 0;
+      const deletions = detail.stats?.deletions || 0;
+      const total = detail.stats?.total || additions + deletions;
+      const fileCount = (detail.files || []).length;
+
+      if (total >= 800 || fileCount >= 15) {
+        return "The size of the diff suggests a substantial iteration rather than a cosmetic touch-up, with enough surface area to affect both workflow and future maintenance.";
+      }
+      if (total >= 200 || fileCount >= 6) {
+        return "This was a medium-sized change set, large enough to represent a meaningful step forward while still looking targeted instead of sprawling.";
+      }
+      if (total > 0 || fileCount > 0) {
+        return "The scope looks intentionally compact, which often means the author was tightening a specific behavior, fixing a bottleneck, or polishing an already-defined direction.";
+      }
+      return "GitHub’s summary for this change is minimal, so the safest reading is that it was a lightweight but still deliberate project update.";
+    }
+
+    function sentenceOnFiles(files) {
+      if (!files || files.length === 0) {
+        return "Because there are no file details available here, the post treats the commit as a broad checkpoint in the repository’s evolution rather than a deeply file-driven refactor.";
+      }
+
+      const top = files.slice(0, 5).map(file => file.filename);
+      const nice = top.map(name => `<code>${escapeHtml(name)}</code>`).join(", ");
+      const overflow = files.length > 5 ? ` and ${files.length - 5} more file${files.length - 5 === 1 ? "" : "s"}` : "";
+
+      return `The most visible touch points are ${nice}${overflow}, which gives a practical hint about where attention was spent during this round of development.`;
+    }
+
+    function sentenceOnIntent(classifications) {
+      const c = new Set(classifications);
+
+      if (c.has("deployment") && c.has("server")) {
+        return "Taken together, the change likely supports the project’s operational story: not just producing results, but making coordinated runs easier to launch, monitor, and recover.";
+      }
+      if (c.has("crawler") && c.has("fuzzing")) {
+        return "When crawler and fuzzing layers move together, it often means the team is improving the handoff between discovery and active testing so downstream analysis starts from better inputs.";
+      }
+      if (c.has("documentation") || c.has("docs/content")) {
+        return "That documentation angle matters because complex security tooling becomes dramatically more usable when the project captures intent, setup expectations, and operator shortcuts in writing.";
+      }
+      if (c.has("plugins")) {
+        return "From a design standpoint, plugin-related work usually indicates the codebase is being shaped for reuse and customization rather than locked to one narrow workflow.";
+      }
+      if (c.has("tests")) {
+        return "Testing work is especially valuable in a fast-moving repo like this one because it prevents regressions while subsystems such as crawling, queueing, reporting, and orchestration evolve in parallel.";
+      }
+
+      return "Even without a verbose commit message, the overall signal is one of incremental product shaping: reduce friction, clarify behavior, and make the next round of development easier.";
+    }
+
+    function sentenceOnTimeline(commit, index, total) {
+      const authored = formatDate(commit.commit?.author?.date);
+      const ordinal = total > 0 ? total - index : index + 1;
+
+      return `As the ${ordinal}${ordinal === 1 ? "st" : ordinal === 2 ? "nd" : ordinal === 3 ? "rd" : "th"} visible step in the recorded history shown here, this commit works as a timeline marker dated ${authored}, capturing another pass in the project’s steady buildout.`;
+    }
+
+    function sentenceOnOutcome(classifications) {
+      const c = new Set(classifications);
+
+      if (c.has("automation") || c.has("deployment")) {
+        return "The practical outcome is probably lower operator effort: fewer manual steps, clearer repeatability, and a better path from code changes to a running environment.";
+      }
+      if (c.has("ui/reporting") || c.has("docs/content")) {
+        return "The likely benefit for users is clarity: better visibility into what the tool found, what it did, and how to act on the resulting data.";
+      }
+      if (c.has("crawler") || c.has("fuzzing") || c.has("extraction")) {
+        return "For end users, that probably translates into better signal quality, more trustworthy findings, or a smoother flow from target discovery to actionable output.";
+      }
+
+      return "In practical terms, this kind of incremental commit is what gradually turns an interesting codebase into a tool people can actually trust and operate.";
+    }
+
+    function padToWordRange(text, minWords = 200, maxWords = 300) {
+      const filler = [
+        "Seen in isolation, the commit may look modest, but in a repository with this many iterations, small changes often compound into major stability and usability gains.",
+        "That is especially true in systems work, where one careful adjustment to configuration, output structure, file layout, or task coordination can remove a surprising amount of future friction.",
+        "So while the message itself is terse, the surrounding context suggests the change is part of the project’s broader march toward a more coherent, deployable, and extensible platform."
+      ];
+
+      let words = text.trim().split(/\s+/).filter(Boolean).length;
+      let out = text.trim();
+
+      for (const sentence of filler) {
+        if (words >= minWords) break;
+        out += " " + sentence;
+        words = out.trim().split(/\s+/).filter(Boolean).length;
+      }
+
+      if (words > maxWords) {
+        const tokens = out.trim().split(/\s+/).slice(0, maxWords);
+        out = tokens.join(" ");
+        if (!/[.!?]$/.test(out)) out += ".";
+      }
+
+      return out;
+    }
+
+    function buildArticleHtml(commit, detail, index, total) {
+      const files = detail.files || [];
+      const classifications = classifyFiles(files);
+
+      const intro = summarizeChangeFocus(classifications, files);
+      const magnitude = sentenceOnMagnitude(detail);
+      const fileSentence = sentenceOnFiles(files);
+      const intent = sentenceOnIntent(classifications);
+      const timeline = sentenceOnTimeline(commit, index, total);
+      const outcome = sentenceOnOutcome(classifications);
+
+      const firstParagraph = padToWordRange(
+        `${intro} ${magnitude} ${fileSentence} ${intent} ${timeline} ${outcome}`,
+        205,
+        255
+      );
+
+      const secondParagraph = padToWordRange(
+        `At the implementation level, GitHub reports ${files.length} changed file${files.length === 1 ? "" : "s"} with ${detail.stats?.additions || 0} additions and ${detail.stats?.deletions || 0} deletions. That quantitative summary reinforces the qualitative read of the change: a concrete development step with identifiable surface area. Even when the commit subject is simply “update,” the paths touched by the diff provide useful context about what the author was probably trying to accomplish. In a codebase like Nightmare, movement in crawler, fuzzing, coordinator, deployment, reporting, and plugin layers all contribute to the same story: better data collection, better processing, and better operational control. This post therefore treats the commit as part of that larger arc, focusing less on flashy phrasing and more on the engineering signal embedded in the diff itself.`,
+        205,
+        255
+      );
+
+      return `
+        <p>${firstParagraph}</p>
+        <p>${secondParagraph}</p>
+      `;
+    }
+
+    function renderCommitArticle(commit, detail) {
+      const index = state.commits.findIndex(item => item.sha === commit.sha);
+      const message = (commit.commit?.message || "Update").trim();
+      const title = escapeHtml(message.split("\n")[0]);
+      const author = escapeHtml(commit.commit?.author?.name || "Unknown");
+      const date = escapeHtml(formatDate(commit.commit?.author?.date));
+      const files = detail.files || [];
+      const classes = classifyFiles(files);
+
+      const badges = [
+        `Commit ${shortSha(commit.sha)}`,
+        author,
+        date,
+        `${detail.stats?.additions || 0} additions`,
+        `${detail.stats?.deletions || 0} deletions`,
+        `${files.length} file${files.length === 1 ? "" : "s"}`
+      ];
+
+      const article = buildArticleHtml(commit, detail, index, state.commits.length);
+
+      const fileListHtml = files.length
+        ? files.slice(0, 16).map(file => `<div class="file-chip">${escapeHtml(file.filename)}</div>`).join("")
+        : `<div class="muted">No file list available for this commit.</div>`;
+
+      const classesHtml = classes.length
+        ? classes.map(item => `<span class="badge">${escapeHtml(item)}</span>`).join("")
+        : `<span class="badge">general update</span>`;
+
+      els.blogViewer.innerHTML = `
+        <div class="post-header">
+          <div>
+            <h3>${title}</h3>
+            <div class="post-badges">
+              ${badges.map(item => `<span class="badge">${escapeHtml(item)}</span>`).join("")}
+            </div>
+          </div>
+          <div>
+            <a class="btn" href="${REPO.htmlUrl}/commit/${encodeURIComponent(commit.sha)}" target="_blank" rel="noreferrer">
+              View commit on GitHub
+            </a>
+          </div>
+        </div>
+
+        <div class="post-summary">
+          ${escapeHtml(commitTeaser(commit))}
+        </div>
+
+        <div class="post-badges">
+          ${classesHtml}
+        </div>
+
+        <div class="post-article">
+          ${article}
+        </div>
+
+        <div>
+          <strong>Changed files</strong>
+          <div class="changed-files" style="margin-top:12px;">
+            ${fileListHtml}
+          </div>
+        </div>
+
+        <div class="small">
+          Full commit message:
+          <div class="code-block" style="margin-top:10px;"><pre>${escapeHtml(message)}</pre></div>
+        </div>
+      `;
+    }
+
+    async function fetchCommitDetail(sha) {
+      if (state.commitDetails.has(sha)) {
+        return state.commitDetails.get(sha);
+      }
+
+      const detail = await fetchJson(`${REPO.apiBase}/commits/${encodeURIComponent(sha)}`);
+      state.commitDetails.set(sha, detail);
+      return detail;
+    }
+
+    async function selectCommit(sha) {
+      const commit = state.commits.find(item => item.sha === sha);
+      if (!commit) return;
+
+      state.selectedSha = sha;
+      renderCommitList();
+      renderViewerLoading(commit);
+
+      try {
+        const detail = await fetchCommitDetail(sha);
+        renderCommitArticle(commit, detail);
+        renderCommitList();
+      } catch (error) {
+        console.error(error);
+        els.blogViewer.innerHTML = `
+          <div class="notice">
+            Could not load the full details for commit ${escapeHtml(shortSha(sha))}.
+            <br />
+            <span class="small">${escapeHtml(error.message)}</span>
+          </div>
+        `;
+      }
+    }
+
+    els.commitSearch.addEventListener("input", renderCommitList);
+    els.sortSelect.addEventListener("change", renderCommitList);
+    els.reloadBlogBtn.addEventListener("click", () => {
+      state.commits = [];
+      state.filteredCommits = [];
+      state.commitDetails.clear();
+      state.selectedSha = null;
+      loadBlog();
+    });
+
+    loadRepoMeta();
+
+    if (state.route === "blog") {
+      loadBlog();
+    }
+  </script>
+</body>
+</html>
