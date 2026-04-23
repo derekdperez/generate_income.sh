@@ -19,3 +19,6 @@
 - Confirm whether Nightmare itself should also move into the workflow definition model (currently still uses coordinator target queue semantics).
 - Current `nightmare_*` plugins are artifact-gate milestones (not direct crawler subprocess steps). Confirm whether these should become active execution plugins with their own resumable runtime checkpoints.
 - Confirm whether manual reset API should support partial reset modes (preserve attempt_count/checkpoint) in addition to current hard reset-to-pending behavior.
+
+- Confirm whether `config/coordinator.json` should be switched to `workflows/run-recon.workflow.json` by default, or remain opt-in via `config/coordinator.run-recon.json`.
+- Confirm whether Sublist3r is guaranteed installed on worker images; current implementation falls back to passive crt.sh enumeration when Sublist3r invocation fails.

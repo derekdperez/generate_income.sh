@@ -17,3 +17,6 @@
 - Add guarded exception handling around Auth0r POST handlers in `server.py` (`/api/coord/auth0r/profile/save`, `/identity/save`, etc.) so runtime store errors return structured JSON 500s instead of browser-level fetch failures.
 - Add dedicated integration tests for new workflow plugin APIs/endpoints (`stage/claim-next`, `stage/progress`, `stage/reset`) including workflow_id-scoped behavior.
 - Add crash-handoff resume tests that verify checkpoint/progress continuity across worker interruption and re-claim for each legacy plugin adapter (`fozzy`, `extractor`, `auth0r`).
+
+- Add targeted coordinator unit tests for recon plugin runtime methods (subdomain probe resume, per-subdomain spider resume, completion-flag artifact emission).
+- Add deploy bootstrap check/install for Sublist3r so active enumeration path is deterministic across fresh workers.

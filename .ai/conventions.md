@@ -330,3 +330,14 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Workflow timeline convention: lifecycle event views in `/workflows` should use `/api/coord/events` with `event_type=workflow.task.` and apply domain/workflow/plugin filtering in UI to preserve backend query compatibility.
 - Schema bootstrap compatibility convention: `CREATE TABLE IF NOT EXISTS` bootstrap blocks must not reference columns that may only exist after migrations on legacy tables; workflow-specific keys/indices belong in post-bootstrap migration statements.
 - Migration transaction convention: schema migration statements should be applied as independently committed units (with per-statement rollback on failure) to prevent one failing migration from undoing previously successful schema upgrades.
+
+- Recon plugin artifact convention:
+  - Progress artifact type: `<plugin_name>_progress_json`
+  - Completion artifact type: `<plugin_name>_complete_flag`
+  - Recon filesystem root per domain: `output/<root_domain>/recon/`
+- Recon workflow convention:
+  - `workflows/run-recon.workflow.json` defines plugin order and data prerequisites.
+  - `config/coordinator.run-recon.json` is the opt-in runtime profile for workflow-only plugin execution.
+- Spider plugin execution convention:
+  - Use `nightmare.py --resume` per accessible subdomain seed and skip already completed seed runs based on plugin progress file state.
+- Recon extractor convention: do not depend on `fozzy_results_zip`; scan `output/<root_domain>` files directly with high-value rule list and emit `extractor_summary_json`/`extractor_matches_zip` compatibility artifacts.

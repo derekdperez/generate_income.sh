@@ -1,0 +1,256 @@
+{
+  "schema_version": "2.0.0",
+  "workflow_type": "coordinator_plugin_scheduler",
+  "workflow_id": "run-recon",
+  "description": "Run recon tasks with resumable plugin stages: subdomain enumeration, spider methods, and high-value extraction.",
+  "plugins": [
+    {
+      "name": "recon_subdomain_enumeration",
+      "display_name": "Recon Subdomain Enumeration",
+      "description": "Enumerate subdomains with Sublist3r and verify reachable hosts for crawl seeding.",
+      "handler": "recon_subdomain_enumeration",
+      "plugin_name": "recon_subdomain_enumeration",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "target_statuses": [
+          "pending",
+          "running",
+          "completed"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {},
+      "outputs": {
+        "artifacts": [
+          "recon_subdomains_json",
+          "recon_subdomain_enumeration_progress_json",
+          "recon_subdomain_enumeration_complete_flag"
+        ]
+      },
+      "parameters": {
+        "sublist3r_command": "sublist3r",
+        "sublist3r_extra_args": [],
+        "allow_passive_fallback": true,
+        "probe_timeout_seconds": 8.0,
+        "probe_verify_tls": true,
+        "max_request_log_entries": 4000
+      }
+    },
+    {
+      "name": "recon_spider_source_tags",
+      "display_name": "Recon Spider Source Tags",
+      "description": "Run Nightmare crawl/resume for source-tag discovery paths.",
+      "handler": "recon_spider",
+      "plugin_name": "recon_spider_source_tags",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "recon_subdomain_enumeration_complete_flag"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {
+        "artifacts_all": [
+          "recon_subdomains_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": [
+          "recon_spider_source_tags_progress_json",
+          "recon_spider_source_tags_complete_flag",
+          "nightmare_session_json",
+          "nightmare_requests_json",
+          "nightmare_url_inventory_json",
+          "nightmare_source_of_truth_json"
+        ]
+      },
+      "parameters": {
+        "no_ai": true,
+        "force_wordlist": false,
+        "verify_urls": true,
+        "max_pages": 5000,
+        "require_empty_frontier": true
+      }
+    },
+    {
+      "name": "recon_spider_script_links",
+      "display_name": "Recon Spider Script Links",
+      "description": "Continue Nightmare crawl/resume emphasizing script-discovered links.",
+      "handler": "recon_spider",
+      "plugin_name": "recon_spider_script_links",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "recon_subdomain_enumeration_complete_flag"
+        ],
+        "requires_plugins_all": [
+          "recon_spider_source_tags"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_session_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": [
+          "recon_spider_script_links_progress_json",
+          "recon_spider_script_links_complete_flag",
+          "nightmare_session_json",
+          "nightmare_requests_json",
+          "nightmare_url_inventory_json",
+          "nightmare_source_of_truth_json"
+        ]
+      },
+      "parameters": {
+        "no_ai": true,
+        "force_wordlist": false,
+        "verify_urls": true,
+        "max_pages": 5000,
+        "require_empty_frontier": true
+      }
+    },
+    {
+      "name": "recon_spider_wordlist",
+      "display_name": "Recon Spider Wordlist",
+      "description": "Continue Nightmare crawl/resume with path-guessing enabled from the configured wordlist.",
+      "handler": "recon_spider",
+      "plugin_name": "recon_spider_wordlist",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "recon_subdomain_enumeration_complete_flag"
+        ],
+        "requires_plugins_all": [
+          "recon_spider_script_links"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_session_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": [
+          "recon_spider_wordlist_progress_json",
+          "recon_spider_wordlist_complete_flag",
+          "nightmare_session_json",
+          "nightmare_requests_json",
+          "nightmare_url_inventory_json",
+          "nightmare_source_of_truth_json"
+        ]
+      },
+      "parameters": {
+        "no_ai": true,
+        "force_wordlist": true,
+        "crawl_wordlist": "resources/wordlists/file_path_list.txt",
+        "verify_urls": true,
+        "max_pages": 5000,
+        "require_empty_frontier": true
+      }
+    },
+    {
+      "name": "recon_spider_ai",
+      "display_name": "Recon Spider AI",
+      "description": "Continue Nightmare crawl/resume with AI URL/probe discovery enabled.",
+      "handler": "recon_spider",
+      "plugin_name": "recon_spider_ai",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "artifacts_all": [
+          "recon_subdomain_enumeration_complete_flag"
+        ],
+        "requires_plugins_all": [
+          "recon_spider_wordlist"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_session_json",
+          "nightmare_url_inventory_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": [
+          "recon_spider_ai_progress_json",
+          "recon_spider_ai_complete_flag",
+          "nightmare_session_json",
+          "nightmare_requests_json",
+          "nightmare_url_inventory_json",
+          "nightmare_source_of_truth_json"
+        ]
+      },
+      "parameters": {
+        "no_ai": false,
+        "force_wordlist": true,
+        "crawl_wordlist": "resources/wordlists/file_path_list.txt",
+        "verify_urls": true,
+        "max_pages": 5000,
+        "ai_probe_max_requests": 100,
+        "ai_probe_per_host_max": 10,
+        "openai_timeout": 180.0,
+        "require_empty_frontier": true
+      }
+    },
+    {
+      "name": "recon_extractor_high_value",
+      "display_name": "Recon Extractor High Value",
+      "description": "Run extractor using high-value rules against recon output artifacts.",
+      "handler": "recon_extractor_high_value",
+      "plugin_name": "recon_extractor_high_value",
+      "enabled": true,
+      "resume_mode": "exact",
+      "preconditions": {
+        "requires_plugins_all": [
+          "recon_spider_source_tags",
+          "recon_spider_script_links",
+          "recon_spider_wordlist",
+          "recon_spider_ai"
+        ],
+        "artifacts_all": [
+          "recon_spider_source_tags_complete_flag",
+          "recon_spider_script_links_complete_flag",
+          "recon_spider_wordlist_complete_flag",
+          "recon_spider_ai_complete_flag"
+        ]
+      },
+      "retry_failed": true,
+      "max_attempts": 0,
+      "inputs": {
+        "artifacts_all": [
+          "nightmare_session_json",
+          "nightmare_requests_json",
+          "nightmare_url_inventory_json"
+        ]
+      },
+      "outputs": {
+        "artifacts": [
+          "recon_extractor_high_value_progress_json",
+          "recon_extractor_high_value_complete_flag",
+          "recon_extractor_high_value_summary_json",
+          "recon_extractor_high_value_matches_zip",
+          "extractor_summary_json",
+          "extractor_matches_zip"
+        ]
+      },
+      "parameters": {
+        "workers": 2,
+        "force": true,
+        "wordlist": "resources/wordlists/high_value_extractor_list.txt"
+      }
+    }
+  ]
+}

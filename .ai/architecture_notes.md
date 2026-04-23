@@ -195,3 +195,13 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Base schema bootstrap SQL must remain backward-compatible with prior table shapes.
   - Workflow-aware index/constraint upgrades for `coordinator_stage_tasks` are migration responsibilities, not base bootstrap assumptions.
   - Migration statements now commit independently to avoid full rollback of already-applied schema upgrades when a later migration statement fails.
+
+- Recon workflow architecture extension (run-recon):
+  - Recon tasks are implemented as first-class coordinator plugins and executed by existing plugin workers, not a separate engine.
+  - Plugin progress durability uses two layers:
+    - stage-level DB checkpoint/progress (`coordinator_stage_tasks`)
+    - plugin-owned progress files uploaded as artifacts (`<plugin>_progress_json`) for cross-worker resume.
+  - Completion gating uses explicit completion-flag artifacts (`<plugin>_complete_flag`) consumed by workflow prerequisites.
+  - Spider stages reuse `nightmare.py --resume` over enumerated subdomain seeds and publish canonical Nightmare artifacts after each successful subdomain run.
+  - High-value extraction stage reuses extractor runtime with workflow parameterized wordlist (`resources/wordlists/high_value_extractor_list.txt`).
+- Recon extractor stage is now independent of Fozzy artifacts: it scans Nightmare domain output files directly with high-value regex rules and publishes both recon-specific and generic extractor artifacts.

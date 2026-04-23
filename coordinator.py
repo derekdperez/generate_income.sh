@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -26,9 +28,9 @@ import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
-from http_client import request_json
+from http_client import request_capped, request_json
 
 from output_cleanup import FLEET_GEN_APPLIED_FILENAME, clear_output_root_children
 from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
@@ -87,6 +89,15 @@ def _domain_output_dir(root_domain: str, output_root: Path) -> Path:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _normalize_subdomain_start_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return f"https://{text}"
 
 
 def _default_workflow_entries() -> list[dict[str, Any]]:
@@ -704,6 +715,7 @@ class DistributedCoordinator:
         domain_dir = _domain_output_dir(root_domain, self.cfg.output_root)
         fozzy_domain_dir = domain_dir / "fozzy-output" / root_domain
         high_value_dir = self.cfg.output_root / "high_value" / root_domain
+        recon_dir = domain_dir / "recon"
         return {
             "nightmare_session_json": domain_dir / f"{root_domain}_crawl_session.json",
             "nightmare_url_inventory_json": domain_dir / f"{root_domain}_url_inventory.json",
@@ -724,6 +736,28 @@ class DistributedCoordinator:
             "auth0r_summary_json": domain_dir / "auth0r.summary.json",
             "auth0r_log": domain_dir / "coordinator.auth0r.log",
             "nightmare_high_value_dir": high_value_dir,
+            "recon_dir": recon_dir,
+            "recon_subdomains_json": recon_dir / "subdomains.json",
+            "recon_subdomain_enumeration_log": recon_dir / "subdomain_enumeration.log",
+            "recon_subdomain_enumeration_progress_json": recon_dir / "subdomain_enumeration.progress.json",
+            "recon_subdomain_enumeration_complete_flag": recon_dir / "subdomain_enumeration.complete.json",
+            "recon_spider_source_tags_log": recon_dir / "spider_source_tags.log",
+            "recon_spider_source_tags_progress_json": recon_dir / "spider_source_tags.progress.json",
+            "recon_spider_source_tags_complete_flag": recon_dir / "spider_source_tags.complete.json",
+            "recon_spider_script_links_log": recon_dir / "spider_script_links.log",
+            "recon_spider_script_links_progress_json": recon_dir / "spider_script_links.progress.json",
+            "recon_spider_script_links_complete_flag": recon_dir / "spider_script_links.complete.json",
+            "recon_spider_wordlist_log": recon_dir / "spider_wordlist.log",
+            "recon_spider_wordlist_progress_json": recon_dir / "spider_wordlist.progress.json",
+            "recon_spider_wordlist_complete_flag": recon_dir / "spider_wordlist.complete.json",
+            "recon_spider_ai_log": recon_dir / "spider_ai.log",
+            "recon_spider_ai_progress_json": recon_dir / "spider_ai.progress.json",
+            "recon_spider_ai_complete_flag": recon_dir / "spider_ai.complete.json",
+            "recon_extractor_high_value_log": recon_dir / "extractor_high_value.log",
+            "recon_extractor_high_value_summary_json": recon_dir / "extractor_high_value.summary.json",
+            "recon_extractor_high_value_matches_dir": recon_dir / "extractor_high_value.matches",
+            "recon_extractor_high_value_progress_json": recon_dir / "extractor_high_value.progress.json",
+            "recon_extractor_high_value_complete_flag": recon_dir / "extractor_high_value.complete.json",
         }
 
     def _upload_file_artifact(self, root_domain: str, artifact_type: str, path: Path, worker_id: str) -> None:
@@ -843,6 +877,84 @@ class DistributedCoordinator:
             bytes=len(content),
         )
         return True
+
+    @staticmethod
+    def _recon_progress_artifact_type(plugin_name: str) -> str:
+        return f"{str(plugin_name or '').strip().lower()}_progress_json"
+
+    @staticmethod
+    def _recon_complete_artifact_type(plugin_name: str) -> str:
+        return f"{str(plugin_name or '').strip().lower()}_complete_flag"
+
+    def _recon_progress_path_for_plugin(self, root_domain: str, plugin_name: str) -> Path:
+        key = f"{str(plugin_name or '').strip().lower()}_progress_json"
+        return self._artifact_paths(root_domain).get(key) or (_domain_output_dir(root_domain, self.cfg.output_root) / "recon" / f"{plugin_name}.progress.json")
+
+    def _recon_complete_flag_path_for_plugin(self, root_domain: str, plugin_name: str) -> Path:
+        key = f"{str(plugin_name or '').strip().lower()}_complete_flag"
+        return self._artifact_paths(root_domain).get(key) or (_domain_output_dir(root_domain, self.cfg.output_root) / "recon" / f"{plugin_name}.complete.json")
+
+    def _load_json_file_or_artifact(self, *, root_domain: str, artifact_type: str, path: Path) -> dict[str, Any]:
+        if not path.is_file():
+            self._download_file_artifact(root_domain, artifact_type, path)
+        return _read_json_dict(path)
+
+    def _persist_recon_progress(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
+        payload["updated_at_utc"] = _now_iso()
+        _atomic_write_json(path, payload)
+        self._upload_file_artifact(
+            root_domain,
+            self._recon_progress_artifact_type(plugin_name),
+            path,
+            worker_id,
+        )
+
+    def _write_recon_completion_flag(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+        details: dict[str, Any],
+    ) -> None:
+        path = self._recon_complete_flag_path_for_plugin(root_domain, plugin_name)
+        payload = {
+            "plugin_name": plugin_name,
+            "root_domain": root_domain,
+            "completed_at_utc": _now_iso(),
+            "details": details,
+        }
+        _atomic_write_json(path, payload)
+        self._upload_file_artifact(
+            root_domain,
+            self._recon_complete_artifact_type(plugin_name),
+            path,
+            worker_id,
+        )
+
+    def _upload_nightmare_artifacts(self, *, worker_id: str, root_domain: str) -> None:
+        paths = self._artifact_paths(root_domain)
+        self._upload_file_artifact(root_domain, "nightmare_session_json", paths["nightmare_session_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_url_inventory_json", paths["nightmare_url_inventory_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_requests_json", paths["nightmare_requests_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_parameters_json", paths["nightmare_parameters_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_post_requests_json", paths["nightmare_post_requests_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_parameters_txt", paths["nightmare_parameters_txt"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_source_of_truth_json", paths["nightmare_source_of_truth_json"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_report_html", paths["nightmare_report_html"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_log", paths["nightmare_log"], worker_id)
+        self._upload_file_artifact(root_domain, "nightmare_scrapy_log", paths["nightmare_scrapy_log"], worker_id)
+        hv_dir = paths.get("nightmare_high_value_dir")
+        if hv_dir is not None and hv_dir.is_dir():
+            self._upload_zip_artifact(root_domain, "nightmare_high_value_zip", hv_dir, worker_id)
 
     def _nightmare_worker_loop(self, idx: int) -> None:
         worker_id = f"{self.worker_prefix}-nightmare-{idx}"
@@ -982,23 +1094,7 @@ class DistributedCoordinator:
                     heartbeat.stop()
 
                 try:
-                    self._upload_file_artifact(root_domain, "nightmare_session_json", paths["nightmare_session_json"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_url_inventory_json", paths["nightmare_url_inventory_json"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_requests_json", paths["nightmare_requests_json"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_parameters_json", paths["nightmare_parameters_json"], worker_id)
-                    self._upload_file_artifact(
-                        root_domain, "nightmare_post_requests_json", paths["nightmare_post_requests_json"], worker_id
-                    )
-                    self._upload_file_artifact(root_domain, "nightmare_parameters_txt", paths["nightmare_parameters_txt"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_source_of_truth_json", paths["nightmare_source_of_truth_json"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_report_html", paths["nightmare_report_html"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_log", paths["nightmare_log"], worker_id)
-                    self._upload_file_artifact(root_domain, "nightmare_scrapy_log", paths["nightmare_scrapy_log"], worker_id)
-                    hv_dir = paths.get("nightmare_high_value_dir")
-                    if hv_dir is not None and hv_dir.is_dir():
-                        self._upload_zip_artifact(
-                            root_domain, "nightmare_high_value_zip", hv_dir, worker_id
-                        )
+                    self._upload_nightmare_artifacts(worker_id=worker_id, root_domain=root_domain)
                 except Exception as exc:
                     self.logger.error(
                         "nightmare_artifact_upload_failed",
@@ -1116,6 +1212,829 @@ class DistributedCoordinator:
             artifact = self.client.download_artifact(root_domain, artifact_type)
             if artifact is None:
                 return 1, f"missing required artifact {artifact_type}"
+        return 0, ""
+
+    def _enumerate_subdomains_passive(self, root_domain: str) -> tuple[list[str], str]:
+        query_url = f"https://crt.sh/?q=%.{root_domain}&output=json"
+        try:
+            response = request_capped(
+                "GET",
+                query_url,
+                timeout_seconds=30.0,
+                read_limit=4 * 1024 * 1024,
+                follow_redirects=True,
+                verify=True,
+            )
+        except Exception as exc:
+            return [], f"passive enumeration request failed: {exc}"
+        if int(response.status_code) >= 400:
+            return [], f"passive enumeration failed with HTTP {int(response.status_code)}"
+        text = bytes(response.body or b"").decode("utf-8", errors="replace").strip()
+        if not text:
+            return [], ""
+        try:
+            parsed = json.loads(text)
+        except Exception as exc:
+            return [], f"passive enumeration JSON parse failed: {exc}"
+        found: set[str] = set()
+        if isinstance(parsed, list):
+            for row in parsed:
+                if not isinstance(row, dict):
+                    continue
+                name_value = str(row.get("name_value", "") or "").strip().lower()
+                if not name_value:
+                    continue
+                for candidate in name_value.splitlines():
+                    host = str(candidate or "").strip().lstrip("*.").lower().rstrip(".")
+                    if host and (host == root_domain or host.endswith(f".{root_domain}")):
+                        found.add(host)
+        return sorted(found), ""
+
+    def _run_recon_subdomain_enumeration_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        recon_dir = paths["recon_dir"]
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
+        progress_state = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type=self._recon_progress_artifact_type(plugin_name),
+            path=progress_path,
+        )
+        if not progress_state:
+            progress_state = {
+                "schema_version": 1,
+                "plugin_name": plugin_name,
+                "root_domain": root_domain,
+                "status": "running",
+                "phase": "enumeration",
+                "started_at_utc": _now_iso(),
+                "requests_made": [],
+                "subdomains": [],
+                "probe_results": {},
+                "accessible_subdomains": [],
+            }
+
+        params = self._workflow_stage_parameters(plugin_name)
+        sublist3r_command_raw = params.get("sublist3r_command", "sublist3r")
+        if isinstance(sublist3r_command_raw, list):
+            sublist3r_cmd = [str(item).strip() for item in sublist3r_command_raw if str(item).strip()]
+        else:
+            sublist3r_cmd = [str(sublist3r_command_raw or "sublist3r").strip()]
+        sublist3r_extra_args = [
+            str(item).strip()
+            for item in (params.get("sublist3r_extra_args") if isinstance(params.get("sublist3r_extra_args"), list) else [])
+            if str(item).strip()
+        ]
+        allow_passive_fallback = bool(params.get("allow_passive_fallback", True))
+        probe_timeout = max(1.0, _safe_float(params.get("probe_timeout_seconds", 8.0), 8.0))
+        probe_verify_tls = bool(params.get("probe_verify_tls", True))
+        max_logged_requests = max(100, _safe_int(params.get("max_request_log_entries", 4000), 4000))
+
+        subdomains_file = paths["recon_subdomains_json"]
+        raw_output_file = recon_dir / "subdomain_enumeration.raw.txt"
+        log_path = paths["recon_subdomain_enumeration_log"]
+
+        existing_subdomains = [
+            str(item).strip().lower().lstrip("*.").rstrip(".")
+            for item in (progress_state.get("subdomains") if isinstance(progress_state.get("subdomains"), list) else [])
+            if str(item).strip()
+        ]
+        found_subdomains: set[str] = set(existing_subdomains)
+        found_subdomains.add(root_domain)
+
+        if not found_subdomains or progress_state.get("phase") in {"enumeration", "running"}:
+            enumeration_cmd = [*sublist3r_cmd, "-d", root_domain, "-o", str(raw_output_file), *sublist3r_extra_args]
+            progress_state["phase"] = "enumeration"
+            progress_state.setdefault("requests_made", []).append(
+                {
+                    "type": "sublist3r",
+                    "command": enumeration_cmd,
+                    "started_at_utc": _now_iso(),
+                }
+            )
+            progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+
+            sublist3r_exit = 0
+            sublist3r_error = ""
+            try:
+                sublist3r_exit = run_subprocess(enumeration_cmd, cwd=BASE_DIR, log_path=log_path)
+                if int(sublist3r_exit) != 0:
+                    sublist3r_error = summarize_subprocess_failure("sublist3r", log_path, sublist3r_exit)
+            except Exception as exc:
+                sublist3r_exit = 1
+                sublist3r_error = str(exc)
+
+            if int(sublist3r_exit) == 0 and raw_output_file.is_file():
+                for line in raw_output_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    host = str(line or "").strip().lower().lstrip("*.").rstrip(".")
+                    if host and (host == root_domain or host.endswith(f".{root_domain}")):
+                        found_subdomains.add(host)
+            elif allow_passive_fallback:
+                passive_subdomains, passive_error = self._enumerate_subdomains_passive(root_domain)
+                progress_state.setdefault("requests_made", []).append(
+                    {
+                        "type": "passive_fallback",
+                        "endpoint": f"https://crt.sh/?q=%.{root_domain}&output=json",
+                        "started_at_utc": _now_iso(),
+                        "error": passive_error,
+                    }
+                )
+                progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
+                for host in passive_subdomains:
+                    if host and (host == root_domain or host.endswith(f".{root_domain}")):
+                        found_subdomains.add(host)
+                if not passive_subdomains and sublist3r_error:
+                    progress_state["status"] = "failed"
+                    progress_state["error"] = sublist3r_error
+                    self._persist_recon_progress(
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        plugin_name=plugin_name,
+                        payload=progress_state,
+                    )
+                    return 1, sublist3r_error
+            elif sublist3r_error:
+                progress_state["status"] = "failed"
+                progress_state["error"] = sublist3r_error
+                self._persist_recon_progress(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                    payload=progress_state,
+                )
+                return 1, sublist3r_error
+
+        progress_state["subdomains"] = sorted(found_subdomains)
+        progress_state["phase"] = "probe"
+        progress_state["status"] = "running"
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+
+        probe_results = dict(progress_state.get("probe_results") or {}) if isinstance(progress_state.get("probe_results"), dict) else {}
+        for subdomain in progress_state["subdomains"]:
+            if not subdomain:
+                continue
+            prior = probe_results.get(subdomain)
+            if isinstance(prior, dict) and bool(prior.get("probed")):
+                continue
+            attempts: list[dict[str, Any]] = []
+            selected_start_url = ""
+            selected_status_code: int | None = None
+            for scheme in ("https", "http"):
+                probe_url = f"{scheme}://{subdomain}/"
+                attempt_payload = {
+                    "type": "probe",
+                    "url": probe_url,
+                    "started_at_utc": _now_iso(),
+                }
+                try:
+                    probe_rsp = request_capped(
+                        "GET",
+                        probe_url,
+                        timeout_seconds=probe_timeout,
+                        read_limit=2048,
+                        follow_redirects=True,
+                        verify=probe_verify_tls,
+                    )
+                    attempt_payload["status_code"] = int(probe_rsp.status_code)
+                    attempt_payload["resolved_url"] = str(probe_rsp.url or probe_url)
+                    if selected_start_url == "" and 200 <= int(probe_rsp.status_code) < 500:
+                        selected_start_url = str(probe_rsp.url or probe_url)
+                        selected_status_code = int(probe_rsp.status_code)
+                except Exception as exc:
+                    attempt_payload["error"] = str(exc)
+                attempts.append(attempt_payload)
+                progress_state.setdefault("requests_made", []).append(attempt_payload)
+                progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
+                self._persist_recon_progress(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                    payload=progress_state,
+                )
+
+            probe_results[subdomain] = {
+                "subdomain": subdomain,
+                "probed": True,
+                "accessible": bool(selected_start_url),
+                "start_url": selected_start_url,
+                "status_code": selected_status_code,
+                "attempts": attempts,
+            }
+            progress_state["probe_results"] = probe_results
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+
+        entries = []
+        accessible_subdomains: list[str] = []
+        for subdomain in progress_state["subdomains"]:
+            row = probe_results.get(subdomain) if isinstance(probe_results.get(subdomain), dict) else {}
+            if bool(row.get("accessible")) and str(row.get("start_url", "")).strip():
+                accessible_subdomains.append(str(row.get("start_url")).strip())
+            entries.append(
+                {
+                    "subdomain": subdomain,
+                    "accessible": bool(row.get("accessible")),
+                    "start_url": str(row.get("start_url", "")).strip(),
+                    "status_code": row.get("status_code"),
+                    "attempts": row.get("attempts") if isinstance(row.get("attempts"), list) else [],
+                }
+            )
+
+        subdomain_payload = {
+            "schema_version": 1,
+            "plugin_name": plugin_name,
+            "root_domain": root_domain,
+            "generated_at_utc": _now_iso(),
+            "subdomains": progress_state["subdomains"],
+            "entries": entries,
+            "accessible_subdomains": sorted(set(accessible_subdomains)),
+        }
+        _atomic_write_json(subdomains_file, subdomain_payload)
+        self._upload_file_artifact(root_domain, "recon_subdomains_json", subdomains_file, worker_id)
+
+        progress_state["phase"] = "complete"
+        progress_state["status"] = "completed"
+        progress_state["accessible_subdomains"] = subdomain_payload["accessible_subdomains"]
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+        self._write_recon_completion_flag(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            details={
+                "subdomain_count": len(progress_state["subdomains"]),
+                "accessible_count": len(subdomain_payload["accessible_subdomains"]),
+            },
+        )
+        return 0, ""
+
+    def _extract_recon_start_urls(self, *, root_domain: str, payload: dict[str, Any]) -> list[str]:
+        urls: list[str] = []
+        entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+        for row in entries:
+            if not isinstance(row, dict):
+                continue
+            if not bool(row.get("accessible")):
+                continue
+            start_url = _normalize_subdomain_start_url(str(row.get("start_url", "") or "").strip())
+            if start_url:
+                urls.append(start_url)
+        if not urls:
+            for item in (payload.get("accessible_subdomains") if isinstance(payload.get("accessible_subdomains"), list) else []):
+                start_url = _normalize_subdomain_start_url(str(item or "").strip())
+                if start_url:
+                    urls.append(start_url)
+        if not urls:
+            urls.append(f"https://{root_domain}")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            clean = str(url or "").strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            deduped.append(clean)
+        return deduped
+
+    def _run_recon_spider_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        subdomains_payload = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type="recon_subdomains_json",
+            path=paths["recon_subdomains_json"],
+        )
+        if not subdomains_payload:
+            return 1, "missing recon_subdomains_json artifact"
+        start_urls = self._extract_recon_start_urls(root_domain=root_domain, payload=subdomains_payload)
+        if not start_urls:
+            return 1, "no accessible subdomain start URLs were found"
+
+        progress_path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
+        progress_state = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type=self._recon_progress_artifact_type(plugin_name),
+            path=progress_path,
+        )
+        if not progress_state:
+            progress_state = {
+                "schema_version": 1,
+                "plugin_name": plugin_name,
+                "root_domain": root_domain,
+                "status": "running",
+                "started_at_utc": _now_iso(),
+                "requests_made": [],
+                "subdomains": [],
+                "last_frontier_size": None,
+            }
+
+        params = self._workflow_stage_parameters(plugin_name)
+        no_ai = bool(params.get("no_ai", plugin_name != "recon_spider_ai"))
+        force_wordlist = bool(params.get("force_wordlist", plugin_name == "recon_spider_wordlist"))
+        verify_urls = bool(params.get("verify_urls", False))
+        max_pages = _safe_int(params.get("max_pages", 0), 0)
+        crawl_delay = _safe_float(params.get("crawl_delay", 0.0), 0.0)
+        openai_timeout = _safe_float(params.get("openai_timeout", 0.0), 0.0)
+        ai_probe_max_requests = _safe_int(params.get("ai_probe_max_requests", 0), 0)
+        ai_probe_per_host_max = _safe_int(params.get("ai_probe_per_host_max", 0), 0)
+        crawl_wordlist_raw = str(params.get("crawl_wordlist", "resources/wordlists/file_path_list.txt") or "").strip()
+        extra_args = [
+            str(item).strip()
+            for item in (params.get("extra_args") if isinstance(params.get("extra_args"), list) else [])
+            if str(item).strip()
+        ]
+        max_logged_requests = max(100, _safe_int(params.get("max_request_log_entries", 4000), 4000))
+        strict_frontier_empty = bool(params.get("require_empty_frontier", True))
+        log_path = paths.get(f"{plugin_name}_log") or (paths["recon_dir"] / f"{plugin_name}.log")
+
+        prior_rows = progress_state.get("subdomains") if isinstance(progress_state.get("subdomains"), list) else []
+        state_by_url: dict[str, dict[str, Any]] = {}
+        for row in prior_rows:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("start_url", "") or "").strip()
+            if key:
+                state_by_url[key] = dict(row)
+        for url in start_urls:
+            if url not in state_by_url:
+                state_by_url[url] = {
+                    "start_url": url,
+                    "host": str(urlparse(url).hostname or "").lower(),
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "last_exit_code": None,
+                    "last_error": "",
+                    "last_run_started_at_utc": None,
+                    "last_run_completed_at_utc": None,
+                }
+        progress_state["subdomains"] = [state_by_url[url] for url in start_urls]
+        progress_state["status"] = "running"
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+
+        empty_wordlist_path = paths["recon_dir"] / "empty-wordlist.txt"
+        if not empty_wordlist_path.is_file():
+            empty_wordlist_path.parent.mkdir(parents=True, exist_ok=True)
+            empty_wordlist_path.write_text("", encoding="utf-8")
+
+        for start_url in start_urls:
+            row = state_by_url[start_url]
+            if str(row.get("status", "")).strip().lower() == "completed":
+                continue
+            cmd = [
+                self.cfg.python_executable,
+                "nightmare.py",
+                start_url,
+                "--config",
+                str(self.cfg.nightmare_config),
+                "--resume",
+            ]
+            if no_ai:
+                cmd.append("--no-ai")
+            if force_wordlist and crawl_wordlist_raw:
+                cmd.extend(["--crawl-wordlist", crawl_wordlist_raw])
+            elif no_ai:
+                cmd.extend(["--crawl-wordlist", str(empty_wordlist_path)])
+            if verify_urls:
+                cmd.append("--verify-urls")
+            if max_pages > 0:
+                cmd.extend(["--max-pages", str(max_pages)])
+            if crawl_delay > 0:
+                cmd.extend(["--crawl-delay", str(crawl_delay)])
+            if openai_timeout > 0:
+                cmd.extend(["--openai-timeout", str(openai_timeout)])
+            if ai_probe_max_requests > 0:
+                cmd.extend(["--ai-probe-max-requests", str(ai_probe_max_requests)])
+            if ai_probe_per_host_max > 0:
+                cmd.extend(["--ai-probe-per-host-max", str(ai_probe_per_host_max)])
+            cmd.extend(extra_args)
+
+            row["status"] = "running"
+            row["attempt_count"] = int(row.get("attempt_count", 0) or 0) + 1
+            row["last_run_started_at_utc"] = _now_iso()
+            row["last_command"] = cmd
+            progress_state.setdefault("requests_made", []).append(
+                {
+                    "type": "nightmare_spider_run",
+                    "start_url": start_url,
+                    "command": cmd,
+                    "started_at_utc": row["last_run_started_at_utc"],
+                }
+            )
+            progress_state["requests_made"] = list(progress_state["requests_made"])[-max_logged_requests:]
+            progress_state["subdomains"] = [state_by_url[url] for url in start_urls]
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+
+            exit_code = 1
+            err_text = ""
+            try:
+                exit_code = run_subprocess(cmd, cwd=BASE_DIR, log_path=log_path)
+                if exit_code != 0:
+                    err_text = summarize_subprocess_failure("nightmare", log_path, exit_code)
+            except Exception as exc:
+                exit_code = 1
+                err_text = str(exc)
+
+            row["last_exit_code"] = int(exit_code)
+            row["last_error"] = str(err_text or "")
+            row["last_run_completed_at_utc"] = _now_iso()
+            row["status"] = "completed" if int(exit_code) == 0 else "failed"
+            progress_state["subdomains"] = [state_by_url[url] for url in start_urls]
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+
+            if int(exit_code) != 0:
+                progress_state["status"] = "failed"
+                self._persist_recon_progress(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                    payload=progress_state,
+                )
+                return int(exit_code), str(err_text or f"{plugin_name} failed for {start_url}")
+
+            try:
+                self._upload_nightmare_artifacts(worker_id=worker_id, root_domain=root_domain)
+            except Exception as exc:
+                self.logger.error(
+                    "recon_spider_artifact_upload_failed",
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                    start_url=start_url,
+                    error=str(exc),
+                )
+
+        session_payload = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type="nightmare_session_json",
+            path=paths["nightmare_session_json"],
+        )
+        frontier = session_payload.get("frontier") if isinstance(session_payload.get("frontier"), list) else []
+        progress_state["last_frontier_size"] = len(frontier)
+        if strict_frontier_empty and len(frontier) > 0:
+            progress_state["status"] = "failed"
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+            return 1, f"{plugin_name} finished runs but nightmare frontier still has {len(frontier)} pending URL(s)"
+
+        progress_state["status"] = "completed"
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+        self._write_recon_completion_flag(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            details={
+                "start_url_count": len(start_urls),
+                "frontier_size": len(frontier),
+            },
+        )
+        return 0, ""
+
+    def _run_recon_extractor_high_value_plugin_task(
+        self,
+        *,
+        worker_id: str,
+        root_domain: str,
+        plugin_name: str,
+    ) -> tuple[int, str]:
+        paths = self._artifact_paths(root_domain)
+        domain_dir = _domain_output_dir(root_domain, self.cfg.output_root)
+        recon_dir = paths["recon_dir"]
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        matches_dir = paths["recon_extractor_high_value_matches_dir"]
+        matches_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = paths["recon_extractor_high_value_summary_json"]
+        progress_path = self._recon_progress_path_for_plugin(root_domain, plugin_name)
+        progress_state = self._load_json_file_or_artifact(
+            root_domain=root_domain,
+            artifact_type=self._recon_progress_artifact_type(plugin_name),
+            path=progress_path,
+        )
+        if not progress_state:
+            progress_state = {
+                "schema_version": 1,
+                "plugin_name": plugin_name,
+                "root_domain": root_domain,
+                "status": "running",
+                "started_at_utc": _now_iso(),
+                "requests_made": [],
+            }
+        params = self._workflow_stage_parameters(plugin_name)
+        wordlist_raw = str(params.get("wordlist", "resources/wordlists/high_value_extractor_list.txt") or "").strip()
+        wordlist_path = Path(wordlist_raw).expanduser()
+        if not wordlist_path.is_absolute():
+            wordlist_path = (BASE_DIR / wordlist_path).resolve()
+        if not wordlist_path.is_file():
+            progress_state["status"] = "failed"
+            progress_state["error"] = f"high-value extractor wordlist not found: {wordlist_path}"
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+            return 1, str(progress_state["error"])
+
+        raw_rules = []
+        try:
+            raw_text = wordlist_path.read_text(encoding="utf-8-sig")
+            if raw_text.strip():
+                parsed_rules = json.loads(raw_text)
+                if isinstance(parsed_rules, list):
+                    raw_rules = parsed_rules
+        except Exception as exc:
+            progress_state["status"] = "failed"
+            progress_state["error"] = f"failed to parse high-value extractor wordlist: {exc}"
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+            return 1, str(progress_state["error"])
+
+        compiled_rules: list[dict[str, Any]] = []
+        for idx, row in enumerate(raw_rules):
+            if not isinstance(row, dict):
+                continue
+            rule_name = str(row.get("name", f"rule_{idx + 1}") or f"rule_{idx + 1}").strip()
+            pattern = str(row.get("pattern", row.get("regex", "")) or "").strip()
+            if not rule_name or not pattern:
+                continue
+            flags = 0
+            raw_flags = row.get("flags")
+            flag_tokens: list[str] = []
+            if isinstance(raw_flags, str):
+                flag_tokens = [raw_flags]
+            elif isinstance(raw_flags, list):
+                flag_tokens = [str(item).strip() for item in raw_flags if str(item).strip()]
+            if bool(row.get("ignore_case", False)):
+                flag_tokens.append("IGNORECASE")
+            for token in flag_tokens:
+                token_upper = str(token).strip().upper()
+                if token_upper in {"I", "IGNORECASE", "RE.IGNORECASE"}:
+                    flags |= re.IGNORECASE
+                elif token_upper in {"M", "MULTILINE", "RE.MULTILINE"}:
+                    flags |= re.MULTILINE
+                elif token_upper in {"S", "DOTALL", "RE.DOTALL"}:
+                    flags |= re.DOTALL
+            try:
+                compiled_rules.append(
+                    {
+                        "name": rule_name,
+                        "compiled": re.compile(pattern, flags=flags),
+                        "importance_score": _safe_int(row.get("importance_score", 0), 0),
+                    }
+                )
+            except re.error:
+                continue
+
+        max_file_bytes = max(4096, _safe_int(params.get("max_file_bytes", 2 * 1024 * 1024), 2 * 1024 * 1024))
+        max_matches_per_rule_per_file = max(1, _safe_int(params.get("max_matches_per_rule_per_file", 100), 100))
+        persist_every_files = max(1, _safe_int(params.get("persist_every_files", 10), 10))
+        skip_ext = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".ico",
+            ".bmp",
+            ".pdf",
+            ".zip",
+            ".gz",
+            ".7z",
+            ".rar",
+            ".tar",
+            ".mp4",
+            ".mp3",
+            ".wav",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+        }
+        excluded_dirs = {"recon", "fozzy-output", "__pycache__", ".git"}
+        candidate_files: list[Path] = []
+        if domain_dir.is_dir():
+            for path in domain_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel_parts = {str(part).lower() for part in path.relative_to(domain_dir).parts}
+                if rel_parts & excluded_dirs:
+                    continue
+                if path.suffix.lower() in skip_ext:
+                    continue
+                candidate_files.append(path)
+        candidate_files.sort(key=lambda p: str(p).lower())
+
+        processed_files = {
+            str(item).strip()
+            for item in (progress_state.get("files_processed") if isinstance(progress_state.get("files_processed"), list) else [])
+            if str(item).strip()
+        }
+        rows_out = list(progress_state.get("rows", [])) if isinstance(progress_state.get("rows"), list) else []
+        rule_counts = dict(progress_state.get("rule_counts", {})) if isinstance(progress_state.get("rule_counts"), dict) else {}
+        match_count = _safe_int(progress_state.get("match_count", len(rows_out)), len(rows_out))
+
+        progress_state["status"] = "running"
+        progress_state.setdefault("requests_made", []).append(
+            {
+                "type": "extractor_run",
+                "started_at_utc": _now_iso(),
+                "wordlist": str(wordlist_path),
+                "compiled_rule_count": len(compiled_rules),
+            }
+        )
+        progress_state["requests_made"] = list(progress_state["requests_made"])[-2000:]
+        progress_state["files_total"] = len(candidate_files)
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+
+        files_since_persist = 0
+        for file_path in candidate_files:
+            relative_path = file_path.relative_to(domain_dir).as_posix()
+            if relative_path in processed_files:
+                continue
+            try:
+                raw_bytes = file_path.read_bytes()
+            except Exception:
+                processed_files.add(relative_path)
+                continue
+            body = raw_bytes[:max_file_bytes]
+            if b"\x00" in body[:2048]:
+                processed_files.add(relative_path)
+                continue
+            text = body.decode("utf-8", errors="replace")
+            for rule in compiled_rules:
+                rule_name = str(rule["name"])
+                per_rule_hits = 0
+                for idx, match in enumerate(rule["compiled"].finditer(text)):
+                    matched_text = str(match.group(0) or "")
+                    if not matched_text:
+                        continue
+                    digest_input = f"{relative_path}\0{rule_name}\0{idx}\0{matched_text[:512]}"
+                    digest = hashlib.sha256(digest_input.encode("utf-8", errors="ignore")).hexdigest()[:24]
+                    match_file = matches_dir / f"m_{digest}.json"
+                    detail = {
+                        "root_domain": root_domain,
+                        "filter_name": rule_name,
+                        "importance_score": int(rule.get("importance_score", 0) or 0),
+                        "result_file": str(file_path.resolve()),
+                        "relative_path": relative_path,
+                        "match_index": idx,
+                        "matched_text": matched_text,
+                        "captured_at_utc": _now_iso(),
+                    }
+                    _atomic_write_json(match_file, detail)
+                    rows_out.append(
+                        {
+                            "filter_name": rule_name,
+                            "importance_score": int(rule.get("importance_score", 0) or 0),
+                            "result_file": str(file_path.resolve()),
+                            "match_file": str(match_file.resolve()),
+                            "match_preview": matched_text[:240].replace("\n", " ").strip(),
+                            "scope": "file_body",
+                        }
+                    )
+                    rule_counts[rule_name] = int(rule_counts.get(rule_name, 0) or 0) + 1
+                    match_count += 1
+                    per_rule_hits += 1
+                    if per_rule_hits >= max_matches_per_rule_per_file:
+                        break
+            processed_files.add(relative_path)
+            files_since_persist += 1
+            if files_since_persist >= persist_every_files:
+                files_since_persist = 0
+                progress_state["files_processed"] = sorted(processed_files)
+                progress_state["rows"] = rows_out
+                progress_state["rule_counts"] = rule_counts
+                progress_state["match_count"] = int(match_count)
+                progress_state["last_file"] = relative_path
+                self._persist_recon_progress(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                    payload=progress_state,
+                )
+
+        summary_payload = {
+            "root_domain": root_domain,
+            "generated_at_utc": _now_iso(),
+            "wordlist_path": str(wordlist_path),
+            "match_count": int(match_count),
+            "files_total": len(candidate_files),
+            "files_scanned": len(processed_files),
+            "rule_counts": rule_counts,
+            "rows": rows_out,
+        }
+        _atomic_write_json(summary_path, summary_payload)
+
+        try:
+            self._upload_file_artifact(
+                root_domain,
+                "recon_extractor_high_value_summary_json",
+                summary_path,
+                worker_id,
+            )
+            self._upload_file_artifact(root_domain, "extractor_summary_json", summary_path, worker_id)
+            self._upload_zip_artifact(
+                root_domain,
+                "recon_extractor_high_value_matches_zip",
+                matches_dir,
+                worker_id,
+            )
+            self._upload_zip_artifact(root_domain, "extractor_matches_zip", matches_dir, worker_id)
+        except Exception as exc:
+            progress_state["status"] = "failed"
+            progress_state["error"] = f"failed to upload extractor artifacts: {exc}"
+            self._persist_recon_progress(
+                worker_id=worker_id,
+                root_domain=root_domain,
+                plugin_name=plugin_name,
+                payload=progress_state,
+            )
+            return 1, str(progress_state["error"])
+
+        progress_state["status"] = "completed"
+        progress_state["error"] = ""
+        progress_state["files_processed"] = sorted(processed_files)
+        progress_state["rows"] = rows_out
+        progress_state["rule_counts"] = rule_counts
+        progress_state["match_count"] = int(match_count)
+        self._persist_recon_progress(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            payload=progress_state,
+        )
+        self._write_recon_completion_flag(
+            worker_id=worker_id,
+            root_domain=root_domain,
+            plugin_name=plugin_name,
+            details={
+                "extractor_completed": True,
+                "match_count": int(match_count),
+                "files_scanned": len(processed_files),
+            },
+        )
         return 0, ""
 
     def _run_fozzy_plugin_task(
@@ -1279,6 +2198,7 @@ class DistributedCoordinator:
             ),
         )
         force_extractor = bool(extractor_params.get("force", True))
+        wordlist_raw = str(extractor_params.get("wordlist", "") or "").strip()
         cmd = [
             self.cfg.python_executable,
             "extractor.py",
@@ -1290,9 +2210,11 @@ class DistributedCoordinator:
             "--workers",
             str(extractor_workers),
         ]
+        if wordlist_raw:
+            cmd.extend(["--wordlist", wordlist_raw])
         if force_extractor:
             cmd.append("--force")
-        log_path = domain_dir / "coordinator.extractor.log"
+        log_path = paths.get(f"{plugin_name}_log") or (domain_dir / "coordinator.extractor.log")
         self.logger.info(
             "extractor_subprocess_start",
             worker_id=worker_id,
@@ -1366,6 +2288,29 @@ class DistributedCoordinator:
                 exit_code, err_text = self._run_auth0r_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
             elif plugin_name == "extractor":
                 exit_code, err_text = self._run_extractor_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
+            elif plugin_name == "recon_subdomain_enumeration":
+                exit_code, err_text = self._run_recon_subdomain_enumeration_plugin_task(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                )
+            elif plugin_name in {
+                "recon_spider_source_tags",
+                "recon_spider_script_links",
+                "recon_spider_wordlist",
+                "recon_spider_ai",
+            }:
+                exit_code, err_text = self._run_recon_spider_plugin_task(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                )
+            elif plugin_name == "recon_extractor_high_value":
+                exit_code, err_text = self._run_recon_extractor_high_value_plugin_task(
+                    worker_id=worker_id,
+                    root_domain=root_domain,
+                    plugin_name=plugin_name,
+                )
             elif plugin_name.startswith("nightmare_"):
                 exit_code, err_text = self._run_nightmare_artifact_gate_plugin(root_domain=root_domain, plugin_name=plugin_name)
             else:

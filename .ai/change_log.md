@@ -1273,3 +1273,21 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server_app/store.py server.py`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "workflows or ensure_schema_bootstrap_stage_index_is_legacy_safe"`
   - `pytest -q tests/test_module_decomposition.py tests/test_refactor_modules.py`
+
+## 2026-04-22
+
+- Added workflow-driven recon execution support with new plugins in `coordinator.py`:
+  - `recon_subdomain_enumeration` (Sublist3r-first enumeration + passive fallback + reachability probes)
+  - `recon_spider_source_tags`
+  - `recon_spider_script_links`
+  - `recon_spider_wordlist`
+  - `recon_spider_ai`
+  - `recon_extractor_high_value`
+- Added resumable local progress-file + completion-flag artifact handling for recon plugins.
+- Added reusable Nightmare artifact upload helper and wired recon spider stages to continuously publish Nightmare outputs.
+- Added workflow file `workflows/run-recon.workflow.json` with plugin prerequisites and parameters.
+- Added opt-in coordinator config `config/coordinator.run-recon.json` for workflow-only recon execution (legacy per-tool loops disabled).
+- Added tests in `tests/test_recon_workflow_config.py` to lock expected run-recon plugin order and extractor prerequisites.
+- Why: deliver queue-safe, resumable, pluginized recon orchestration where workflow prerequisites are data/flag driven.
+- Updated `recon_extractor_high_value` implementation to scan Nightmare output files directly using the high-value rule list, instead of requiring Fozzy artifacts.
+- Why: `run-recon` workflow does not run Fozzy, so extractor stage must be independent and still emit extractor-compatible artifacts.

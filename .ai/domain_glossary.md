@@ -8,3 +8,7 @@
 - `plugin task`: A resumable unit in `coordinator_stage_tasks` keyed by `(workflow_id, root_domain, stage)`.
 - `checkpoint_json`: Worker-owned exact-resume state for a plugin task.
 - `progress_json`: Operator-facing live execution state for events/UI while a plugin task runs.
+
+- `run-recon workflow`: Coordinator workflow profile that runs recon plugins from subdomain enumeration through high-value extraction.
+- `recon plugin progress artifact`: Per-plugin JSON state artifact (`<plugin>_progress_json`) that allows fresh workers to continue without replaying finished actions.
+- `recon completion flag artifact`: Per-plugin completion marker (`<plugin>_complete_flag`) used as workflow prerequisite input.
