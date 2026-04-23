@@ -815,7 +815,56 @@ WHERE entry_id = %s
             )
         return updated > 0
 
+    def _decode_json_bytes(self, raw: bytes) -> dict[str, Any]:
+        if not raw:
+            return {}
+        for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                parsed = json.loads(raw.decode(encoding))
+            except Exception:
+                continue
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _load_session_artifact_payload(self, root_domain: str) -> dict[str, Any]:
+        artifact = self.get_artifact(str(root_domain or "").strip().lower(), "nightmare_session_json")
+        if not isinstance(artifact, dict):
+            return {}
+        return self._decode_json_bytes(bytes(artifact.get("content") or b""))
+
+    def _normalize_session_payload(
+        self,
+        root_domain: str,
+        payload: Optional[dict[str, Any]],
+        *,
+        fallback_start_url: str = "",
+        fallback_saved_at_utc: Optional[str] = None,
+        fallback_max_pages: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        body = payload if isinstance(payload, dict) else {}
+        if not body:
+            return None
+        state = body.get("state") if isinstance(body.get("state"), dict) else {}
+        frontier = body.get("frontier") if isinstance(body.get("frontier"), list) else []
+        start_url = str(body.get("start_url") or fallback_start_url or "").strip()
+        saved_at_utc = body.get("saved_at_utc") or fallback_saved_at_utc
+        max_pages = body.get("max_pages")
+        if max_pages is None:
+            max_pages = fallback_max_pages
+        return {
+            "root_domain": str(body.get("root_domain") or root_domain or "").strip().lower(),
+            "start_url": start_url,
+            "max_pages": max_pages,
+            "saved_at_utc": saved_at_utc,
+            "state": state,
+            "frontier": frontier,
+            "payload": body,
+        }
+
     def load_session(self, root_domain: str) -> Optional[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        if not rd:
+            return None
         sql = """
 SELECT root_domain, start_url, max_pages, saved_at_utc, payload
 FROM coordinator_sessions
@@ -823,21 +872,43 @@ WHERE root_domain = %s;
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (str(root_domain).strip().lower(),))
+                cur.execute(sql, (rd,))
                 row = cur.fetchone()
             conn.commit()
-        if row is None:
-            return None
-        payload = row[4] if isinstance(row[4], dict) else {}
-        return {
-            "root_domain": row[0],
-            "start_url": row[1],
-            "max_pages": row[2],
-            "saved_at_utc": row[3].isoformat() if row[3] else None,
-            "state": payload.get("state", {}),
-            "frontier": payload.get("frontier", []),
-            "payload": payload,
-        }
+        db_session: Optional[dict[str, Any]] = None
+        if row is not None:
+            payload = row[4] if isinstance(row[4], dict) else {}
+            db_session = self._normalize_session_payload(
+                rd,
+                payload,
+                fallback_start_url=str(row[1] or "").strip(),
+                fallback_saved_at_utc=row[3].isoformat() if row[3] else None,
+                fallback_max_pages=row[2],
+            )
+        artifact_session = self._normalize_session_payload(rd, self._load_session_artifact_payload(rd))
+        if artifact_session is None:
+            return db_session
+        if db_session is None:
+            return artifact_session
+        def _parse_ts(value: Any) -> Optional[datetime]:
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                return None
+        db_saved = _parse_ts(db_session.get("saved_at_utc"))
+        artifact_saved = _parse_ts(artifact_session.get("saved_at_utc"))
+        if artifact_saved and (db_saved is None or artifact_saved >= db_saved):
+            return artifact_session
+        db_state = db_session.get("state") if isinstance(db_session.get("state"), dict) else {}
+        artifact_state = artifact_session.get("state") if isinstance(artifact_session.get("state"), dict) else {}
+        db_urls = db_state.get("discovered_urls") if isinstance(db_state.get("discovered_urls"), list) else []
+        artifact_urls = artifact_state.get("discovered_urls") if isinstance(artifact_state.get("discovered_urls"), list) else []
+        if len(artifact_urls) > len(db_urls):
+            return artifact_session
+        return db_session
 
     def save_session(
         self,
@@ -1294,6 +1365,8 @@ WITH domain_set AS (
     SELECT DISTINCT root_domain FROM coordinator_stage_tasks
     UNION
     SELECT DISTINCT root_domain FROM coordinator_sessions
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_artifacts WHERE artifact_type = 'nightmare_session_json'
 ),
 target_agg AS (
     SELECT
@@ -1320,43 +1393,28 @@ stage_agg AS (
       ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN status = 'running' THEN worker_id ELSE NULL END), NULL) AS stage_workers
     FROM coordinator_stage_tasks
     GROUP BY root_domain
+),
+artifact_agg AS (
+    SELECT
+      root_domain,
+      MAX(updated_at_utc) FILTER (WHERE artifact_type = 'nightmare_session_json') AS nightmare_session_updated_at_utc
+    FROM coordinator_artifacts
+    GROUP BY root_domain
 )
 SELECT
   d.root_domain,
   COALESCE(t.sample_start_url, sess.start_url, '') AS start_url,
-  COALESCE(
-    CASE
-      WHEN jsonb_typeof(sess.payload #> '{state,discovered_urls}') = 'array'
-      THEN jsonb_array_length(sess.payload #> '{state,discovered_urls}')
-      ELSE 0
-    END,
-    0
-  ) AS discovered_urls_count,
-  COALESCE(
-    CASE
-      WHEN jsonb_typeof(sess.payload #> '{state,visited_urls}') = 'array'
-      THEN jsonb_array_length(sess.payload #> '{state,visited_urls}')
-      ELSE 0
-    END,
-    0
-  ) AS visited_urls_count,
-  COALESCE(
-    CASE
-      WHEN jsonb_typeof(sess.payload #> '{frontier}') = 'array'
-      THEN jsonb_array_length(sess.payload #> '{frontier}')
-      ELSE 0
-    END,
-    0
-  ) AS frontier_count,
   sess.saved_at_utc,
   COALESCE(
+    GREATEST(t.last_target_heartbeat, st.last_stage_heartbeat, sess.saved_at_utc, art.nightmare_session_updated_at_utc),
     GREATEST(t.last_target_heartbeat, st.last_stage_heartbeat, sess.saved_at_utc),
-    GREATEST(t.last_target_heartbeat, st.last_stage_heartbeat),
-    GREATEST(t.last_target_heartbeat, sess.saved_at_utc),
-    GREATEST(st.last_stage_heartbeat, sess.saved_at_utc),
+    GREATEST(t.last_target_heartbeat, st.last_stage_heartbeat, art.nightmare_session_updated_at_utc),
+    GREATEST(t.last_target_heartbeat, sess.saved_at_utc, art.nightmare_session_updated_at_utc),
+    GREATEST(st.last_stage_heartbeat, sess.saved_at_utc, art.nightmare_session_updated_at_utc),
     t.last_target_heartbeat,
     st.last_stage_heartbeat,
-    sess.saved_at_utc
+    sess.saved_at_utc,
+    art.nightmare_session_updated_at_utc
   ) AS last_activity_at_utc,
   COALESCE(t.pending_targets, 0) AS pending_targets,
   COALESCE(t.running_targets, 0) AS running_targets,
@@ -1368,11 +1426,13 @@ SELECT
   COALESCE(st.failed_stage_tasks, 0) AS failed_stage_tasks,
   COALESCE(st.active_stages, ARRAY[]::text[]) AS active_stages,
   COALESCE(t.target_workers, ARRAY[]::text[]) AS target_workers,
-  COALESCE(st.stage_workers, ARRAY[]::text[]) AS stage_workers
+  COALESCE(st.stage_workers, ARRAY[]::text[]) AS stage_workers,
+  art.nightmare_session_updated_at_utc
 FROM domain_set d
 LEFT JOIN target_agg t ON t.root_domain = d.root_domain
 LEFT JOIN stage_agg st ON st.root_domain = d.root_domain
 LEFT JOIN coordinator_sessions sess ON sess.root_domain = d.root_domain
+LEFT JOIN artifact_agg art ON art.root_domain = d.root_domain
 ORDER BY last_activity_at_utc DESC NULLS LAST, d.root_domain ASC
 LIMIT %s;
 """
@@ -1393,10 +1453,21 @@ LIMIT %s;
             root_domain = str(row[0] or "").strip().lower()
             if not root_domain:
                 continue
-            active_stages_raw = row[15] if isinstance(row[15], list) else []
+            session = self.load_session(root_domain) or {}
+            state = session.get("state") if isinstance(session.get("state"), dict) else {}
+            discovered_urls = state.get("discovered_urls") if isinstance(state.get("discovered_urls"), list) else []
+            visited_urls = state.get("visited_urls") if isinstance(state.get("visited_urls"), list) else []
+            frontier = session.get("frontier") if isinstance(session.get("frontier"), list) else []
+            url_inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
+
+            discovered_urls_count = len(discovered_urls) if discovered_urls else len(url_inventory)
+            visited_urls_count = len(visited_urls)
+            frontier_count = len(frontier)
+
+            active_stages_raw = row[12] if isinstance(row[12], list) else []
             active_stages = [str(item) for item in active_stages_raw if str(item or "").strip()]
-            target_workers_raw = row[16] if isinstance(row[16], list) else []
-            stage_workers_raw = row[17] if isinstance(row[17], list) else []
+            target_workers_raw = row[13] if isinstance(row[13], list) else []
+            stage_workers_raw = row[14] if isinstance(row[14], list) else []
             active_workers = sorted(
                 {
                     str(item).strip()
@@ -1404,21 +1475,36 @@ LIMIT %s;
                     if str(item or "").strip()
                 }
             )
-            last_activity = row[6]
+
+            last_activity = row[3]
+            for raw_ts in (
+                session.get("saved_at_utc"),
+                row[15].isoformat() if row[15] else None,
+                row[2].isoformat() if row[2] else None,
+            ):
+                if not raw_ts:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                except Exception:
+                    continue
+                if last_activity is None or dt > last_activity:
+                    last_activity = dt
+
             last_activity_iso: Optional[str] = None
             seconds_since_activity: Optional[int] = None
             if last_activity is not None:
                 last_activity_iso = last_activity.isoformat()
                 seconds_since_activity = max(0, int((now_utc - last_activity).total_seconds()))
 
-            pending_targets = int(row[7] or 0)
-            running_targets = int(row[8] or 0)
-            completed_targets = int(row[9] or 0)
-            failed_targets = int(row[10] or 0)
-            pending_stage_tasks = int(row[11] or 0)
-            running_stage_tasks = int(row[12] or 0)
-            completed_stage_tasks = int(row[13] or 0)
-            failed_stage_tasks = int(row[14] or 0)
+            pending_targets = int(row[4] or 0)
+            running_targets = int(row[5] or 0)
+            completed_targets = int(row[6] or 0)
+            failed_targets = int(row[7] or 0)
+            pending_stage_tasks = int(row[8] or 0)
+            running_stage_tasks = int(row[9] or 0)
+            completed_stage_tasks = int(row[10] or 0)
+            failed_stage_tasks = int(row[11] or 0)
 
             phase = "idle"
             if running_targets > 0:
@@ -1435,13 +1521,10 @@ LIMIT %s;
             elif pending_targets > 0:
                 phase = "nightmare_pending"
             elif pending_stage_tasks > 0:
-                if any(str(item).startswith("nightmare_") for item in active_stages):
-                    phase = "nightmare_plugin_pending"
-                else:
-                    phase = "stage_pending"
+                phase = "stage_pending"
             elif failed_targets > 0 or failed_stage_tasks > 0:
                 phase = "failed"
-            elif completed_targets > 0 or completed_stage_tasks > 0:
+            elif completed_targets > 0 or completed_stage_tasks > 0 or discovered_urls_count > 0:
                 phase = "completed"
 
             if phase.endswith("_running"):
@@ -1456,12 +1539,12 @@ LIMIT %s;
             domains.append(
                 {
                     "root_domain": root_domain,
-                    "start_url": str(row[1] or ""),
+                    "start_url": str(session.get("start_url") or row[1] or ""),
                     "phase": phase,
-                    "discovered_urls_count": int(row[2] or 0),
-                    "visited_urls_count": int(row[3] or 0),
-                    "frontier_count": int(row[4] or 0),
-                    "session_saved_at_utc": row[5].isoformat() if row[5] else None,
+                    "discovered_urls_count": discovered_urls_count,
+                    "visited_urls_count": visited_urls_count,
+                    "frontier_count": frontier_count,
+                    "session_saved_at_utc": session.get("saved_at_utc") or (row[2].isoformat() if row[2] else None),
                     "last_activity_at_utc": last_activity_iso,
                     "seconds_since_activity": seconds_since_activity,
                     "pending_targets": pending_targets,
@@ -1478,7 +1561,7 @@ LIMIT %s;
             )
 
         return {
-            "generated_at_utc": now_utc.isoformat(),
+            "generated_at_utc": _iso_now(),
             "limit": safe_limit,
             "counts": {
                 "total_domains": len(domains),
@@ -1489,93 +1572,6 @@ LIMIT %s;
             },
             "domains": domains,
         }
-
-    def auth0r_overview(self, *, completed_only: bool = False, limit: int = 5000) -> dict[str, Any]:
-        safe_limit = max(1, min(5000, int(limit or 5000)))
-        order_by_clause = (
-            "root_domain ASC"
-            if bool(completed_only)
-            else "COALESCE(saved_at_utc, NOW()) DESC, root_domain ASC"
-        )
-        sql = """
-WITH target_agg AS (
-    SELECT
-      root_domain,
-      MIN(start_url) FILTER (WHERE start_url IS NOT NULL AND start_url <> '') AS start_url,
-      COUNT(*) FILTER (WHERE status = 'pending') AS pending_targets,
-      COUNT(*) FILTER (WHERE status = 'running') AS running_targets,
-      COUNT(*) FILTER (WHERE status = 'completed') AS completed_targets,
-      COUNT(*) FILTER (WHERE status = 'failed') AS failed_targets
-    FROM coordinator_targets
-    GROUP BY root_domain
-),
-domain_rows AS (
-    SELECT
-      sess.root_domain,
-      COALESCE(t.start_url, sess.start_url, '') AS start_url,
-      COALESCE(
-        CASE
-          WHEN jsonb_typeof(sess.payload #> '{state,discovered_urls}') = 'array'
-          THEN jsonb_array_length(sess.payload #> '{state,discovered_urls}')
-          ELSE 0
-        END,
-        0
-      ) AS discovered_urls_count,
-      COALESCE(t.pending_targets, 0) AS pending_targets,
-      COALESCE(t.running_targets, 0) AS running_targets,
-      COALESCE(t.completed_targets, 0) AS completed_targets,
-      COALESCE(t.failed_targets, 0) AS failed_targets,
-      sess.saved_at_utc
-    FROM coordinator_sessions sess
-    LEFT JOIN target_agg t ON t.root_domain = sess.root_domain
-)
-SELECT
-  root_domain,
-  start_url,
-  discovered_urls_count,
-  CASE
-    WHEN running_targets > 0 THEN 'running'
-    WHEN pending_targets > 0 THEN 'pending'
-    WHEN failed_targets > 0 AND completed_targets = 0 THEN 'failed'
-    WHEN failed_targets > 0 THEN 'completed_with_failures'
-    WHEN completed_targets > 0 THEN 'completed'
-    ELSE 'unknown'
-  END AS status,
-  saved_at_utc
-FROM domain_rows
-WHERE discovered_urls_count > 0
-  AND (%s = FALSE OR (
-    running_targets = 0
-    AND pending_targets = 0
-    AND failed_targets = 0
-    AND completed_targets > 0
-  ))
-ORDER BY {order_by_clause}
-LIMIT %s;
-""".replace("{order_by_clause}", order_by_clause)
-        domains: list[dict[str, Any]] = []
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (bool(completed_only), safe_limit))
-                rows = cur.fetchall()
-        for row in rows:
-            domains.append(
-                {
-                    "root_domain": str(row[0] or "").strip().lower(),
-                    "start_url": str(row[1] or "").strip(),
-                    "discovered_urls_count": int(row[2] or 0),
-                    "status": str(row[3] or "unknown"),
-                    "saved_at_utc": row[4].isoformat() if row[4] else None,
-                }
-            )
-        return {
-            "generated_at_utc": _iso_now(),
-            "completed_only": bool(completed_only),
-            "total_domains": len(domains),
-            "domains": domains,
-        }
-
-
 
     def list_discovered_target_domains(self, *, limit: int = 5000, q: str = "") -> list[dict[str, Any]]:
         safe_limit = max(1, min(20000, int(limit or 5000)))
@@ -1591,23 +1587,36 @@ WITH target_status AS (
     FROM coordinator_targets
     GROUP BY root_domain
 ),
-domain_rows AS (
+artifact_status AS (
     SELECT
-      sess.root_domain,
-      COALESCE(ts.pending_targets, 0) AS pending_targets,
-      COALESCE(ts.running_targets, 0) AS running_targets,
-      COALESCE(ts.completed_targets, 0) AS completed_targets,
-      COALESCE(ts.failed_targets, 0) AS failed_targets,
-      sess.saved_at_utc,
-      sess.start_url,
-      sess.payload
-    FROM coordinator_sessions sess
-    LEFT JOIN target_status ts ON ts.root_domain = sess.root_domain
+      root_domain,
+      MAX(updated_at_utc) FILTER (WHERE artifact_type = 'nightmare_session_json') AS nightmare_session_updated_at_utc
+    FROM coordinator_artifacts
+    GROUP BY root_domain
+),
+domain_rows AS (
+    SELECT DISTINCT root_domain FROM coordinator_sessions
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_targets
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_stage_tasks
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_artifacts WHERE artifact_type = 'nightmare_session_json'
 )
-SELECT root_domain, start_url, saved_at_utc, payload,
-       pending_targets, running_targets, completed_targets, failed_targets
-FROM domain_rows
-ORDER BY COALESCE(saved_at_utc, NOW()) DESC, root_domain ASC
+SELECT
+  d.root_domain,
+  COALESCE(sess.start_url, '') AS start_url,
+  sess.saved_at_utc,
+  COALESCE(ts.pending_targets, 0) AS pending_targets,
+  COALESCE(ts.running_targets, 0) AS running_targets,
+  COALESCE(ts.completed_targets, 0) AS completed_targets,
+  COALESCE(ts.failed_targets, 0) AS failed_targets,
+  art.nightmare_session_updated_at_utc
+FROM domain_rows d
+LEFT JOIN coordinator_sessions sess ON sess.root_domain = d.root_domain
+LEFT JOIN target_status ts ON ts.root_domain = d.root_domain
+LEFT JOIN artifact_status art ON art.root_domain = d.root_domain
+ORDER BY COALESCE(art.nightmare_session_updated_at_utc, sess.saved_at_utc, NOW()) DESC, d.root_domain ASC
 LIMIT %s;
 """
         rows_out: list[dict[str, Any]] = []
@@ -1622,13 +1631,15 @@ LIMIT %s;
                 continue
             if needle and needle not in root_domain:
                 continue
-            payload = row[3] if isinstance(row[3], dict) else {}
-            state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+            session = self.load_session(root_domain) or {}
+            state = session.get("state") if isinstance(session.get("state"), dict) else {}
             discovered_urls = state.get("discovered_urls")
             discovered_count = len(discovered_urls) if isinstance(discovered_urls, list) else 0
+            url_inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
+            if discovered_count <= 0 and url_inventory:
+                discovered_count = len([u for u in url_inventory.keys() if str(u or "").strip()])
             if discovered_count <= 0:
                 continue
-            url_inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
             method_counts: dict[str, int] = {}
             for _url, record in url_inventory.items():
                 if not isinstance(record, dict):
@@ -1639,22 +1650,26 @@ LIMIT %s;
                         key = str(method or "").strip()
                         if key:
                             method_counts[key] = int(method_counts.get(key, 0) or 0) + 1
-            if int(row[5] or 0) > 0:
+            pending_targets = int(row[3] or 0)
+            running_targets = int(row[4] or 0)
+            completed_targets = int(row[5] or 0)
+            failed_targets = int(row[6] or 0)
+            if running_targets > 0:
                 status = "running"
-            elif int(row[4] or 0) > 0:
+            elif pending_targets > 0:
                 status = "pending"
-            elif int(row[7] or 0) > 0 and int(row[6] or 0) == 0:
+            elif failed_targets > 0 and completed_targets == 0:
                 status = "failed"
-            elif int(row[7] or 0) > 0:
+            elif failed_targets > 0:
                 status = "completed_with_failures"
-            elif int(row[6] or 0) > 0:
+            elif completed_targets > 0:
                 status = "completed"
             else:
                 status = "unknown"
             rows_out.append({
                 "root_domain": root_domain,
-                "start_url": str(row[1] or "").strip(),
-                "saved_at_utc": row[2].isoformat() if row[2] else None,
+                "start_url": str(session.get("start_url") or row[1] or "").strip(),
+                "saved_at_utc": session.get("saved_at_utc") or (row[7].isoformat() if row[7] else None) or (row[2].isoformat() if row[2] else None),
                 "discovered_urls_count": discovered_count,
                 "method_counts": method_counts,
                 "status": status,
@@ -2430,7 +2445,7 @@ RETURNING command;
         root_domain: str,
         stage: str,
         *,
-        workflow_id: str = "",
+        workflow_id: str = "default",
         worker_id: str = "",
         reason: str = "",
         allow_retry_failed: bool = False,
@@ -2592,7 +2607,7 @@ WHERE workflow_id = %s
         root_domain: str,
         stage: str,
         *,
-        workflow_id: str = "",
+        workflow_id: str = "default",
         worker_id: str = "",
         reason: str = "",
         allow_retry_failed: bool = False,
@@ -2644,6 +2659,7 @@ WITH candidate AS (
         status = 'pending'
         OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
     )
+      AND (%s = '' OR workflow_id = %s)
       AND (%s::text[] IS NULL OR stage = ANY(%s))
       AND NOT EXISTS (
           SELECT 1
@@ -2696,7 +2712,7 @@ RETURNING
         with self._connect() as conn:
             with conn.cursor() as cur:
                 self._touch_worker_presence(cur, wid, "claim_stage")
-                cur.execute(sql, (allowlist_param, allowlist_param, wid, lease))
+                cur.execute(sql, (widf, widf, allowlist_param, allowlist_param, wid, lease))
                 row = cur.fetchone()
             conn.commit()
         if row is None:
@@ -2738,7 +2754,7 @@ RETURNING
         worker_id: str,
         lease_seconds: int,
         *,
-        workflow_id: str = "",
+        workflow_id: str = "default",
     ) -> Optional[dict[str, Any]]:
         stg = str(stage or "").strip().lower()
         if not stg:
@@ -2931,7 +2947,7 @@ WHERE workflow_id = %s
         stage: str,
         worker_id: str,
         *,
-        workflow_id: str = "",
+        workflow_id: str = "default",
         exit_code: int,
         error: str = "",
         checkpoint: Optional[dict[str, Any]] = None,
