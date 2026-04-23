@@ -6565,7 +6565,7 @@ def main(argv: list[str] | None = None) -> int:
     if not servers:
         raise RuntimeError("No active listeners configured. Enable http_port and/or https_port with valid TLS files.")
 
-    print("[server] starting dashboard/coordinator server", flush=True)
+    print("[server] starting coordinator UI server", flush=True)
     print(f"[server] config={config_path}", flush=True)
     print(f"[server] app_root={BASE_DIR}", flush=True)
     print(f"[server] output_root={output_root}", flush=True)
@@ -6577,11 +6577,11 @@ def main(argv: list[str] | None = None) -> int:
     if all_domains_html is not None:
         print(f"[server] default route / serving all-domains report: {all_domains_html}", flush=True)
     else:
-        print("[server] default route / serving dashboard (all_domains.results_summary.html not found)", flush=True)
+        print("[server] default route / serving workers (all_domains.results_summary.html not found)", flush=True)
     for scheme, srv in servers:
         bound = srv.server_address[1]
         print(f"[server] {scheme} listening on {scheme}://{host}:{bound}", flush=True)
-    print(f"[server] dashboard route: http://{host}:{http_port or legacy_port}/dashboard", flush=True)
+    print(f"[server] workers route: http://{host}:{http_port or legacy_port}/workers", flush=True)
 
     threads: list[threading.Thread] = []
     for _scheme, srv in servers:
