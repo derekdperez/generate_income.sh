@@ -209,3 +209,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Spider stages reuse `nightmare.py --resume` over enumerated subdomain seeds and publish canonical Nightmare artifacts after each successful subdomain run.
   - High-value extraction stage reuses extractor runtime with workflow parameterized wordlist (`resources/wordlists/high_value_extractor_list.txt`).
 - Recon extractor stage is now independent of Fozzy artifacts: it scans Nightmare domain output files directly with high-value regex rules and publishes both recon-specific and generic extractor artifacts.
+- Plugin package boundary refinement (2026-04-22):
+  - Coordinator workflow plugins are now represented as concrete classes in `plugins/` (`plugins/recon/spider/*` for spider variants).
+  - `coordinator.py` plugin execution now resolves handlers through `plugins/registry.py` and executes through a shared `PluginExecutionContext`.
+  - Plugin selection logic is centralized in registry mapping/prefix rules instead of duplicated switch branches in coordinator runtime flow.

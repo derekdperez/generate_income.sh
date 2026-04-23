@@ -22,3 +22,4 @@
 - Add deploy bootstrap check/install for Sublist3r so active enumeration path is deterministic across fresh workers.
 - Add API-level tests for new workflow control endpoints (`workflow-config`, `workflow/run`, `workflow/mode`, `workflow/reload`) including malformed parameter JSON and workflow-not-found cases.
 - Add optimistic concurrency/versioning for workflow file saves to prevent accidental overwrite when multiple operators edit `/workflows#recon` simultaneously.
+- Continue plugin extraction by moving heavy plugin runtime bodies (`_run_recon_*`, `_run_fozzy_plugin_task`, `_run_auth0r_plugin_task`, `_run_extractor_plugin_task`) from `coordinator.py` into plugin module implementations while preserving the new registry-based dispatch boundary.

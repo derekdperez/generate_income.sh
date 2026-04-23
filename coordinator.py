@@ -33,6 +33,8 @@ from urllib.parse import urlencode, urlparse
 from http_client import request_capped, request_json
 
 from output_cleanup import FLEET_GEN_APPLIED_FILENAME, clear_output_root_children
+from plugins.base import PluginExecutionContext
+from plugins.registry import resolve_plugin
 from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
 from nightmare_shared.error_reporting import install_error_reporting, report_error
 from nightmare_shared.logging_utils import configure_logging, get_logger
@@ -2311,39 +2313,20 @@ class DistributedCoordinator:
                 checkpoint=checkpoint,
                 progress=progress,
             )
-            if plugin_name == "fozzy":
-                exit_code, err_text = self._run_fozzy_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
-            elif plugin_name == "auth0r":
-                exit_code, err_text = self._run_auth0r_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
-            elif plugin_name == "extractor":
-                exit_code, err_text = self._run_extractor_plugin_task(worker_id=worker_id, root_domain=root_domain, plugin_name=plugin_name)
-            elif plugin_name == "recon_subdomain_enumeration":
-                exit_code, err_text = self._run_recon_subdomain_enumeration_plugin_task(
-                    worker_id=worker_id,
-                    root_domain=root_domain,
-                    plugin_name=plugin_name,
-                )
-            elif plugin_name in {
-                "recon_spider_source_tags",
-                "recon_spider_script_links",
-                "recon_spider_wordlist",
-                "recon_spider_ai",
-            }:
-                exit_code, err_text = self._run_recon_spider_plugin_task(
-                    worker_id=worker_id,
-                    root_domain=root_domain,
-                    plugin_name=plugin_name,
-                )
-            elif plugin_name == "recon_extractor_high_value":
-                exit_code, err_text = self._run_recon_extractor_high_value_plugin_task(
-                    worker_id=worker_id,
-                    root_domain=root_domain,
-                    plugin_name=plugin_name,
-                )
-            elif plugin_name.startswith("nightmare_"):
-                exit_code, err_text = self._run_nightmare_artifact_gate_plugin(root_domain=root_domain, plugin_name=plugin_name)
-            else:
+            plugin_runner = resolve_plugin(plugin_name)
+            if plugin_runner is None:
                 exit_code, err_text = 1, f"unsupported plugin: {plugin_name}"
+            else:
+                exit_code, err_text = plugin_runner.run(
+                    PluginExecutionContext(
+                        coordinator=self,
+                        worker_id=worker_id,
+                        root_domain=root_domain,
+                        workflow_id=workflow_id,
+                        plugin_name=plugin_name,
+                        entry=entry,
+                    )
+                )
 
             checkpoint["completed_at_utc"] = _now_iso()
             checkpoint["status"] = "completed" if int(exit_code) == 0 else "failed"

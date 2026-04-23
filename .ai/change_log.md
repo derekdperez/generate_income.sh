@@ -1315,3 +1315,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py coordinator.py server_app/store.py`
   - `pytest -q tests/test_recon_workflow_config.py`
   - `pytest -q tests/test_reporting_and_store_helpers.py`
+
+## 2026-04-22
+
+- Refactored major coordinator workflow plugins into a dedicated `plugins/` package:
+  - Added plugin class files for `fozzy`, `auth0r`, `extractor`, Nightmare artifact-gate, recon subdomain enumeration, recon high-value extractor, and each recon spider type in `plugins/recon/spider/`.
+  - Added shared plugin execution contract in `plugins/base.py` (`PluginExecutionContext`, `CoordinatorPlugin`).
+  - Added centralized plugin resolver in `plugins/registry.py`.
+- Updated `coordinator.py` plugin dispatch:
+  - Replaced hardcoded plugin-name `if/elif` run branch with registry-based execution via `resolve_plugin(...)`.
+  - Kept unsupported-plugin failure semantics unchanged.
+- Validation:
+  - `python -m py_compile coordinator.py plugins/...`
+  - `pytest -q tests/test_module_decomposition.py tests/test_refactor_modules.py tests/test_recon_workflow_config.py`

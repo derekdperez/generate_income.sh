@@ -341,6 +341,10 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - `reload` should be handled in coordinator worker loops without changing running/paused semantics unless reload fails.
 - Schema bootstrap compatibility convention: `CREATE TABLE IF NOT EXISTS` bootstrap blocks must not reference columns that may only exist after migrations on legacy tables; workflow-specific keys/indices belong in post-bootstrap migration statements.
 - Migration transaction convention: schema migration statements should be applied as independently committed units (with per-statement rollback on failure) to prevent one failing migration from undoing previously successful schema upgrades.
+- Coordinator plugin dispatch convention:
+  - Runtime plugin dispatch should use `plugins/registry.py` (`resolve_plugin`) instead of hardcoded `if/elif` plugin-name branching.
+  - Each major workflow plugin should have its own class file under `plugins/`.
+  - Recon spider plugin variants should remain split into one file per spider class under `plugins/recon/spider/`.
 
 - Recon plugin artifact convention:
   - Progress artifact type: `<plugin_name>_progress_json`
