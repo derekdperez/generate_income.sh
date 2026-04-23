@@ -193,6 +193,86 @@ def _resolve_workflow_path(workflow_id: str) -> Path | None:
     return None
 
 
+
+def _workflow_catalog_payload() -> dict[str, dict[str, Any]]:
+    catalog: dict[str, dict[str, Any]] = {}
+    for path in _iter_workflow_paths():
+        payload = _load_workflow_payload(path)
+        workflow_id = _normalize_workflow_id(payload.get("workflow_id"), default=_workflow_id_from_path(path))
+        if workflow_id:
+            catalog[workflow_id] = payload
+    return catalog
+
+
+def _workflow_stage_prerequisites_satisfied(
+    workflow_entry: dict[str, Any],
+    *,
+    domain_row: dict[str, Any],
+    workflow_id: str,
+) -> bool:
+    artifacts = {
+        str(item or "").strip().lower()
+        for item in (domain_row.get("artifact_types") if isinstance(domain_row.get("artifact_types"), list) else [])
+        if str(item or "").strip()
+    }
+    plugin_tasks_all = domain_row.get("plugin_tasks") if isinstance(domain_row.get("plugin_tasks"), dict) else {}
+    workflow_tasks = plugin_tasks_all.get(workflow_id) if isinstance(plugin_tasks_all.get(workflow_id), dict) else {}
+    target_counts = domain_row.get("targets") if isinstance(domain_row.get("targets"), dict) else {}
+    prereq = workflow_entry.get("preconditions", workflow_entry.get("prerequisites", {}))
+    prereq = prereq if isinstance(prereq, dict) else {}
+
+    required_all = {str(item or "").strip().lower() for item in (prereq.get("artifacts_all") or []) if str(item or "").strip()}
+    required_any = {str(item or "").strip().lower() for item in (prereq.get("artifacts_any") or []) if str(item or "").strip()}
+    required_plugins_all = {
+        str(item or "").strip().lower()
+        for item in (prereq.get("requires_plugins_all") or prereq.get("plugins_all") or [])
+        if str(item or "").strip()
+    }
+    required_plugins_any = {
+        str(item or "").strip().lower()
+        for item in (prereq.get("requires_plugins_any") or prereq.get("plugins_any") or [])
+        if str(item or "").strip()
+    }
+    required_target_statuses = {
+        str(item or "").strip().lower()
+        for item in (prereq.get("target_statuses") or [])
+        if str(item or "").strip()
+    }
+    require_target_completed = bool(prereq.get("require_target_completed", False))
+
+    def _task_status(name: str) -> str:
+        row = workflow_tasks.get(name) if isinstance(workflow_tasks.get(name), dict) else {}
+        return str(row.get("status") or "").strip().lower()
+
+    pending_targets = _safe_int(target_counts.get("pending", 0), 0)
+    running_targets = _safe_int(target_counts.get("running", 0), 0)
+    completed_targets = _safe_int(target_counts.get("completed", 0), 0)
+    failed_targets = _safe_int(target_counts.get("failed", 0), 0)
+    if running_targets > 0:
+        current_target_status = "running"
+    elif pending_targets > 0:
+        current_target_status = "pending"
+    elif failed_targets > 0 and completed_targets <= 0:
+        current_target_status = "failed"
+    elif completed_targets > 0:
+        current_target_status = "completed"
+    else:
+        current_target_status = "unknown"
+
+    if required_all and not required_all.issubset(artifacts):
+        return False
+    if required_any and artifacts.isdisjoint(required_any):
+        return False
+    if required_plugins_all and any(_task_status(item) != "completed" for item in required_plugins_all):
+        return False
+    if required_plugins_any and not any(_task_status(item) == "completed" for item in required_plugins_any):
+        return False
+    if required_target_statuses and current_target_status not in required_target_statuses:
+        return False
+    if require_target_completed and completed_targets <= 0:
+        return False
+    return True
+
 def _default_server_config() -> dict[str, Any]:
     return {
         "host": DEFAULT_HOST,
@@ -4612,9 +4692,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_json({"ok": True, "entry": item})
             return
 
+
         if path == "/api/coord/stage/claim-next":
             worker_id = str(body.get("worker_id", "") or "").strip()
-            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
+            workflow_id = str(body.get("workflow_id", "") or "").strip().lower()
             lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
             plugin_allowlist_raw = body.get("plugin_allowlist")
             plugin_allowlist = (
@@ -4622,13 +4703,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if isinstance(plugin_allowlist_raw, list)
                 else None
             )
-            item = self.coordinator_store.claim_next_stage(
-                worker_id=worker_id,
-                lease_seconds=lease_seconds,
+            catalog = _workflow_catalog_payload()
+            snapshot = self.coordinator_store.workflow_scheduler_snapshot(limit=5000)
+            domains_by_root = {
+                str(item.get("root_domain") or "").strip().lower(): item
+                for item in (snapshot.get("domains") if isinstance(snapshot.get("domains"), list) else [])
+                if isinstance(item, dict) and str(item.get("root_domain") or "").strip()
+            }
+            entry = None
+            candidates = self.coordinator_store.list_claimable_stage_candidates(
                 workflow_id=workflow_id,
                 plugin_allowlist=plugin_allowlist,
+                limit=500,
             )
-            self._write_json({"ok": True, "entry": item})
+            for candidate in candidates:
+                candidate_workflow_id = str(candidate.get("workflow_id") or "").strip().lower()
+                candidate_root_domain = str(candidate.get("root_domain") or "").strip().lower()
+                candidate_stage = str(candidate.get("stage") or "").strip().lower()
+                workflow_payload = catalog.get(candidate_workflow_id) if candidate_workflow_id else None
+                workflow_plugins = workflow_payload.get("plugins") if isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("plugins"), list) else []
+                workflow_entry = None
+                for plugin in workflow_plugins:
+                    if not isinstance(plugin, dict):
+                        continue
+                    plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
+                    if plugin_name == candidate_stage:
+                        workflow_entry = plugin
+                        break
+                domain_row = domains_by_root.get(
+                    candidate_root_domain,
+                    {"root_domain": candidate_root_domain, "artifact_types": [], "plugin_tasks": {}, "targets": {}},
+                )
+                if workflow_entry is not None and not _workflow_stage_prerequisites_satisfied(
+                    workflow_entry,
+                    domain_row=domain_row,
+                    workflow_id=candidate_workflow_id,
+                ):
+                    continue
+                entry = self.coordinator_store.claim_stage_candidate(
+                    workflow_id=candidate_workflow_id or "default",
+                    root_domain=candidate_root_domain,
+                    stage=candidate_stage,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                )
+                if entry is not None:
+                    break
+            self._write_json({"ok": True, "entry": entry})
             return
 
         if path == "/api/coord/stage/heartbeat":
@@ -4809,26 +4930,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": f"workflow config is empty or invalid: {workflow_path.name}"}, status=500)
                 return
             plugins = [item for item in (workflow.get("plugins") if isinstance(workflow.get("plugins"), list) else []) if isinstance(item, dict)]
-            starter_plugins: list[dict[str, Any]] = []
-            for plugin in plugins:
-                if not bool(plugin.get("enabled", True)):
-                    continue
-                prereq = plugin.get("preconditions", plugin.get("prerequisites", {}))
-                prereq_dict = prereq if isinstance(prereq, dict) else {}
-                has_artifact_or_dependency_gate = any(
-                    bool(prereq_dict.get(key))
-                    for key in ("artifacts_all", "artifacts_any", "requires_plugins_all", "requires_plugins_any", "plugins_all", "plugins_any")
-                )
-                require_target_completed = bool(prereq_dict.get("require_target_completed", False))
-                if has_artifact_or_dependency_gate or require_target_completed:
-                    continue
-                starter_plugins.append(plugin)
-            if not starter_plugins:
-                for plugin in plugins:
-                    if bool(plugin.get("enabled", True)):
-                        starter_plugins.append(plugin)
-                        break
-            if not starter_plugins:
+            runnable_plugins = [plugin for plugin in plugins if bool(plugin.get("enabled", True))]
+            if not runnable_plugins:
                 self._write_json({"error": "workflow has no enabled plugins"}, status=400)
                 return
             root_domains_raw = body.get("root_domains")
@@ -4853,7 +4956,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             rows: list[dict[str, Any]] = []
             counts = {"scheduled": 0, "already_pending": 0, "already_running": 0, "already_completed": 0, "failed": 0, "other": 0}
             for root_domain in root_domains:
-                for plugin in starter_plugins:
+                for plugin in runnable_plugins:
                     plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
                     if not plugin_name:
                         continue

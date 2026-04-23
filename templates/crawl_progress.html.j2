@@ -51,6 +51,7 @@
           <th>Visited</th>
           <th>Frontier</th>
           <th>Active Workers</th>
+          <th>Spider Stats</th>
           <th>Last Activity (EST)</th>
           <th>Age (s)</th>
         </tr>
@@ -175,6 +176,14 @@
         .map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`)
         .join("");
     }
+    function formatSpiderStats(items) {
+      const rows = Array.isArray(items) ? items : [];
+      if (!rows.length) return "-";
+      return rows.map((row) => {
+        const name = String(row.plugin_name || "").replace(/^recon_spider_/, "");
+        return `${name}: ${Number(row.completed_runs || 0)}/${Number(row.subdomain_count || 0)} hosts, running ${Number(row.running_runs || 0)}, frontier ${Number(row.last_frontier_size || 0)}`;
+      }).join(" | ");
+    }
     function phaseClass(phase) {
       const text = String(phase || "");
       if (text.endsWith("_running")) return "phase-running";
@@ -189,7 +198,7 @@
         ? rows.filter((row) => String(row.root_domain || "").toLowerCase().includes(filter))
         : rows;
       if (!filtered.length) {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='8'>No domains match the current filter.</td></tr>";
+        document.getElementById("rows").innerHTML = "<tr><td colspan='9'>No domains match the current filter.</td></tr>";
         return;
       }
       const sorted = [...filtered].sort((a, b) => Number(b.discovered_urls_count || 0) - Number(a.discovered_urls_count || 0));
@@ -203,6 +212,7 @@
           <td>${esc(row.visited_urls_count || 0)}</td>
           <td>${esc(row.frontier_count || 0)}</td>
           <td>${esc(workers || "-")}</td>
+          <td>${esc(formatSpiderStats(row.spider_stats || []))}</td>
           <td>${esc(formatEstTime(row.last_activity_at_utc || "-"))}</td>
           <td>${esc(row.seconds_since_activity ?? "-")}</td>
         </tr>`;
@@ -245,7 +255,7 @@
       } catch (e) {
         if (!showedCached) {
           msg.textContent = "Load failed.";
-          document.getElementById("rows").innerHTML = `<tr><td colspan='8'>Failed to load crawl progress: ${esc(e.message)}</td></tr>`;
+          document.getElementById("rows").innerHTML = `<tr><td colspan='9'>Failed to load crawl progress: ${esc(e.message)}</td></tr>`;
         } else {
           msg.textContent = "Refresh failed. Showing cached crawl snapshot.";
         }
