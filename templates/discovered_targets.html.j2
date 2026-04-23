@@ -254,7 +254,7 @@
       if (isBusy) root.classList.add("active"); else root.classList.remove("active");
       label.textContent = String(text || "");
     }
-    async function fetchJson(path, requestKey, options) {
+    async function fetchJson(path, options) {
       const cacheMode = String(options?.cacheMode || "prefer").toLowerCase() === "refresh" ? "refresh" : "prefer";
       const separator = path.includes("?") ? "&" : "?";
       const url = `${path}${separator}cache_mode=${encodeURIComponent(cacheMode)}`;
@@ -482,7 +482,6 @@
       try {
         const payload = await fetchJson(
           `/api/coord/discovered-targets?${params.toString()}`,
-          "domains",
           { cacheMode: forceRefresh ? "refresh" : "prefer" }
         );
         if (requestSeq !== requestState.domainsSeq) return;
@@ -560,7 +559,6 @@
       try {
         const payload = await fetchJson(
           `/api/coord/discovered-target-sitemap?${params.toString()}`,
-          "sitemap",
           { cacheMode: forceRefresh ? "refresh" : "prefer" }
         );
         if (requestSeq !== requestState.sitemapSeq) return;

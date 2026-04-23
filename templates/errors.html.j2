@@ -45,7 +45,7 @@
     <button id="refresh" class="primary">Refresh</button>
   </div>
 
-  <div class="meta" id="status">Loading…</div>
+  <div class="meta" id="status">Loading...</div>
 
   <div class="table-wrap">
     <table id="errorsTable">
@@ -69,60 +69,115 @@
   </div>
 
   <script>
-    async function loadErrors() {
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    let loadErrorsSeq = 0;
+
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function hydrateTokenFromCookie() {
+      const token = readCookie(TOKEN_COOKIE_NAME);
+      if (token) document.getElementById("token").value = token;
+    }
+    function persistTokenCookie() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+    async function loadErrors(options) {
+      const requestSeq = ++loadErrorsSeq;
+      const silent = Boolean(options && options.silent);
       const params = new URLSearchParams({
-        search: document.getElementById('search').value,
-        machine: document.getElementById('machine').value,
-        program_name: document.getElementById('program').value,
-        component_name: document.getElementById('component').value,
-        exception_type: document.getElementById('exceptionType').value,
-        limit: document.getElementById('limit').value
+        search: document.getElementById("search").value,
+        machine: document.getElementById("machine").value,
+        program_name: document.getElementById("program").value,
+        component_name: document.getElementById("component").value,
+        exception_type: document.getElementById("exceptionType").value,
+        limit: document.getElementById("limit").value,
       });
-      const status = document.getElementById('status');
-      status.textContent = 'Loading…';
-      const resp = await fetch('/api/errors?' + params.toString(), { credentials: 'same-origin' });
+      const status = document.getElementById("status");
+      if (!silent) status.textContent = "Loading...";
+      const resp = await fetch(`/api/errors?${params.toString()}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: authHeaders(),
+      });
       const payload = await resp.json();
-      const body = document.getElementById('errorsBody');
-      body.innerHTML = '';
+      if (requestSeq !== loadErrorsSeq) return;
+      const body = document.getElementById("errorsBody");
+      body.innerHTML = "";
       const events = Array.isArray(payload.events) ? payload.events : [];
       for (const event of events) {
-        const tr = document.createElement('tr');
-        const sev = String(event.severity || '').toLowerCase();
-        tr.className = sev.includes('critical') ? 'critical-row' : 'error-row';
-        const stack = event.stacktrace || event.raw_line || '';
+        const tr = document.createElement("tr");
+        const sev = String(event.severity || "").toLowerCase();
+        tr.className = sev.includes("critical") ? "critical-row" : "error-row";
+        const stack = event.stacktrace || event.raw_line || "";
         tr.innerHTML = `
-          <td>${escapeHtml(event.event_time_est || event.event_time_utc || '')}</td>
-          <td><span class="pill">${escapeHtml(event.severity || '')}</span></td>
-          <td>${escapeHtml(event.machine || '')}</td>
-          <td>${escapeHtml(event.program_name || '')}</td>
-          <td>${escapeHtml(event.component_name || '')}</td>
-          <td>${escapeHtml(event.source_id || '')}<div class="muted">${escapeHtml(event.source_type || '')}</div></td>
-          <td>${escapeHtml(event.exception_type || '')}</td>
-          <td>${escapeHtml(event.description || '')}</td>
-          <td>${escapeHtml(event.class_name || '')}</td>
-          <td>${escapeHtml(event.function_name || '')}</td>
+          <td>${escapeHtml(event.event_time_est || event.event_time_utc || "")}</td>
+          <td><span class="pill">${escapeHtml(event.severity || "")}</span></td>
+          <td>${escapeHtml(event.machine || "")}</td>
+          <td>${escapeHtml(event.program_name || "")}</td>
+          <td>${escapeHtml(event.component_name || "")}</td>
+          <td>${escapeHtml(event.source_id || "")}<div class="muted">${escapeHtml(event.source_type || "")}</div></td>
+          <td>${escapeHtml(event.exception_type || "")}</td>
+          <td>${escapeHtml(event.description || "")}</td>
+          <td>${escapeHtml(event.class_name || "")}</td>
+          <td>${escapeHtml(event.function_name || "")}</td>
           <td class="mono stack">${escapeHtml(stack)}</td>
         `;
         body.appendChild(tr);
       }
       status.textContent = `Loaded ${events.length} of ${payload.total || 0} error events`;
     }
-    function escapeHtml(value) {
-      return String(value || '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
-    }
-    document.getElementById('refresh').addEventListener('click', loadErrors);
-    for (const id of ['search', 'machine', 'program', 'component', 'exceptionType']) {
-      document.getElementById(id).addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') loadErrors();
+
+    hydrateTokenFromCookie();
+    document.getElementById("token").addEventListener("change", () => {
+      persistTokenCookie();
+      loadErrors().catch((error) => {
+        document.getElementById("status").textContent = `Failed to load errors: ${error}`;
+      });
+    });
+    document.getElementById("token").addEventListener("blur", persistTokenCookie);
+    document.getElementById("refresh").addEventListener("click", loadErrors);
+    for (const id of ["search", "machine", "program", "component", "exceptionType"]) {
+      document.getElementById(id).addEventListener("keydown", (event) => {
+        if (event.key === "Enter") loadErrors();
       });
     }
     loadErrors().catch((error) => {
-      document.getElementById('status').textContent = 'Failed to load errors: ' + error;
+      document.getElementById("status").textContent = `Failed to load errors: ${error}`;
     });
+    setInterval(() => {
+      loadErrors({ silent: true }).catch(() => {});
+    }, 30000);
   </script>
 </body>
 </html>
