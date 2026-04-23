@@ -833,6 +833,133 @@ WHERE entry_id = %s
             return {}
         return self._decode_json_bytes(bytes(artifact.get("content") or b""))
 
+
+    def _bulk_load_sessions(
+        self,
+        root_domains: list[str],
+        *,
+        include_artifact_fallback: bool = False,
+        artifact_fallback_limit: Optional[int] = None,
+    ) -> dict[str, dict[str, Any]]:
+        domains = [str(item or "").strip().lower() for item in root_domains if str(item or "").strip()]
+        if not domains:
+            return {}
+
+        ordered_domains: list[str] = []
+        seen: set[str] = set()
+        for domain in domains:
+            if domain in seen:
+                continue
+            seen.add(domain)
+            ordered_domains.append(domain)
+
+        sessions_by_domain: dict[str, dict[str, Any]] = {}
+        sql = """
+SELECT root_domain, start_url, max_pages, saved_at_utc, payload
+FROM coordinator_sessions
+WHERE root_domain = ANY(%s);
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (ordered_domains,))
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            rd = str(row[0] or "").strip().lower()
+            if not rd:
+                continue
+            payload = row[4] if isinstance(row[4], dict) else {}
+            normalized = self._normalize_session_payload(
+                rd,
+                payload,
+                fallback_start_url=str(row[1] or "").strip(),
+                fallback_saved_at_utc=row[3].isoformat() if row[3] else None,
+                fallback_max_pages=row[2],
+            )
+            if normalized is not None:
+                sessions_by_domain[rd] = normalized
+
+        if not include_artifact_fallback:
+            return sessions_by_domain
+
+        missing_domains: list[str] = []
+        for rd in ordered_domains:
+            metrics = self._session_url_metrics(sessions_by_domain.get(rd))
+            if not bool(metrics.get("has_session_data")):
+                missing_domains.append(rd)
+
+        if artifact_fallback_limit is not None:
+            fallback_cap = max(0, int(artifact_fallback_limit or 0))
+            missing_domains = missing_domains[:fallback_cap]
+        if not missing_domains:
+            return sessions_by_domain
+
+        artifact_sql = """
+SELECT root_domain, content, content_encoding, storage_uri, compression, updated_at_utc
+FROM coordinator_artifacts
+WHERE root_domain = ANY(%s) AND artifact_type = 'nightmare_session_json';
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(artifact_sql, (missing_domains,))
+                artifact_rows = cur.fetchall()
+            conn.commit()
+
+        for row in artifact_rows:
+            rd = str(row[0] or "").strip().lower()
+            if not rd:
+                continue
+            content = bytes(row[1] or b"")
+            encoding = str(row[2] or "identity")
+            storage_uri = str(row[3] or "").strip()
+            compression = str(row[4] or "identity")
+            updated_at = row[5].isoformat() if row[5] else None
+            if storage_uri and (not content):
+                try:
+                    content = self._artifact_store.get_bytes(storage_uri, compression=compression)
+                except Exception:
+                    content = b""
+            if encoding == "gzip":
+                try:
+                    content = gzip.decompress(content)
+                except Exception:
+                    content = b""
+            artifact_payload = self._decode_json_bytes(content)
+            normalized = self._normalize_session_payload(rd, artifact_payload, fallback_saved_at_utc=updated_at)
+            if normalized is None:
+                continue
+            current = sessions_by_domain.get(rd)
+            if current is None:
+                sessions_by_domain[rd] = normalized
+                continue
+
+            current_metrics = self._session_url_metrics(current)
+            if not bool(current_metrics.get("has_session_data")):
+                sessions_by_domain[rd] = normalized
+                continue
+
+            def _parse_ts(value: Any) -> Optional[datetime]:
+                raw = str(value or "").strip()
+                if not raw:
+                    return None
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except Exception:
+                    return None
+
+            current_saved = _parse_ts(current.get("saved_at_utc"))
+            artifact_saved = _parse_ts(normalized.get("saved_at_utc"))
+            if artifact_saved and (current_saved is None or artifact_saved >= current_saved):
+                sessions_by_domain[rd] = normalized
+                continue
+
+            current_metrics = self._session_url_metrics(current)
+            artifact_metrics = self._session_url_metrics(normalized)
+            if int(artifact_metrics.get("discovered_urls_count") or 0) > int(current_metrics.get("discovered_urls_count") or 0):
+                sessions_by_domain[rd] = normalized
+
+        return sessions_by_domain
+
     def _normalize_session_payload(
         self,
         root_domain: str,
@@ -1412,6 +1539,7 @@ ORDER BY root_domain ASC;
             "domains": domain_rows,
         }
 
+    
     def crawl_progress_snapshot(self, *, limit: int = 2000) -> dict[str, Any]:
         safe_limit = max(1, min(2000, int(limit or 2000)))
         sql = """
@@ -1498,32 +1626,32 @@ LIMIT %s;
                 rows = cur.fetchall()
             conn.commit()
 
+        row_map: dict[str, tuple[Any, ...]] = {}
+        ordered_domains: list[str] = []
+        for row in rows:
+            root_domain = str(row[0] or "").strip().lower()
+            if not root_domain:
+                continue
+            ordered_domains.append(root_domain)
+            row_map[root_domain] = row
+
+        sessions_by_domain = self._bulk_load_sessions(
+            ordered_domains,
+            include_artifact_fallback=True,
+            artifact_fallback_limit=max(25, min(250, len(ordered_domains))),
+        )
+
         now_utc = datetime.now(timezone.utc)
         domains: list[dict[str, Any]] = []
         running_domains = 0
         queued_domains = 0
         failed_domains = 0
         completed_domains = 0
-        artifact_fallback_budget = max(25, min(250, safe_limit // 2))
 
-        for row in rows:
-            root_domain = str(row[0] or "").strip().lower()
-            if not root_domain:
-                continue
-
-            session = self.load_session(root_domain, include_artifact_fallback=False) or {}
+        for root_domain in ordered_domains:
+            row = row_map[root_domain]
+            session = sessions_by_domain.get(root_domain) or {}
             metrics = self._session_url_metrics(session)
-            if (
-                not bool(metrics.get("has_session_data"))
-                and row[15] is not None
-                and artifact_fallback_budget > 0
-            ):
-                artifact_fallback_budget -= 1
-                fallback_session = self.load_session(root_domain, include_artifact_fallback=True) or {}
-                fallback_metrics = self._session_url_metrics(fallback_session)
-                if bool(fallback_metrics.get("has_session_data")):
-                    session = fallback_session
-                    metrics = fallback_metrics
             discovered_urls_count = int(metrics.get("discovered_urls_count") or 0)
             visited_urls_count = int(metrics.get("visited_urls_count") or 0)
             frontier_count = int(metrics.get("frontier_count") or 0)
@@ -1635,6 +1763,8 @@ LIMIT %s;
             "domains": domains,
         }
 
+
+    
     def list_discovered_target_domains(self, *, limit: int = 5000, q: str = "") -> list[dict[str, Any]]:
         safe_limit = max(1, min(20000, int(limit or 5000)))
         needle = str(q or "").strip().lower()
@@ -1696,34 +1826,34 @@ LEFT JOIN artifact_status art ON art.root_domain = d.root_domain
 ORDER BY COALESCE(art.nightmare_session_updated_at_utc, sess.saved_at_utc, NOW()) DESC, d.root_domain ASC
 LIMIT %s;
 """
-        rows_out: list[dict[str, Any]] = []
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (safe_limit,))
                 rows = cur.fetchall()
             conn.commit()
 
-        artifact_fallback_budget = max(25, min(300, safe_limit // 2))
+        row_map: dict[str, tuple[Any, ...]] = {}
+        ordered_domains: list[str] = []
         for row in rows:
             root_domain = str(row[0] or "").strip().lower()
             if not root_domain:
                 continue
             if needle and needle not in root_domain:
                 continue
+            ordered_domains.append(root_domain)
+            row_map[root_domain] = row
 
-            session = self.load_session(root_domain, include_artifact_fallback=False) or {}
+        sessions_by_domain = self._bulk_load_sessions(
+            ordered_domains,
+            include_artifact_fallback=True,
+            artifact_fallback_limit=max(25, min(300, len(ordered_domains))),
+        )
+
+        rows_out: list[dict[str, Any]] = []
+        for root_domain in ordered_domains:
+            row = row_map[root_domain]
+            session = sessions_by_domain.get(root_domain) or {}
             metrics = self._session_url_metrics(session)
-            if (
-                not bool(metrics.get("has_session_data"))
-                and row[11] is not None
-                and artifact_fallback_budget > 0
-            ):
-                artifact_fallback_budget -= 1
-                fallback_session = self.load_session(root_domain, include_artifact_fallback=True) or {}
-                fallback_metrics = self._session_url_metrics(fallback_session)
-                if bool(fallback_metrics.get("has_session_data")):
-                    session = fallback_session
-                    metrics = fallback_metrics
             discovered_count = int(metrics.get("discovered_urls_count") or 0)
             method_counts = metrics.get("method_counts") if isinstance(metrics.get("method_counts"), dict) else {}
 
@@ -1767,6 +1897,7 @@ LIMIT %s;
                 "status": status,
             })
         return rows_out
+
 
     def get_discovered_target_sitemap(self, root_domain: str) -> dict[str, Any]:
         rd = str(root_domain or "").strip().lower()

@@ -38,7 +38,7 @@
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <input id="searchText" type="text" placeholder="Search artifacts and high value files">
-    <input id="limit" type="number" min="1" max="50000" value="5000" style="max-width: 120px;" title="Max rows">
+    <input id="limit" type="number" min="1" max="50000" value="1000" style="max-width: 120px;" title="Max rows">
     <button class="primary" onclick="refreshPage({ forceRefresh: true })">Refresh</button>
     <span id="msg" class="muted"></span>
   </div>
@@ -113,6 +113,40 @@
     }
     function esc(v) {
       return String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch]));
+    }
+    function readLocalJson(key) {
+      try {
+        const raw = localStorage.getItem(String(key || ""));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch (_e) {
+        return null;
+      }
+    }
+    function writeLocalJson(key, value) {
+      try {
+        localStorage.setItem(String(key || ""), JSON.stringify(value ?? {}));
+      } catch (_e) {
+        // Ignore cache write failures.
+      }
+    }
+    function pageCacheKey(prefix, limit, query) {
+      return `${prefix}:${Math.max(1, Number(limit || 1000))}:${String(query || "").trim().toLowerCase()}`;
+    }
+    function loadCachedPayload(prefix, limit, query) {
+      const row = readLocalJson(pageCacheKey(prefix, limit, query));
+      if (!row) return null;
+      const cachedAt = Number(row.cached_at_epoch_ms || 0);
+      if (!Number.isFinite(cachedAt) || cachedAt <= 0) return null;
+      if ((Date.now() - cachedAt) > (30 * 1000)) return null;
+      return row.payload && typeof row.payload === "object" ? row.payload : null;
+    }
+    function saveCachedPayload(prefix, limit, query, payload) {
+      writeLocalJson(pageCacheKey(prefix, limit, query), {
+        cached_at_epoch_ms: Date.now(),
+        payload: payload || {},
+      });
     }
     function getRows(payload) {
       if (payload && Array.isArray(payload.rows)) return payload.rows;
@@ -243,6 +277,15 @@
       const cacheMode = forceRefresh ? "refresh" : "prefer";
       const cacheModeParam = `cache_mode=${encodeURIComponent(cacheMode)}`;
       const headers = authHeaders();
+      if (!forceRefresh) {
+        const cachedArtifacts = loadCachedPayload("discovered_files_artifacts_payload_v1", limit, q);
+        const cachedHighValue = loadCachedPayload("discovered_files_high_value_payload_v1", limit, q);
+        if (cachedArtifacts) renderArtifacts(getRows(cachedArtifacts));
+        if (cachedHighValue) renderHighValue(getRows(cachedHighValue));
+        if (cachedArtifacts || cachedHighValue) {
+          document.getElementById("msg").textContent = "Loaded cached data… refreshing in background.";
+        }
+      }
       const [artifactRsp, highValueRsp] = await Promise.all([
         fetch(`/api/coord/discovered-files?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}&${cacheModeParam}`, { cache: "no-store", headers }),
         fetch(`/api/coord/high-value-files?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}&${cacheModeParam}`, { cache: "no-store", headers })
@@ -252,6 +295,8 @@
       const artifactPayload = await artifactRsp.json();
       const highValuePayload = await highValueRsp.json();
       if (requestSeq !== refreshRequestSeq) return;
+      saveCachedPayload("discovered_files_artifacts_payload_v1", limit, q, artifactPayload);
+      saveCachedPayload("discovered_files_high_value_payload_v1", limit, q, highValuePayload);
       renderArtifacts(getRows(artifactPayload));
       renderHighValue(getRows(highValuePayload));
       const artifactSource = String((artifactPayload.page_cache || {}).source || "");

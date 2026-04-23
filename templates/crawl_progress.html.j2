@@ -35,7 +35,7 @@
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
     <input id="filter" type="text" placeholder="Filter domain...">
-    <input id="limit" type="number" min="1" max="2000" value="2000" style="max-width: 120px;" title="Max domains">
+    <input id="limit" type="number" min="1" max="2000" value="500" style="max-width: 120px;" title="Max domains">
     <button class="primary" onclick="refresh({ forceRefresh: true })">Refresh</button>
     <span id="msg" class="muted"></span>
   </div>
@@ -128,7 +128,7 @@
       }
     }
     function cacheKeyForLimit(limitValue) {
-      return `${CRAWL_PROGRESS_CACHE_PREFIX}:${Math.max(1, Number(limitValue || 2000))}`;
+      return `${CRAWL_PROGRESS_CACHE_PREFIX}:${Math.max(1, Number(limitValue || 500))}`;
     }
     function loadCachedCrawlProgress(limitValue) {
       const row = readLocalJson(cacheKeyForLimit(limitValue));

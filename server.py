@@ -16,7 +16,7 @@ Public master report:
   Token resolution: ``master_report_regen_token`` in config, else env ``MASTER_REPORT_REGEN_TOKEN``,
   else ``coordinator_api_token`` (must be non-empty; the endpoint is disabled if none are set).
 
-The web UI provides:
+The dashboard provides:
 - aggregate counts (domains discovered, completed/running/pending/failed),
 - per-domain status rows with links to generated HTML reports and JSON artifacts,
 - master-report links when available,
@@ -3307,11 +3307,11 @@ def _start_default_page_cache_warmer(server: ThreadingHTTPServer, *, coordinator
             cache.set(cache_key, payload, ttl_seconds=ttl_seconds)
             return payload
 
-        crawl_key = _build_page_cache_key("crawl_progress", {"limit": 2000})
+        crawl_key = _build_page_cache_key("crawl_progress", {"limit": 500})
         _ensure_cached(
             cache_key=crawl_key,
             ttl_seconds=CRAWL_PROGRESS_PAGE_CACHE_TTL_SECONDS,
-            loader=lambda: _build_crawl_progress_payload(coordinator_store, limit=2000),
+            loader=lambda: _build_crawl_progress_payload(coordinator_store, limit=500),
         )
 
         domain_defaults = {
@@ -3335,19 +3335,19 @@ def _start_default_page_cache_warmer(server: ThreadingHTTPServer, *, coordinator
             ),
         )
 
-        files_defaults = {"limit": 5000, "q": ""}
+        files_defaults = {"limit": 1000, "q": ""}
         discovered_files_key = _build_page_cache_key("discovered_files", files_defaults)
         _ensure_cached(
             cache_key=discovered_files_key,
             ttl_seconds=DISCOVERED_FILES_PAGE_CACHE_TTL_SECONDS,
-            loader=lambda: _build_discovered_files_payload(coordinator_store, limit=5000, search_text=""),
+            loader=lambda: _build_discovered_files_payload(coordinator_store, limit=1000, search_text=""),
         )
 
         high_value_files_key = _build_page_cache_key("high_value_files", files_defaults)
         _ensure_cached(
             cache_key=high_value_files_key,
             ttl_seconds=DISCOVERED_FILES_PAGE_CACHE_TTL_SECONDS,
-            loader=lambda: _build_high_value_files_payload(coordinator_store, limit=5000, search_text=""),
+            loader=lambda: _build_high_value_files_payload(coordinator_store, limit=1000, search_text=""),
         )
 
         http_requests_defaults = {"limit": 500, "offset": 0, "q": "", "root_domain": ""}
@@ -3877,7 +3877,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/dashboard":
-            self._write_text("Dashboard page removed. Use /workers.", status=404)
+            self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/workers":
             self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
@@ -4168,7 +4168,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            limit = _safe_int((query.get("limit") or [1000])[0], 1000)
             search_text = str((query.get("q") or [""])[0] or "").strip().lower()
             cache_mode = str((query.get("cache_mode") or ["prefer"])[0] or "prefer").strip().lower()
             cache_key_parts = {"limit": limit, "q": search_text}
@@ -4197,7 +4197,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            limit = _safe_int((query.get("limit") or [1000])[0], 1000)
             search_text = str((query.get("q") or [""])[0] or "").strip().lower()
             cache_mode = str((query.get("cache_mode") or ["prefer"])[0] or "prefer").strip().lower()
             cache_key_parts = {"limit": limit, "q": search_text}
@@ -4672,7 +4672,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            limit = _safe_int((query.get("limit") or [2000])[0], 2000)
+            limit = _safe_int((query.get("limit") or [500])[0], 500)
             cache_mode = str((query.get("cache_mode") or ["prefer"])[0] or "prefer").strip().lower()
             try:
                 payload = self._resolve_cached_page_payload(
@@ -6360,7 +6360,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return " ".join(str(item or "") for item in parts).lower()
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Nightmare/Fozzy report web UI server.")
+    p = argparse.ArgumentParser(description="Nightmare/Fozzy report web dashboard server.")
     p.add_argument(
         "--config",
         default="server.json",
