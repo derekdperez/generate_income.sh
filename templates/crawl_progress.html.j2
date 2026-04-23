@@ -180,12 +180,22 @@
         .join("");
     }
     function formatSpiderStats(items) {
-      const rows = Array.isArray(items) ? items : [];
-      if (!rows.length) return "-";
-      return rows.map((row) => {
-        const name = String(row.plugin_name || "").replace(/^recon_spider_/, "");
-        return `${name}: ${Number(row.completed_runs || 0)}/${Number(row.subdomain_count || 0)} hosts, running ${Number(row.running_runs || 0)}, frontier ${Number(row.last_frontier_size || 0)}`;
-      }).join(" | ");
+      if (Array.isArray(items)) {
+        if (!items.length) return "-";
+        return items.map((row) => {
+          const name = String(row.plugin_name || "").replace(/^recon_spider_/, "");
+          return `${name}: ${Number(row.completed_runs || 0)}/${Number(row.subdomain_count || 0)} hosts, running ${Number(row.running_runs || 0)}, frontier ${Number(row.last_frontier_size || 0)}`;
+        }).join(" | ");
+      }
+      if (items && typeof items === "object") {
+        const rows = Object.entries(items)
+          .map(([name, count]) => [String(name || ""), Number(count || 0)])
+          .filter(([name, count]) => name && Number.isFinite(count) && count > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]));
+        if (!rows.length) return "-";
+        return rows.slice(0, 8).map(([name, count]) => `${String(name).replace(/^recon_spider_/, "")}: ${count}`).join(" | ");
+      }
+      return "-";
     }
     function phaseClass(phase) {
       const text = String(phase || "");

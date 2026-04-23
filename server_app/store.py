@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 try:
     import psycopg
@@ -1779,24 +1779,61 @@ LIMIT %s;
         inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
         discovered_urls = state.get("discovered_urls") if isinstance(state.get("discovered_urls"), list) else []
         pages: list[dict[str, Any]] = []
-        discovered_set = {str(u or "").strip() for u in discovered_urls if str(u or "").strip()}
-        for url in sorted(discovered_set):
-            if rd not in str(urlparse(url).hostname or "").lower():
+        def _normalize_url(raw_url: Any) -> str:
+            text = str(raw_url or "").strip()
+            if not text:
+                return ""
+            parsed = urlparse(text)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                return text
+            if start_url:
+                try:
+                    joined = urljoin(start_url, text)
+                    joined_parsed = urlparse(joined)
+                    if joined_parsed.scheme in {"http", "https"} and joined_parsed.hostname:
+                        return joined
+                except Exception:
+                    return text
+            return text
+
+        discovered_set = {
+            _normalize_url(u)
+            for u in [*discovered_urls, *list(inventory.keys())]
+            if str(u or "").strip()
+        }
+        discovered_set.discard("")
+        normalized_link_graph: dict[str, set[str]] = {}
+        discovered_from_map: dict[str, set[str]] = {}
+        for src, targets in link_graph.items():
+            src_text = _normalize_url(src)
+            if not src_text:
                 continue
-            record = inventory.get(url) if isinstance(inventory.get(url), dict) else {}
-            discovered_via = [str(v or "").strip() for v in (record.get("discovered_via") if isinstance(record.get("discovered_via"), list) else []) if str(v or "").strip()]
-            parents: list[str] = []
-            for src, targets in link_graph.items():
-                if isinstance(targets, list) and url in {str(t or "").strip() for t in targets}:
-                    src_text = str(src or "").strip()
-                    if src_text:
-                        parents.append(src_text)
-            outbound_targets = link_graph.get(url) if isinstance(link_graph.get(url), list) else []
-            outbound_clean = sorted({str(t or "").strip() for t in outbound_targets if str(t or "").strip()})
-            discovered_from = sorted(set(parents))[:50]
+            target_set: set[str] = set()
+            for target in targets if isinstance(targets, list) else []:
+                target_text = _normalize_url(target)
+                if not target_text:
+                    continue
+                target_set.add(target_text)
+                discovered_from_map.setdefault(target_text, set()).add(src_text)
+            if target_set:
+                normalized_link_graph.setdefault(src_text, set()).update(target_set)
+        for url in sorted(discovered_set):
+            host = str(urlparse(url).hostname or "").strip().lower()
+            if not host:
+                continue
+            if host != rd and not host.endswith(f".{rd}"):
+                continue
+            record = self._lookup_inventory_record(inventory, url)
+            discovered_via_raw = record.get("discovered_via")
+            discovered_via = (
+                [str(v or "").strip() for v in discovered_via_raw if str(v or "").strip()]
+                if isinstance(discovered_via_raw, list)
+                else ([str(discovered_via_raw or "").strip()] if str(discovered_via_raw or "").strip() else [])
+            )
+            discovered_from = sorted(discovered_from_map.get(url, set()))[:50]
+            outbound_clean = sorted(normalized_link_graph.get(url, set()))
             crawl_status_code = record.get("crawl_status_code", record.get("status_code"))
             existence_status_code = record.get("existence_status_code")
-            host = str(urlparse(url).hostname or "").strip().lower()
             subdomain = ""
             if host:
                 if host == rd:

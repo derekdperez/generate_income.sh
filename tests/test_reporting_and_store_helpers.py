@@ -940,6 +940,72 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
     assert pages["https://example.com/admin"]["inbound_count"] == 1
 
 
+def test_get_discovered_target_sitemap_uses_inventory_when_discovered_urls_missing():
+    now = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchone = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM coordinator_sessions" in compact and "WHERE root_domain = %s" in compact:
+                assert params == ("example.com",)
+                self._fetchone = (
+                    "example.com",
+                    "https://example.com",
+                    1000,
+                    now,
+                    {
+                        "state": {
+                            "discovered_urls": [],
+                            "link_graph": {
+                                "https://example.com/": ["/admin"],
+                            },
+                            "url_inventory": {
+                                "https://example.com/": {"discovered_via": ["seed_input"], "was_crawled": True},
+                                "/admin": {"discovered_via": ["internal_link"], "exists_confirmed": True},
+                            },
+                        }
+                    },
+                )
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchone(self):
+            return self._fetchone
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    sitemap = CoordinatorStore.get_discovered_target_sitemap(store, "example.com")
+    assert sitemap["root_domain"] == "example.com"
+    assert sitemap["page_count"] == 2
+    pages = {row["url"]: row for row in sitemap["pages"]}
+    assert "https://example.com/admin" in pages
+    assert pages["https://example.com/admin"]["subdomain"] == "@root"
+    assert pages["https://example.com/admin"]["inbound_count"] == 1
+
+
 def test_get_discovered_target_response_and_row_enrichment_include_download_links(tmp_path):
     now = datetime(2026, 4, 23, tzinfo=timezone.utc)
     url = "https://example.com/admin"

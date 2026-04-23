@@ -384,3 +384,10 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Spider plugin execution convention:
   - Use `nightmare.py --resume` per accessible subdomain seed and skip already completed seed runs based on plugin progress file state.
 - Recon extractor convention: do not depend on `fozzy_results_zip`; scan `output/<root_domain>` files directly with high-value rule list and emit `extractor_summary_json`/`extractor_matches_zip` compatibility artifacts.
+
+- Discovered-target sitemap convention:
+  - Do not rely only on `state.discovered_urls` for sitemap rows; use `state.url_inventory` keys as fallback source of URL truth.
+  - Normalize relative URLs against session `start_url` before filtering/rendering so UI pages can show URL content even when crawler artifacts store path-only entries.
+  - Normalize `link_graph` source/target URLs before computing inbound/outbound counts.
+- Crawl-progress UI convention:
+  - `spider_stats` may be returned either as an array of structured rows or as a map (`{spider_name: count}`); renderers should support both formats.

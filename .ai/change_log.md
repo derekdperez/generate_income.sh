@@ -1411,3 +1411,17 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py`
   - `pytest tests/test_reporting_and_store_helpers.py -k "render_crawl_progress_html or render_discovered_targets_html or render_discovered_files_html"`
   - `pytest tests/test_reporting_and_store_helpers.py -k "list_discovered_target_domains or get_discovered_target_response_and_row_enrichment_include_download_links or list_discovered_files_returns_template_compatible_keys or list_high_value_files_returns_template_compatible_keys or crawl_progress_snapshot_reports_domain_counts"` (existing unrelated failure remains in `test_crawl_progress_snapshot_reports_domain_counts`)
+
+## 2026-04-23
+
+- Fixed discovered URL visibility gaps in discovered-target sitemap generation:
+  - `CoordinatorStore.get_discovered_target_sitemap(...)` now derives candidate URLs from both `state.discovered_urls` and `state.url_inventory` keys.
+  - Relative URLs are normalized against `start_url` so sitemap rows still render when inventory/link graph stores relative paths.
+  - Inbound/outbound link counts now use a normalized link graph, avoiding missed parent/child relationships caused by mixed absolute/relative URL formats.
+- Improved crawl progress rendering compatibility:
+  - `templates/crawl_progress.html.j2` now renders spider stats from either structured arrays or `{spider_name: count}` maps returned by API payloads.
+- Added regression coverage:
+  - `tests/test_reporting_and_store_helpers.py::test_get_discovered_target_sitemap_uses_inventory_when_discovered_urls_missing`.
+- Validation:
+  - `python -m py_compile server_app/store.py server.py`
+  - `pytest tests/test_reporting_and_store_helpers.py -k "list_discovered_target_domains_uses_session_inventory_counts or get_discovered_target_sitemap_uses_inventory_when_discovered_urls_missing or get_discovered_target_response_and_row_enrichment_include_download_links"`
