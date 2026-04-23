@@ -46,7 +46,8 @@ if [[ ! -f "${DEPLOY_DIR}/.env" ]]; then
 fi
 
 cd "${DEPLOY_DIR}"
-docker compose -f docker-compose.worker.yml --env-file .env up -d --build
+docker compose -f docker-compose.worker.yml --env-file .env build --pull --no-cache
+docker compose -f docker-compose.worker.yml --env-file .env up -d --force-recreate
 container_id="$(docker compose -f docker-compose.worker.yml --env-file .env ps -q worker | tail -n 1)"
 if [[ -z "${container_id}" ]]; then
   echo "Worker failed to start." >&2

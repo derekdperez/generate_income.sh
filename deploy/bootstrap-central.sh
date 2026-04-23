@@ -10,6 +10,7 @@ if [[ ! -f "${DEPLOY_DIR}/.env" ]]; then
 fi
 
 cd "${DEPLOY_DIR}"
-docker compose -f docker-compose.central.yml --env-file .env up -d --build
+docker compose -f docker-compose.central.yml --env-file .env build --pull --no-cache
+docker compose -f docker-compose.central.yml --env-file .env up -d --force-recreate
 echo "Central coordinator stack started."
 

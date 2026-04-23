@@ -586,20 +586,42 @@ class DistributedCoordinator:
         # Per-tool enable flags are legacy/deprecated and intentionally ignored.
         return True
 
-    def _workflow_stage_parameters(self, workflow_id: str = "", stage: str | None = None) -> dict[str, Any]:
-        if stage is None:
-            wid = ""
-            stage_name = str(workflow_id or "").strip().lower()
-        else:
-            wid = str(workflow_id or "").strip().lower()
-            stage_name = str(stage or "").strip().lower()
+    def _workflow_stage_parameters(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """
+        Backward-compatible stage parameter lookup.
+
+        Supported call styles:
+          - self._workflow_stage_parameters(stage_name)
+          - self._workflow_stage_parameters(workflow_id, stage_name)
+          - self._workflow_stage_parameters(workflow_id=<wid>, stage=<stage>)
+          - self._workflow_stage_parameters(stage=<stage>)  # workflow inferred
+        """
+        workflow_id = kwargs.get("workflow_id")
+        stage = kwargs.get("stage")
+
+        if len(args) == 1:
+            if stage is None and workflow_id is None:
+                stage = args[0]
+            elif workflow_id is None:
+                workflow_id = args[0]
+        elif len(args) >= 2:
+            workflow_id, stage = args[0], args[1]
+
+        wid = str(workflow_id or "").strip().lower()
+        stage_name = str(stage or "").strip().lower()
+
+        # Backward compatibility: if only one positional argument was provided,
+        # treat it as the stage/plugin name and search across all workflows.
+        if not stage_name and wid:
+            stage_name, wid = wid, ""
+
         entry: dict[str, Any] = {}
         stage_map = self._workflow_stage_map.get(wid) if wid and isinstance(self._workflow_stage_map.get(wid), dict) else {}
         if isinstance(stage_map, dict):
             maybe_entry = stage_map.get(stage_name)
             if isinstance(maybe_entry, dict):
                 entry = maybe_entry
-        if not entry:
+        if not entry and stage_name:
             for fallback_map in self._workflow_stage_map.values():
                 if isinstance(fallback_map, dict) and isinstance(fallback_map.get(stage_name), dict):
                     entry = fallback_map.get(stage_name) or {}
