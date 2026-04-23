@@ -911,7 +911,7 @@ WHERE entry_id = %s
             ),
         }
 
-    def load_session(self, root_domain: str) -> Optional[dict[str, Any]]:
+    def load_session(self, root_domain: str, *, include_artifact_fallback: bool = True) -> Optional[dict[str, Any]]:
         rd = str(root_domain or "").strip().lower()
         if not rd:
             return None
@@ -935,6 +935,12 @@ WHERE root_domain = %s;
                 fallback_saved_at_utc=row[3].isoformat() if row[3] else None,
                 fallback_max_pages=row[2],
             )
+        if db_session is not None:
+            db_metrics = self._session_url_metrics(db_session)
+            if bool(db_metrics.get("has_session_data")):
+                return db_session
+        if not include_artifact_fallback:
+            return db_session
         artifact_session = self._normalize_session_payload(rd, self._load_session_artifact_payload(rd))
         if artifact_session is None:
             return db_session
@@ -1504,7 +1510,7 @@ LIMIT %s;
             if not root_domain:
                 continue
 
-            session = self.load_session(root_domain) or {}
+            session = self.load_session(root_domain, include_artifact_fallback=False) or {}
             metrics = self._session_url_metrics(session)
             discovered_urls_count = int(metrics.get("discovered_urls_count") or 0)
             visited_urls_count = int(metrics.get("visited_urls_count") or 0)
@@ -1692,7 +1698,7 @@ LIMIT %s;
             if needle and needle not in root_domain:
                 continue
 
-            session = self.load_session(root_domain) or {}
+            session = self.load_session(root_domain, include_artifact_fallback=False) or {}
             metrics = self._session_url_metrics(session)
             discovered_count = int(metrics.get("discovered_urls_count") or 0)
             method_counts = metrics.get("method_counts") if isinstance(metrics.get("method_counts"), dict) else {}

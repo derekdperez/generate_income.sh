@@ -3696,7 +3696,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if x_token == token:
             return True
         cookie_token = self._read_cookie("nightmare_coord_token").strip()
-        return cookie_token == token
+        if cookie_token == token:
+            return True
+        try:
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+        except Exception:
+            query = {}
+        for key in ("coordinator_token", "token", "api_token"):
+            candidate = str((query.get(key) or [""])[0] or "").strip()
+            if candidate and candidate == token:
+                return True
+        return False
 
     def _read_cookie(self, name: str) -> str:
         cookie_header = str(self.headers.get("Cookie", "") or "")
