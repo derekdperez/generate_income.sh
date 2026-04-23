@@ -586,7 +586,7 @@ class DistributedCoordinator:
         # Per-tool enable flags are legacy/deprecated and intentionally ignored.
         return True
 
-    def _workflow_stage_parameters(self, workflow_id: str, stage: str | None = None) -> dict[str, Any]:
+    def _workflow_stage_parameters(self, workflow_id: str = "", stage: str | None = None) -> dict[str, Any]:
         if stage is None:
             wid = ""
             stage_name = str(workflow_id or "").strip().lower()
