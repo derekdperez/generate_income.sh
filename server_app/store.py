@@ -1943,6 +1943,51 @@ LIMIT %s;
         return ""
 
     @staticmethod
+    def _normalize_headers(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, item in value.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            out[name] = str(item or "")
+        return out
+
+    @staticmethod
+    def _decode_body_base64_bytes(payload: Any) -> bytes:
+        if not isinstance(payload, dict):
+            return b""
+        body_b64 = str(payload.get("body_base64") or "")
+        if not body_b64:
+            return b""
+        try:
+            return base64.b64decode(body_b64)
+        except Exception:
+            return b""
+
+    @staticmethod
+    def _decode_bytes_to_text(value: bytes) -> str:
+        raw = bytes(value or b"")
+        if not raw:
+            return ""
+        try:
+            return raw.decode("utf-8")
+        except Exception:
+            return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _to_json_text(value: Any) -> str:
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+            except Exception:
+                return str(value)
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
     def _exists_status_from_row(
         *,
         exists_confirmed: bool,
@@ -2269,6 +2314,308 @@ LIMIT %s
             except Exception:
                 continue
         return out
+
+    def list_http_requests(
+        self,
+        *,
+        limit: int = 5000,
+        q: str = "",
+        root_domain: str = "",
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(50000, int(limit or 5000)))
+        domain_filter = str(root_domain or "").strip().lower()
+        needle = str(q or "").strip().lower()
+        domain_scan_limit = max(100, min(5000, safe_limit))
+
+        domains: list[str] = []
+        if domain_filter:
+            domains = [domain_filter]
+        else:
+            sql = """
+SELECT root_domain
+FROM (
+    SELECT DISTINCT root_domain
+    FROM coordinator_artifacts
+    WHERE artifact_type IN ('nightmare_requests_json', 'nightmare_session_json')
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_sessions
+    UNION
+    SELECT DISTINCT root_domain FROM coordinator_stage_tasks
+) d
+WHERE root_domain IS NOT NULL AND root_domain <> ''
+ORDER BY root_domain ASC
+LIMIT %s;
+"""
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (domain_scan_limit,))
+                    rows = cur.fetchall()
+                conn.commit()
+            domains = [str(row[0] or "").strip().lower() for row in rows if str(row[0] or "").strip()]
+
+        stage_rows_by_domain: dict[str, list[dict[str, Any]]] = {}
+        if domains:
+            stage_sql = """
+SELECT root_domain, workflow_id, stage, worker_id, progress_json, updated_at_utc
+FROM coordinator_stage_tasks
+WHERE root_domain = ANY(%s)
+ORDER BY updated_at_utc DESC NULLS LAST;
+"""
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(stage_sql, (domains,))
+                    rows = cur.fetchall()
+                conn.commit()
+            for row in rows:
+                rd = str(row[0] or "").strip().lower()
+                if not rd:
+                    continue
+                stage_rows_by_domain.setdefault(rd, []).append(
+                    {
+                        "workflow_id": str(row[1] or "").strip().lower() or "default",
+                        "stage": str(row[2] or "").strip().lower(),
+                        "worker_id": str(row[3] or "").strip(),
+                        "progress_json": row[4] if isinstance(row[4], dict) else {},
+                        "updated_at_utc": row[5].isoformat() if row[5] else "",
+                    }
+                )
+
+        out: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        def _files_link(rd: str, relative_path: str) -> str:
+            rel = str(relative_path or "").strip().replace("\\", "/").lstrip("/")
+            if not rel:
+                return ""
+            return f"/files/{quote(rd, safe='')}/{quote(rel, safe='/._-')}"
+
+        def _blob_link(rd: str, blob: Any) -> str:
+            if not isinstance(blob, dict):
+                return ""
+            rel = str(blob.get("relative_path") or "").strip().replace("\\", "/").lstrip("/")
+            if not rel:
+                return ""
+            return f"/files/{quote(rd, safe='')}/collected_data/{quote(rel, safe='/._-')}"
+
+        def _append_row(row: dict[str, Any]) -> None:
+            row_id = str(row.get("id") or "").strip()
+            if not row_id or row_id in seen_ids:
+                return
+            if needle:
+                haystack = " ".join(
+                    [
+                        str(row.get("root_domain") or ""),
+                        str(row.get("source") or ""),
+                        str(row.get("request_url") or ""),
+                        str(row.get("request_method") or ""),
+                        self._to_json_text(row.get("request_headers") or {}),
+                        str(row.get("request_body") or ""),
+                        str(row.get("response_code") or ""),
+                        self._to_json_text(row.get("response_headers") or {}),
+                        str(row.get("response_body") or ""),
+                    ]
+                ).lower()
+                if needle not in haystack:
+                    return
+            seen_ids.add(row_id)
+            out.append(row)
+
+        for rd in domains:
+            artifact = self.get_artifact(rd, "nightmare_requests_json")
+            if isinstance(artifact, dict):
+                payload = self._decode_json_bytes(bytes(artifact.get("content") or b""))
+                events = payload.get("request_events") if isinstance(payload.get("request_events"), list) else []
+                updated_at = str(artifact.get("updated_at_utc") or "")
+                for idx, event in enumerate(events):
+                    if not isinstance(event, dict):
+                        continue
+                    request_payload = event.get("request") if isinstance(event.get("request"), dict) else {}
+                    response_payload = event.get("response") if isinstance(event.get("response"), dict) else {}
+                    request_headers = self._normalize_headers(request_payload.get("headers"))
+                    response_headers = self._normalize_headers(response_payload.get("headers"))
+                    request_body = self._decode_body_base64_bytes(request_payload)
+                    response_body = self._decode_body_base64_bytes(response_payload)
+                    request_blob = request_payload.get("body_blob")
+                    response_blob = response_payload.get("body_blob")
+                    captured_at = str(event.get("captured_at_utc") or "").strip() or updated_at
+                    request_url = str(
+                        request_payload.get("url")
+                        or response_payload.get("url")
+                        or ""
+                    ).strip()
+                    response_code = self._coerce_int(response_payload.get("status"))
+                    response_elapsed_ms = self._coerce_int(response_payload.get("elapsed_ms"))
+                    request_size_bytes = self._coerce_int(request_payload.get("body_size_bytes"))
+                    response_size_bytes = self._coerce_int(response_payload.get("body_size_bytes"))
+                    if request_size_bytes is None:
+                        request_size_bytes = len(request_body)
+                    if response_size_bytes is None:
+                        response_size_bytes = len(response_body)
+                    event_id = str(event.get("event_id") or "").strip() or f"request_event_{idx}"
+                    _append_row(
+                        {
+                            "id": f"{rd}:artifact:{event_id}",
+                            "source": "nightmare_requests_json",
+                            "root_domain": rd,
+                            "worker_id": "",
+                            "captured_at_utc": captured_at,
+                            "request_url": request_url,
+                            "request_method": str(request_payload.get("method") or "").strip().upper(),
+                            "request_headers": request_headers,
+                            "request_body": self._decode_bytes_to_text(request_body),
+                            "request_size_bytes": int(request_size_bytes or 0),
+                            "response_code": int(response_code or 0),
+                            "response_size_bytes": int(response_size_bytes or 0),
+                            "response_time_ms": int(response_elapsed_ms or 0),
+                            "response_headers": response_headers,
+                            "response_body": self._decode_bytes_to_text(response_body),
+                            "request_link": _files_link(rd, str(event.get("raw_request_link") or "")),
+                            "response_link": _files_link(rd, str(event.get("raw_response_link") or "")),
+                            "request_body_link": _blob_link(rd, request_blob),
+                            "response_body_link": _blob_link(rd, response_blob),
+                        }
+                    )
+
+            session = self.load_session(rd, include_artifact_fallback=False) or {}
+            state = session.get("state") if isinstance(session.get("state"), dict) else {}
+            inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
+            for inventory_url, record in inventory.items():
+                if not isinstance(record, dict):
+                    continue
+                evidence_files = record.get("discovery_evidence_files")
+                if not isinstance(evidence_files, list):
+                    continue
+                for raw_path in evidence_files:
+                    text_path = str(raw_path or "").strip()
+                    if not text_path:
+                        continue
+                    evidence_path = Path(text_path).expanduser()
+                    if not evidence_path.is_absolute():
+                        evidence_path = (Path.cwd() / evidence_path).resolve()
+                    payload = self._read_discovery_evidence_payload(evidence_path)
+                    request_payload = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+                    response_payload = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+                    if not request_payload:
+                        continue
+                    request_headers = self._normalize_headers(request_payload.get("headers"))
+                    response_headers = self._normalize_headers(response_payload.get("headers"))
+                    request_body = self._decode_body_base64_bytes(request_payload)
+                    response_body = self._decode_body_base64_bytes(response_payload)
+                    request_url = str(
+                        request_payload.get("url")
+                        or inventory_url
+                        or response_payload.get("url")
+                        or ""
+                    ).strip()
+                    if not request_url:
+                        continue
+                    response_code = self._coerce_int(response_payload.get("status"))
+                    response_elapsed_ms = self._coerce_int(response_payload.get("elapsed_ms"))
+                    request_size_bytes = self._coerce_int(request_payload.get("body_size_bytes"))
+                    response_size_bytes = self._coerce_int(response_payload.get("body_size_bytes"))
+                    if request_size_bytes is None:
+                        request_size_bytes = len(request_body)
+                    if response_size_bytes is None:
+                        response_size_bytes = len(response_body)
+                    download_base = (
+                        f"/api/coord/discovered-target-download?root_domain={quote(rd, safe='')}&url={quote(request_url, safe='')}"
+                    )
+                    _append_row(
+                        {
+                            "id": f"{rd}:evidence:{str(evidence_path)}",
+                            "source": str(payload.get("source_type") or "discovery_evidence"),
+                            "root_domain": rd,
+                            "worker_id": "",
+                            "captured_at_utc": str(payload.get("captured_at_utc") or ""),
+                            "request_url": request_url,
+                            "request_method": str(request_payload.get("method") or "").strip().upper(),
+                            "request_headers": request_headers,
+                            "request_body": self._decode_bytes_to_text(request_body),
+                            "request_size_bytes": int(request_size_bytes or 0),
+                            "response_code": int(response_code or 0),
+                            "response_size_bytes": int(response_size_bytes or 0),
+                            "response_time_ms": int(response_elapsed_ms or 0),
+                            "response_headers": response_headers,
+                            "response_body": self._decode_bytes_to_text(response_body),
+                            "request_link": f"{download_base}&part=request_json",
+                            "response_link": f"{download_base}&part=response_json",
+                            "request_body_link": f"{download_base}&part=request_body",
+                            "response_body_link": f"{download_base}&part=response_body",
+                        }
+                    )
+
+            progress_rows = stage_rows_by_domain.get(rd, [])
+            for stage_row in progress_rows:
+                progress_payload = stage_row.get("progress_json") if isinstance(stage_row.get("progress_json"), dict) else {}
+                requests_made = progress_payload.get("requests_made")
+                if not isinstance(requests_made, list):
+                    continue
+                for idx, item in enumerate(requests_made):
+                    if not isinstance(item, dict):
+                        continue
+                    request_url = str(
+                        item.get("url")
+                        or item.get("endpoint")
+                        or item.get("resolved_url")
+                        or item.get("start_url")
+                        or ""
+                    ).strip()
+                    request_method = str(item.get("method") or item.get("request_method") or "").strip().upper()
+                    if not request_method and str(item.get("type") or "").strip().lower() == "probe":
+                        request_method = "GET"
+                    request_headers = self._normalize_headers(item.get("headers"))
+                    request_body = ""
+                    command_value = item.get("command")
+                    if isinstance(command_value, list):
+                        request_body = " ".join(str(part or "") for part in command_value)
+                    elif isinstance(command_value, str):
+                        request_body = command_value
+                    elif isinstance(item.get("body"), (str, dict, list)):
+                        request_body = self._to_json_text(item.get("body"))
+                    response_code = self._coerce_int(item.get("status_code"))
+                    response_elapsed_ms = self._coerce_int(item.get("elapsed_ms"))
+                    response_headers = self._normalize_headers(item.get("response_headers"))
+                    response_body = self._to_json_text(item.get("response_body"))
+                    captured_at = str(item.get("started_at_utc") or item.get("captured_at_utc") or stage_row.get("updated_at_utc") or "")
+                    request_size_bytes = self._coerce_int(item.get("request_size_bytes"))
+                    response_size_bytes = self._coerce_int(item.get("response_size_bytes"))
+                    if request_size_bytes is None:
+                        request_size_bytes = len(request_body.encode("utf-8", errors="replace"))
+                    if response_size_bytes is None:
+                        response_size_bytes = len(response_body.encode("utf-8", errors="replace")) if response_body else 0
+                    _append_row(
+                        {
+                            "id": f"{rd}:progress:{stage_row.get('workflow_id')}:{stage_row.get('stage')}:{idx}:{captured_at}:{request_url}",
+                            "source": f"progress:{stage_row.get('stage')}",
+                            "root_domain": rd,
+                            "worker_id": str(stage_row.get("worker_id") or ""),
+                            "captured_at_utc": captured_at,
+                            "request_url": request_url,
+                            "request_method": request_method,
+                            "request_headers": request_headers,
+                            "request_body": request_body,
+                            "request_size_bytes": int(request_size_bytes or 0),
+                            "response_code": int(response_code or 0),
+                            "response_size_bytes": int(response_size_bytes or 0),
+                            "response_time_ms": int(response_elapsed_ms or 0),
+                            "response_headers": response_headers,
+                            "response_body": response_body,
+                            "request_link": "",
+                            "response_link": "",
+                            "request_body_link": "",
+                            "response_body_link": "",
+                        }
+                    )
+
+        out.sort(
+            key=lambda row: (
+                str(row.get("captured_at_utc") or ""),
+                str(row.get("root_domain") or ""),
+                str(row.get("request_url") or ""),
+            ),
+            reverse=True,
+        )
+        return out[:safe_limit]
 
 
     @staticmethod

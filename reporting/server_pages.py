@@ -54,6 +54,10 @@ def render_discovered_files_html() -> str:
     return render_template("discovered_files.html.j2")
 
 
+def render_http_requests_html() -> str:
+    return render_template("http_requests.html.j2")
+
+
 def render_events_html() -> str:
     return render_template("events.html.j2")
 

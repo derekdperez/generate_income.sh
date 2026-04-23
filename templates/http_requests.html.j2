@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTTP Requests</title>
+  <style>
+    :root { --row-line-height: 1.15rem; }
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 14px; flex-wrap: wrap; }
+    input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    .muted { color: #64748b; }
+    .table-wrap { max-height: 72vh; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    table { width: max-content; min-width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; max-width: 15vw; width: 15vw; }
+    th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
+    .num-col { width: 9vw; max-width: 9vw; }
+    .link-col { width: 15vw; max-width: 15vw; }
+    .clip-cell { display: block; max-height: calc(var(--row-line-height) * 3); overflow: hidden; white-space: pre-wrap; word-break: break-word; line-height: var(--row-line-height); cursor: text; }
+    .cell-full { white-space: pre-wrap; word-break: break-word; }
+    .links { display: flex; flex-wrap: wrap; gap: 6px; }
+    .links a { color: #1d4ed8; text-decoration: none; }
+    .links a:hover { text-decoration: underline; }
+    .pager { display: inline-flex; gap: 8px; align-items: center; }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html.j2' %}
+  <h1>HTTP Requests</h1>
+  <div class="meta">All request rows captured from worker artifacts and progress state. Full text stays in each cell and is clipped visually to 3 lines. Double-click any clipped cell to select full content. Auto-refresh every 30s.</div>
+
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <input id="domain" type="text" placeholder="Filter domain">
+    <input id="search" type="text" placeholder="Search URL, headers, bodies">
+    <input id="limit" type="number" min="50" max="5000" value="500" style="max-width:100px;" title="Rows per page">
+    <button id="refreshBtn" class="primary">Refresh</button>
+    <span id="msg" class="muted"></span>
+    <span class="pager" style="margin-left:auto;">
+      <button id="prevBtn">Prev</button>
+      <span id="pagerMeta" class="muted">Page 1</span>
+      <button id="nextBtn">Next</button>
+    </span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Captured</th>
+          <th>Domain</th>
+          <th>URL</th>
+          <th>Method</th>
+          <th>Request Headers</th>
+          <th>Request Body</th>
+          <th class="num-col">Req Size</th>
+          <th class="num-col">Resp Code</th>
+          <th class="num-col">Resp Size</th>
+          <th class="num-col">Resp ms</th>
+          <th>Response Headers</th>
+          <th>Response Body</th>
+          <th>Worker</th>
+          <th>Source</th>
+          <th class="link-col">Links</th>
+        </tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="15">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <script>
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+    const state = {
+      offset: 0,
+      limit: 500,
+      totalRows: 0,
+      rows: [],
+      requestSeq: 0,
+    };
+
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>\"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function toText(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "string") return value;
+      if (typeof value === "object") {
+        try { return JSON.stringify(value, null, 2); }
+        catch (_e) { return String(value); }
+      }
+      return String(value);
+    }
+    function clipCell(value) {
+      return `<div class="clip-cell" title="Double-click to select full cell text"><span class="cell-full">${esc(toText(value))}</span></div>`;
+    }
+    function updatePager() {
+      const page = Math.floor(state.offset / Math.max(1, state.limit)) + 1;
+      const totalPages = Math.max(1, Math.ceil(Math.max(0, state.totalRows) / Math.max(1, state.limit)));
+      document.getElementById("pagerMeta").textContent = `Page ${page} of ${totalPages} (${state.totalRows} rows)`;
+      document.getElementById("prevBtn").disabled = state.offset <= 0;
+      document.getElementById("nextBtn").disabled = !((state.offset + state.limit) < state.totalRows);
+    }
+    function linksHtml(row) {
+      const links = [];
+      const maybeAdd = (href, label) => {
+        const path = String(href || "").trim();
+        if (!path) return;
+        links.push(`<a href="${esc(path)}" target="_blank" rel="noopener">${esc(label)}</a>`);
+      };
+      maybeAdd(row.request_link, "Request");
+      maybeAdd(row.response_link, "Response");
+      maybeAdd(row.request_body_link, "Req Body");
+      maybeAdd(row.response_body_link, "Resp Body");
+      return links.length ? `<div class="links">${links.join("")}</div>` : "";
+    }
+    function renderRows() {
+      const tbody = document.getElementById("rows");
+      if (!state.rows.length) {
+        tbody.innerHTML = '<tr><td colspan="15">No request rows found.</td></tr>';
+        updatePager();
+        return;
+      }
+      tbody.innerHTML = state.rows.map((row) => `
+        <tr>
+          <td>${clipCell(row.captured_at_utc || "")}</td>
+          <td>${clipCell(row.root_domain || "")}</td>
+          <td>${clipCell(row.request_url || "")}</td>
+          <td>${clipCell(row.request_method || "")}</td>
+          <td>${clipCell(row.request_headers || {})}</td>
+          <td>${clipCell(row.request_body || "")}</td>
+          <td class="num-col">${clipCell(Number(row.request_size_bytes || 0))}</td>
+          <td class="num-col">${clipCell(Number(row.response_code || 0))}</td>
+          <td class="num-col">${clipCell(Number(row.response_size_bytes || 0))}</td>
+          <td class="num-col">${clipCell(Number(row.response_time_ms || 0))}</td>
+          <td>${clipCell(row.response_headers || {})}</td>
+          <td>${clipCell(row.response_body || "")}</td>
+          <td>${clipCell(row.worker_id || "")}</td>
+          <td>${clipCell(row.source || "")}</td>
+          <td class="link-col">${linksHtml(row)}</td>
+        </tr>
+      `).join("");
+      updatePager();
+    }
+    async function refresh(options) {
+      const requestSeq = ++state.requestSeq;
+      const forceRefresh = Boolean(options && options.forceRefresh);
+      state.limit = Math.max(50, Math.min(5000, Number(document.getElementById("limit").value || 500)));
+      const search = document.getElementById("search").value.trim();
+      const rootDomain = document.getElementById("domain").value.trim().toLowerCase();
+      const cacheMode = forceRefresh ? "refresh" : "prefer";
+      document.getElementById("msg").textContent = "Loading...";
+      const qs = new URLSearchParams({
+        limit: String(state.limit),
+        offset: String(state.offset),
+        q: search,
+        root_domain: rootDomain,
+        cache_mode: cacheMode,
+      });
+      const rsp = await fetch(`/api/coord/http-requests?${qs.toString()}`, {
+        cache: "no-store",
+        headers: authHeaders(),
+        credentials: "same-origin",
+      });
+      const payload = await rsp.json().catch(() => ({}));
+      if (!rsp.ok) {
+        throw new Error(String(payload.error || `HTTP ${rsp.status}`));
+      }
+      if (requestSeq !== state.requestSeq) return;
+      state.rows = Array.isArray(payload.rows) ? payload.rows : [];
+      state.totalRows = Number(payload.total_rows || state.rows.length || 0);
+      renderRows();
+      document.getElementById("msg").textContent = `Loaded ${state.rows.length} request rows.`;
+    }
+    function bindSelectionHandler() {
+      document.addEventListener("dblclick", (event) => {
+        const origin = event ? event.target : null;
+        const root = origin instanceof Element ? origin.closest(".clip-cell") : null;
+        if (!root) return;
+        const target = root.querySelector(".cell-full");
+        if (!target) return;
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const selection = window.getSelection();
+        if (!selection) return;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+    }
+
+    const cookieToken = readCookie(TOKEN_COOKIE_NAME);
+    if (cookieToken) document.getElementById("token").value = cookieToken;
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      state.offset = 0;
+      refresh({ forceRefresh: true }).catch((e) => {
+        document.getElementById("rows").innerHTML = `<tr><td colspan="15">${esc(e.message || e)}</td></tr>`;
+        document.getElementById("msg").textContent = `Load failed: ${e.message || e}`;
+      });
+    });
+    document.getElementById("search").addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      state.offset = 0;
+      refresh({ forceRefresh: true }).catch(() => {});
+    });
+    document.getElementById("domain").addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      state.offset = 0;
+      refresh({ forceRefresh: true }).catch(() => {});
+    });
+    document.getElementById("token").addEventListener("change", () => {
+      state.offset = 0;
+      refresh({ forceRefresh: true }).catch(() => {});
+    });
+    document.getElementById("limit").addEventListener("change", () => {
+      state.offset = 0;
+      refresh({ forceRefresh: true }).catch(() => {});
+    });
+    document.getElementById("prevBtn").addEventListener("click", () => {
+      state.offset = Math.max(0, state.offset - state.limit);
+      refresh({ forceRefresh: false }).catch(() => {});
+    });
+    document.getElementById("nextBtn").addEventListener("click", () => {
+      state.offset += state.limit;
+      refresh({ forceRefresh: false }).catch(() => {});
+    });
+    bindSelectionHandler();
+    refresh({ forceRefresh: false }).catch((e) => {
+      document.getElementById("rows").innerHTML = `<tr><td colspan="15">${esc(e.message || e)}</td></tr>`;
+      document.getElementById("msg").textContent = `Load failed: ${e.message || e}`;
+    });
+    setInterval(() => {
+      refresh({ forceRefresh: true }).catch(() => {});
+    }, 30000);
+  </script>
+</body>
+</html>

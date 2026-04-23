@@ -65,6 +65,7 @@ from reporting.server_pages import (
     render_events_html,
     render_extractor_matches_html,
     render_fuzzing_html,
+    render_http_requests_html,
     render_view_logs_html,
     render_workflows_html,
     render_workers_html,
@@ -100,6 +101,7 @@ CRAWL_PROGRESS_PAGE_CACHE_TTL_SECONDS = 8
 DISCOVERED_TARGETS_PAGE_CACHE_TTL_SECONDS = 30
 DISCOVERED_TARGET_SITEMAP_PAGE_CACHE_TTL_SECONDS = 45
 DISCOVERED_FILES_PAGE_CACHE_TTL_SECONDS = 45
+HTTP_REQUESTS_PAGE_CACHE_TTL_SECONDS = 30
 EST_TZ = timezone(timedelta(hours=-5), name="EST")
 WORKFLOW_FILE_SUFFIX = ".workflow.json"
 WORKFLOW_FILE_GLOB = f"*{WORKFLOW_FILE_SUFFIX}"
@@ -3248,6 +3250,40 @@ def _build_high_value_files_payload(store: CoordinatorStore, *, limit: int, sear
     return {"generated_at_utc": _iso_now(), "rows": rows, "files": rows}
 
 
+def _build_http_requests_payload(
+    store: CoordinatorStore,
+    *,
+    limit: int,
+    offset: int,
+    search_text: str,
+    root_domain: str,
+) -> dict[str, Any]:
+    fetch_limit = max(limit + offset, limit)
+    rows = store.list_http_requests(
+        limit=min(50000, fetch_limit),
+        q=search_text,
+        root_domain=root_domain,
+    )
+    total_rows = len(rows)
+    page_rows = rows[offset : offset + limit]
+    next_offset = (offset + limit) if (offset + limit) < total_rows else None
+    prev_offset = (offset - limit) if offset > 0 else None
+    if isinstance(prev_offset, int) and prev_offset < 0:
+        prev_offset = 0
+    return {
+        "generated_at_utc": _iso_now(),
+        "rows": page_rows,
+        "total_rows": total_rows,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+        "prev_offset": prev_offset,
+        "has_more": bool(next_offset is not None),
+        "search": search_text,
+        "root_domain": root_domain,
+    }
+
+
 def _start_default_page_cache_warmer(server: ThreadingHTTPServer, *, coordinator_store: CoordinatorStore | None) -> None:
     if coordinator_store is None:
         return
@@ -3312,6 +3348,20 @@ def _start_default_page_cache_warmer(server: ThreadingHTTPServer, *, coordinator
             cache_key=high_value_files_key,
             ttl_seconds=DISCOVERED_FILES_PAGE_CACHE_TTL_SECONDS,
             loader=lambda: _build_high_value_files_payload(coordinator_store, limit=5000, search_text=""),
+        )
+
+        http_requests_defaults = {"limit": 500, "offset": 0, "q": "", "root_domain": ""}
+        http_requests_key = _build_page_cache_key("http_requests", http_requests_defaults)
+        _ensure_cached(
+            cache_key=http_requests_key,
+            ttl_seconds=HTTP_REQUESTS_PAGE_CACHE_TTL_SECONDS,
+            loader=lambda: _build_http_requests_payload(
+                coordinator_store,
+                limit=500,
+                offset=0,
+                search_text="",
+                root_domain="",
+            ),
         )
 
         warmed_domains = discovered_targets_payload.get("rows", []) if isinstance(discovered_targets_payload, dict) else []
@@ -3824,13 +3874,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if all_domains_html is not None:
                 self._serve_static_file(all_domains_html)
             else:
-                self._write_text(render_dashboard_html(), content_type="text/html; charset=utf-8")
+                self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/dashboard":
-            self._write_text(render_dashboard_html(), content_type="text/html; charset=utf-8")
+            self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/workers":
             self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/http-requests":
+            self._write_text(render_http_requests_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/database":
             self._write_text(render_database_html(), content_type="text/html; charset=utf-8")
