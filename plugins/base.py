@@ -27,6 +27,10 @@ class PluginExecutionContext:
     workflow_id: str
     plugin_name: str
     entry: dict[str, Any]
+    workflow_run_id: str = ""
+    workflow_step_run_id: str = ""
+    resolved_input: dict[str, Any] = field(default_factory=dict)
+    resolved_config: dict[str, Any] = field(default_factory=dict)
 
 
 class CoordinatorPlugin:

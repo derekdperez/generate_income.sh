@@ -1,0 +1,559 @@
+#!/usr/bin/env python3
+"""DB-backed workflow/plugin definition store.
+
+This module intentionally wraps the existing CoordinatorStore connection pool instead of
+introducing a second database configuration path.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from typing import Any
+
+_KEY_RE = re.compile(r"[^a-z0-9_\-]+")
+
+
+def slugify_key(value: str, *, fallback: str = "workflow") -> str:
+    raw = str(value or "").strip().lower().replace(" ", "-")
+    slug = _KEY_RE.sub("-", raw).strip("-_")
+    return slug or fallback
+
+
+def _json(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value) if value.strip() else default
+        except Exception:
+            return default
+    return value
+
+
+def ensure_workflow_schema(store: Any) -> None:
+    ddl = """
+CREATE TABLE IF NOT EXISTS plugin_definitions (
+  id UUID PRIMARY KEY,
+  plugin_key TEXT NOT NULL UNIQUE,
+  python_module TEXT NOT NULL DEFAULT '',
+  python_class TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'general',
+  display_name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  contract_version TEXT NOT NULL DEFAULT '1.0.0',
+  config_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  input_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  output_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ui_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  examples_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+  source_path TEXT NOT NULL DEFAULT '',
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+  id UUID PRIMARY KEY,
+  workflow_key TEXT NOT NULL UNIQUE,
+  version INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  trigger_mode TEXT NOT NULL DEFAULT 'manual',
+  input_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ui_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_by TEXT NOT NULL DEFAULT '',
+  updated_by TEXT NOT NULL DEFAULT '',
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_definitions_key_version
+  ON workflow_definitions(workflow_key, version);
+
+CREATE TABLE IF NOT EXISTS workflow_steps (
+  id UUID PRIMARY KEY,
+  workflow_definition_id UUID NOT NULL REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+  step_key TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  plugin_key TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  continue_on_error BOOLEAN NOT NULL DEFAULT FALSE,
+  retry_failed BOOLEAN NOT NULL DEFAULT FALSE,
+  max_attempts INTEGER NOT NULL DEFAULT 0,
+  timeout_seconds INTEGER NOT NULL DEFAULT 0,
+  input_bindings JSONB NOT NULL DEFAULT '{}'::jsonb,
+  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  preconditions_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  outputs_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(workflow_definition_id, step_key),
+  UNIQUE(workflow_definition_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  id UUID PRIMARY KEY,
+  workflow_definition_id UUID NOT NULL REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  schedule_type TEXT NOT NULL DEFAULT 'manual',
+  cron_expr TEXT NOT NULL DEFAULT '',
+  interval_seconds INTEGER NOT NULL DEFAULT 0,
+  run_at_utc TIMESTAMPTZ,
+  default_input JSONB NOT NULL DEFAULT '{}'::jsonb,
+  target_selector JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_enqueued_at_utc TIMESTAMPTZ,
+  next_run_at_utc TIMESTAMPTZ,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id UUID PRIMARY KEY,
+  workflow_definition_id UUID NOT NULL REFERENCES workflow_definitions(id),
+  workflow_key TEXT NOT NULL,
+  workflow_version INTEGER NOT NULL DEFAULT 1,
+  root_domain TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  trigger_source TEXT NOT NULL DEFAULT 'manual',
+  trigger_reference TEXT NOT NULL DEFAULT '',
+  input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  context_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  started_at_utc TIMESTAMPTZ,
+  completed_at_utc TIMESTAMPTZ,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_created ON workflow_runs(status, created_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_domain ON workflow_runs(root_domain, created_at_utc DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_step_runs (
+  id UUID PRIMARY KEY,
+  workflow_run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  workflow_definition_id UUID NOT NULL REFERENCES workflow_definitions(id),
+  step_definition_id UUID NOT NULL REFERENCES workflow_steps(id),
+  step_key TEXT NOT NULL,
+  plugin_key TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  blocked_reason TEXT NOT NULL DEFAULT '',
+  worker_id TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 0,
+  input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  resolved_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  error TEXT NOT NULL DEFAULT '',
+  lease_expires_at TIMESTAMPTZ,
+  started_at_utc TIMESTAMPTZ,
+  completed_at_utc TIMESTAMPTZ,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(workflow_run_id, step_key)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_claim ON workflow_step_runs(status, lease_expires_at, ordinal, created_at_utc);
+
+CREATE TABLE IF NOT EXISTS workflow_definition_audit (
+  id BIGSERIAL PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  entity_key TEXT NOT NULL,
+  entity_version INTEGER NOT NULL DEFAULT 1,
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  before_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  after_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+    with store._connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(ddl)
+        conn.commit()
+
+
+def seed_builtin_plugins(store: Any) -> None:
+    ensure_workflow_schema(store)
+    from plugins.registry import list_plugin_contracts
+
+    contracts = list_plugin_contracts()
+    with store._connect() as conn:
+        with conn.cursor() as cur:
+            for item in contracts:
+                plugin_key = slugify_key(str(item.get("plugin_key") or item.get("name") or ""), fallback="")
+                if not plugin_key:
+                    continue
+                cur.execute(
+                    """
+INSERT INTO plugin_definitions (
+  id, plugin_key, python_module, python_class, category, display_name, description,
+  contract_version, config_schema, input_schema, output_schema, ui_schema,
+  examples_json, tags, enabled, is_builtin, source_path
+)
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
+ON CONFLICT (plugin_key) DO UPDATE SET
+  python_module = COALESCE(NULLIF(EXCLUDED.python_module, ''), plugin_definitions.python_module),
+  python_class = COALESCE(NULLIF(EXCLUDED.python_class, ''), plugin_definitions.python_class),
+  category = EXCLUDED.category,
+  display_name = EXCLUDED.display_name,
+  description = EXCLUDED.description,
+  contract_version = EXCLUDED.contract_version,
+  config_schema = EXCLUDED.config_schema,
+  input_schema = EXCLUDED.input_schema,
+  output_schema = EXCLUDED.output_schema,
+  ui_schema = EXCLUDED.ui_schema,
+  examples_json = EXCLUDED.examples_json,
+  tags = EXCLUDED.tags,
+  enabled = TRUE,
+  is_builtin = TRUE,
+  source_path = EXCLUDED.source_path,
+  updated_at_utc = NOW();
+""",
+                    (
+                        str(uuid.uuid4()),
+                        plugin_key,
+                        str(item.get("python_module") or ""),
+                        str(item.get("python_class") or ""),
+                        str(item.get("category") or "general"),
+                        str(item.get("display_name") or plugin_key),
+                        str(item.get("description") or ""),
+                        str(item.get("contract_version") or "1.0.0"),
+                        json.dumps(_json(item.get("config_schema"), {})),
+                        json.dumps(_json(item.get("input_schema"), {})),
+                        json.dumps(_json(item.get("output_schema"), {})),
+                        json.dumps(_json(item.get("ui_schema"), {})),
+                        json.dumps(_json(item.get("examples"), [])),
+                        json.dumps(_json(item.get("tags"), [])),
+                        bool(item.get("enabled", True)),
+                        True,
+                        str(item.get("source_path") or ""),
+                    ),
+                )
+        conn.commit()
+
+
+def list_plugin_definitions(store: Any) -> list[dict[str, Any]]:
+    ensure_workflow_schema(store)
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+SELECT id::text, plugin_key, python_module, python_class, category, display_name, description,
+       contract_version, config_schema, input_schema, output_schema, ui_schema,
+       examples_json, tags, enabled, is_builtin, source_path, updated_at_utc
+FROM plugin_definitions
+ORDER BY category ASC, plugin_key ASC;
+"""
+        )
+        return [
+            {
+                "id": r[0], "plugin_key": r[1], "python_module": r[2], "python_class": r[3],
+                "category": r[4], "display_name": r[5], "description": r[6],
+                "contract_version": r[7], "config_schema": r[8] or {}, "input_schema": r[9] or {},
+                "output_schema": r[10] or {}, "ui_schema": r[11] or {}, "examples_json": r[12] or [],
+                "tags": r[13] or [], "enabled": bool(r[14]), "is_builtin": bool(r[15]),
+                "source_path": r[16], "updated_at_utc": r[17].isoformat() if r[17] else None,
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def upsert_plugin_definition(store: Any, payload: dict[str, Any], *, actor: str = "") -> dict[str, Any]:
+    ensure_workflow_schema(store)
+    plugin_key = slugify_key(str(payload.get("plugin_key") or payload.get("name") or payload.get("display_name") or ""), fallback="plugin")
+    display_name = str(payload.get("display_name") or plugin_key).strip()
+    row_id = str(payload.get("id") or uuid.uuid4())
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_jsonb(p.*) FROM plugin_definitions p WHERE plugin_key=%s", (plugin_key,))
+        before = cur.fetchone()
+        cur.execute(
+            """
+INSERT INTO plugin_definitions (
+ id, plugin_key, python_module, python_class, category, display_name, description,
+ contract_version, config_schema, input_schema, output_schema, ui_schema, examples_json,
+ tags, enabled, is_builtin, source_path
+)
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
+ON CONFLICT(plugin_key) DO UPDATE SET
+ python_module=EXCLUDED.python_module, python_class=EXCLUDED.python_class,
+ category=EXCLUDED.category, display_name=EXCLUDED.display_name, description=EXCLUDED.description,
+ contract_version=EXCLUDED.contract_version, config_schema=EXCLUDED.config_schema,
+ input_schema=EXCLUDED.input_schema, output_schema=EXCLUDED.output_schema, ui_schema=EXCLUDED.ui_schema,
+ examples_json=EXCLUDED.examples_json, tags=EXCLUDED.tags, enabled=EXCLUDED.enabled,
+ source_path=EXCLUDED.source_path, updated_at_utc=NOW()
+RETURNING id::text;
+""",
+            (
+                row_id, plugin_key, str(payload.get("python_module") or ""), str(payload.get("python_class") or ""),
+                str(payload.get("category") or "general"), display_name, str(payload.get("description") or ""),
+                str(payload.get("contract_version") or "1.0.0"),
+                json.dumps(_json(payload.get("config_schema"), {})), json.dumps(_json(payload.get("input_schema"), {})),
+                json.dumps(_json(payload.get("output_schema"), {})), json.dumps(_json(payload.get("ui_schema"), {})),
+                json.dumps(_json(payload.get("examples_json", payload.get("examples")), [])),
+                json.dumps(_json(payload.get("tags"), [])), bool(payload.get("enabled", True)),
+                bool(payload.get("is_builtin", False)), str(payload.get("source_path") or ""),
+            ),
+        )
+        saved_id = str(cur.fetchone()[0])
+        cur.execute(
+            "INSERT INTO workflow_definition_audit(entity_type, entity_key, action, actor, before_json, after_json) VALUES('plugin',%s,%s,%s,%s::jsonb,%s::jsonb)",
+            (plugin_key, "update" if before else "create", actor, json.dumps(before[0] if before else {}), json.dumps(payload)),
+        )
+        conn.commit()
+    return {"id": saved_id, "plugin_key": plugin_key}
+
+
+def list_workflow_definitions(store: Any) -> list[dict[str, Any]]:
+    ensure_workflow_schema(store)
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+SELECT w.id::text, w.workflow_key, w.version, w.name, w.description, w.status, w.trigger_mode,
+       w.input_schema, w.ui_schema, w.tags, w.updated_at_utc,
+       COALESCE(COUNT(s.id),0) AS step_count
+FROM workflow_definitions w
+LEFT JOIN workflow_steps s ON s.workflow_definition_id = w.id
+GROUP BY w.id
+ORDER BY w.updated_at_utc DESC, w.workflow_key ASC;
+"""
+        )
+        return [
+            {
+                "id": r[0], "workflow_key": r[1], "version": int(r[2]), "name": r[3],
+                "description": r[4], "status": r[5], "trigger_mode": r[6],
+                "input_schema": r[7] or {}, "ui_schema": r[8] or {}, "tags": r[9] or [],
+                "updated_at_utc": r[10].isoformat() if r[10] else None, "step_count": int(r[11] or 0),
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def get_workflow_definition(store: Any, workflow_key: str) -> dict[str, Any] | None:
+    ensure_workflow_schema(store)
+    key = slugify_key(workflow_key, fallback="")
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+SELECT id::text, workflow_key, version, name, description, status, trigger_mode, input_schema, ui_schema, tags
+FROM workflow_definitions WHERE workflow_key=%s;
+""",
+            (key,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        cur.execute(
+            """
+SELECT id::text, step_key, display_name, plugin_key, ordinal, enabled, continue_on_error,
+       retry_failed, max_attempts, timeout_seconds, input_bindings, config_json,
+       preconditions_json, outputs_json
+FROM workflow_steps WHERE workflow_definition_id=%s ORDER BY ordinal ASC;
+""",
+            (r[0],),
+        )
+        steps = [
+            {
+                "id": s[0], "step_key": s[1], "display_name": s[2], "plugin_key": s[3],
+                "ordinal": int(s[4]), "enabled": bool(s[5]), "continue_on_error": bool(s[6]),
+                "retry_failed": bool(s[7]), "max_attempts": int(s[8] or 0), "timeout_seconds": int(s[9] or 0),
+                "input_bindings": s[10] or {}, "config_json": s[11] or {},
+                "preconditions_json": s[12] or {}, "outputs_json": s[13] or {},
+            }
+            for s in cur.fetchall()
+        ]
+        return {
+            "id": r[0], "workflow_key": r[1], "version": int(r[2]), "name": r[3],
+            "description": r[4], "status": r[5], "trigger_mode": r[6],
+            "input_schema": r[7] or {}, "ui_schema": r[8] or {}, "tags": r[9] or [],
+            "steps": steps,
+        }
+
+
+def save_workflow_definition(store: Any, payload: dict[str, Any], *, actor: str = "") -> dict[str, Any]:
+    ensure_workflow_schema(store)
+    workflow_key = slugify_key(str(payload.get("workflow_key") or payload.get("name") or ""), fallback="workflow")
+    name = str(payload.get("name") or workflow_key).strip()
+    row_id = str(payload.get("id") or uuid.uuid4())
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_jsonb(w.*) FROM workflow_definitions w WHERE workflow_key=%s", (workflow_key,))
+        before = cur.fetchone()
+        cur.execute(
+            """
+INSERT INTO workflow_definitions(id, workflow_key, version, name, description, status, trigger_mode, input_schema, ui_schema, tags, created_by, updated_by)
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
+ON CONFLICT(workflow_key) DO UPDATE SET
+  name=EXCLUDED.name, description=EXCLUDED.description, status=EXCLUDED.status,
+  trigger_mode=EXCLUDED.trigger_mode, input_schema=EXCLUDED.input_schema,
+  ui_schema=EXCLUDED.ui_schema, tags=EXCLUDED.tags, updated_by=EXCLUDED.updated_by,
+  updated_at_utc=NOW()
+RETURNING id::text, version;
+""",
+            (
+                row_id, workflow_key, int(payload.get("version") or 1), name, str(payload.get("description") or ""),
+                str(payload.get("status") or "draft"), str(payload.get("trigger_mode") or "manual"),
+                json.dumps(_json(payload.get("input_schema"), {})), json.dumps(_json(payload.get("ui_schema"), {})),
+                json.dumps(_json(payload.get("tags"), [])), actor, actor,
+            ),
+        )
+        wf_id, version = cur.fetchone()
+        cur.execute("DELETE FROM workflow_steps WHERE workflow_definition_id=%s", (wf_id,))
+        for idx, step in enumerate(steps, start=1):
+            step_key = slugify_key(str(step.get("step_key") or step.get("display_name") or f"step-{idx}"), fallback=f"step-{idx}")
+            plugin_key = slugify_key(str(step.get("plugin_key") or step.get("plugin_name") or step.get("stage") or ""), fallback="")
+            if not plugin_key:
+                raise ValueError(f"step {idx} is missing plugin_key")
+            cur.execute(
+                """
+INSERT INTO workflow_steps(id, workflow_definition_id, step_key, display_name, plugin_key, ordinal,
+ enabled, continue_on_error, retry_failed, max_attempts, timeout_seconds, input_bindings,
+ config_json, preconditions_json, outputs_json)
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb);
+""",
+                (
+                    str(uuid.uuid4()), wf_id, step_key, str(step.get("display_name") or step_key), plugin_key, int(step.get("ordinal") or idx),
+                    bool(step.get("enabled", True)), bool(step.get("continue_on_error", False)), bool(step.get("retry_failed", False)),
+                    int(step.get("max_attempts") or 0), int(step.get("timeout_seconds") or 0),
+                    json.dumps(_json(step.get("input_bindings"), {})), json.dumps(_json(step.get("config_json", step.get("config")), {})),
+                    json.dumps(_json(step.get("preconditions_json", step.get("preconditions")), {})),
+                    json.dumps(_json(step.get("outputs_json", step.get("outputs")), {})),
+                ),
+            )
+        cur.execute(
+            "INSERT INTO workflow_definition_audit(entity_type, entity_key, entity_version, action, actor, before_json, after_json) VALUES('workflow',%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
+            (workflow_key, int(version or 1), "update" if before else "create", actor, json.dumps(before[0] if before else {}), json.dumps(payload)),
+        )
+        conn.commit()
+    return {"id": wf_id, "workflow_key": workflow_key, "version": int(version or 1)}
+
+
+def publish_workflow_definition(store: Any, workflow_key: str, *, actor: str = "") -> dict[str, Any]:
+    ensure_workflow_schema(store)
+    definition = get_workflow_definition(store, workflow_key)
+    if not definition:
+        raise KeyError("workflow definition not found")
+    if not definition.get("steps"):
+        raise ValueError("workflow must contain at least one step before publishing")
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE workflow_definitions SET status='published', version=version+1, updated_by=%s, updated_at_utc=NOW() WHERE workflow_key=%s RETURNING version",
+            (actor, definition["workflow_key"]),
+        )
+        version = int(cur.fetchone()[0])
+        cur.execute(
+            "INSERT INTO workflow_definition_audit(entity_type, entity_key, entity_version, action, actor, after_json) VALUES('workflow',%s,%s,'publish',%s,%s::jsonb)",
+            (definition["workflow_key"], version, actor, json.dumps(definition)),
+        )
+        conn.commit()
+    return {"workflow_key": definition["workflow_key"], "version": version, "status": "published"}
+
+
+def create_workflow_run(store: Any, payload: dict[str, Any], *, actor: str = "") -> dict[str, Any]:
+    ensure_workflow_schema(store)
+    workflow_key = slugify_key(str(payload.get("workflow_key") or ""), fallback="")
+    definition = get_workflow_definition(store, workflow_key)
+    if not definition:
+        raise KeyError("workflow definition not found")
+    run_id = str(uuid.uuid4())
+    root_domain = str(payload.get("root_domain") or payload.get("input", {}).get("root_domain") or "").strip().lower()
+    input_json = _json(payload.get("input_json", payload.get("input")), {})
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+INSERT INTO workflow_runs(id, workflow_definition_id, workflow_key, workflow_version, root_domain, status, trigger_source, input_json, created_by)
+VALUES(%s,%s,%s,%s,%s,'queued',%s,%s::jsonb,%s);
+""",
+            (run_id, definition["id"], definition["workflow_key"], int(definition.get("version") or 1), root_domain, str(payload.get("trigger_source") or "manual"), json.dumps(input_json), actor),
+        )
+        for step in definition["steps"]:
+            status = "ready" if int(step.get("ordinal") or 1) == 1 else "pending"
+            blocked = "" if status == "ready" else "waiting for previous step to complete"
+            cur.execute(
+                """
+INSERT INTO workflow_step_runs(id, workflow_run_id, workflow_definition_id, step_definition_id, step_key, plugin_key, ordinal, status, blocked_reason, max_attempts, input_json, resolved_config_json)
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb);
+""",
+                (
+                    str(uuid.uuid4()), run_id, definition["id"], step["id"], step["step_key"], step["plugin_key"],
+                    int(step["ordinal"]), status, blocked, int(step.get("max_attempts") or 0),
+                    json.dumps(input_json), json.dumps(step.get("config_json") or {}),
+                ),
+            )
+            # Compatibility bridge: also enqueue the current coordinator stage task so existing workers can process it.
+            if root_domain:
+                cur.execute(
+                    """
+INSERT INTO coordinator_stage_tasks(workflow_id, root_domain, stage, status, checkpoint_json)
+VALUES(%s,%s,%s,%s,%s::jsonb)
+ON CONFLICT(workflow_id, root_domain, stage) DO UPDATE SET
+  status='pending', worker_id=NULL, lease_expires_at=NULL, error=NULL, updated_at_utc=NOW();
+""",
+                    (definition["workflow_key"], root_domain, step["plugin_key"], status if status in {"ready", "pending"} else "pending", json.dumps({"workflow_run_id": run_id, "step_key": step["step_key"]})),
+                )
+        conn.commit()
+    return {"id": run_id, "workflow_key": definition["workflow_key"], "root_domain": root_domain, "status": "queued"}
+
+
+def list_workflow_runs(store: Any, *, limit: int = 100) -> list[dict[str, Any]]:
+    ensure_workflow_schema(store)
+    safe_limit = max(1, min(500, int(limit or 100)))
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+SELECT r.id::text, r.workflow_key, r.workflow_version, r.root_domain, r.status, r.trigger_source,
+       r.created_at_utc, r.updated_at_utc,
+       COUNT(s.id) FILTER (WHERE s.status='completed') AS completed_steps,
+       COUNT(s.id) AS total_steps
+FROM workflow_runs r
+LEFT JOIN workflow_step_runs s ON s.workflow_run_id = r.id
+GROUP BY r.id
+ORDER BY r.created_at_utc DESC
+LIMIT %s;
+""",
+            (safe_limit,),
+        )
+        return [
+            {
+                "id": r[0], "workflow_key": r[1], "workflow_version": int(r[2]), "root_domain": r[3],
+                "status": r[4], "trigger_source": r[5],
+                "created_at_utc": r[6].isoformat() if r[6] else None,
+                "updated_at_utc": r[7].isoformat() if r[7] else None,
+                "completed_steps": int(r[8] or 0), "total_steps": int(r[9] or 0),
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def get_workflow_run(store: Any, run_id: str) -> dict[str, Any] | None:
+    ensure_workflow_schema(store)
+    with store._connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id::text, workflow_key, workflow_version, root_domain, status, input_json, created_at_utc FROM workflow_runs WHERE id=%s", (run_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        cur.execute(
+            """
+SELECT id::text, step_key, plugin_key, ordinal, status, blocked_reason, worker_id, attempt_count, max_attempts,
+       input_json, resolved_config_json, output_json, error, started_at_utc, completed_at_utc
+FROM workflow_step_runs WHERE workflow_run_id=%s ORDER BY ordinal ASC;
+""",
+            (run_id,),
+        )
+        steps = [
+            {
+                "id": s[0], "step_key": s[1], "plugin_key": s[2], "ordinal": int(s[3]),
+                "status": s[4], "blocked_reason": s[5], "worker_id": s[6],
+                "attempt_count": int(s[7] or 0), "max_attempts": int(s[8] or 0),
+                "input_json": s[9] or {}, "resolved_config_json": s[10] or {}, "output_json": s[11] or {},
+                "error": s[12], "started_at_utc": s[13].isoformat() if s[13] else None,
+                "completed_at_utc": s[14].isoformat() if s[14] else None,
+            }
+            for s in cur.fetchall()
+        ]
+    return {"id": r[0], "workflow_key": r[1], "workflow_version": int(r[2]), "root_domain": r[3], "status": r[4], "input_json": r[5] or {}, "created_at_utc": r[6].isoformat() if r[6] else None, "steps": steps}

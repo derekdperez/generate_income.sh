@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Workflow Definitions</title>
+  <style>
+    body{font-family:Segoe UI,Arial,sans-serif;margin:16px;background:#f8fafc;color:#0f172a}
+    .grid{display:grid;grid-template-columns:320px 1fr;gap:12px}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:12px}
+    input,textarea,select{width:100%;box-sizing:border-box;padding:7px;border:1px solid #94a3b8;border-radius:7px}textarea{min-height:90px;font-family:ui-monospace,Consolas,monospace}
+    button{border:1px solid #94a3b8;background:#fff;border-radius:7px;padding:7px 10px;cursor:pointer}.primary{background:#0ea5e9;color:white;border-color:#0284c7}
+    .item{padding:8px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:8px;cursor:pointer}.item:hover{background:#f0f9ff}.muted{color:#64748b;font-size:12px}
+    .steps{display:grid;gap:8px}.step{border:1px solid #cbd5e1;border-radius:8px;padding:8px;background:#f8fafc}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  </style>
+</head>
+<body>
+{% include "_navbar.html.j2" %}
+<h1>Workflow Definitions</h1>
+<p class="muted">DB-backed workflow builder. Published definitions can be launched as workflow runs and bridged into the existing coordinator stage queue.</p>
+<div class="grid">
+  <div class="panel">
+    <div class="actions"><button class="primary" onclick="newWorkflow()">New workflow</button><button onclick="loadAll()">Refresh</button></div>
+    <div id="workflowList"></div>
+  </div>
+  <div class="panel">
+    <div class="row">
+      <label>Workflow key<input id="workflow_key"></label>
+      <label>Name<input id="name"></label>
+    </div>
+    <label>Description<textarea id="description"></textarea></label>
+    <div class="row">
+      <label>Status<select id="status"><option>draft</option><option>published</option><option>archived</option></select></label>
+      <label>Trigger mode<select id="trigger_mode"><option>manual</option><option>scheduled</option><option>event</option></select></label>
+    </div>
+    <label>Input schema JSON<textarea id="input_schema">{}</textarea></label>
+    <h3>Steps</h3>
+    <div id="steps" class="steps"></div>
+    <div class="actions"><button onclick="addStep()">Add step</button><button class="primary" onclick="saveWorkflow()">Save</button><button onclick="publishWorkflow()">Publish</button><button onclick="launchWorkflow()">Launch run</button></div>
+    <pre id="result" class="muted"></pre>
+  </div>
+</div>
+<script>
+let plugins=[], current={steps:[]};
+const $=id=>document.getElementById(id);
+function pretty(v){return JSON.stringify(v,null,2)}
+async function api(url, opts={}){const r=await fetch(url,{headers:{'content-type':'application/json'},...opts}); const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(JSON.stringify(j)); return j;}
+async function loadAll(){plugins=(await api('/api/plugin-definitions')).items||[]; const data=await api('/api/workflow-definitions'); $('workflowList').innerHTML=(data.items||[]).map(w=>`<div class="item" onclick="loadWorkflow('${w.workflow_key}')"><b>${w.name}</b><div class="muted">${w.workflow_key} v${w.version} · ${w.status} · ${w.step_count} steps</div></div>`).join('');}
+function newWorkflow(){current={workflow_key:'',name:'',description:'',status:'draft',trigger_mode:'manual',input_schema:{type:'object',additionalProperties:true},steps:[]}; render();}
+async function loadWorkflow(key){current=(await api('/api/workflow-definitions/'+encodeURIComponent(key))).item; render();}
+function render(){['workflow_key','name','description','status','trigger_mode'].forEach(id=>$(id).value=current[id]||''); $('input_schema').value=pretty(current.input_schema||{}); renderSteps();}
+function renderSteps(){ $('steps').innerHTML=(current.steps||[]).map((s,i)=>`<div class="step"><div class="row"><label>Step key<input onchange="current.steps[${i}].step_key=this.value" value="${s.step_key||''}"></label><label>Plugin<select onchange="current.steps[${i}].plugin_key=this.value">${plugins.map(p=>`<option value="${p.plugin_key}" ${p.plugin_key==s.plugin_key?'selected':''}>${p.display_name||p.plugin_key}</option>`).join('')}</select></label></div><label>Config JSON<textarea onchange="current.steps[${i}].config_json=JSON.parse(this.value||'{}')">${pretty(s.config_json||{})}</textarea></label><label>Preconditions JSON<textarea onchange="current.steps[${i}].preconditions_json=JSON.parse(this.value||'{}')">${pretty(s.preconditions_json||{})}</textarea></label><button onclick="current.steps.splice(${i},1);renderSteps()">Remove</button></div>`).join('');}
+function addStep(){current.steps=current.steps||[]; const p=plugins[0]||{plugin_key:''}; current.steps.push({step_key:'step_'+(current.steps.length+1),display_name:'Step '+(current.steps.length+1),plugin_key:p.plugin_key,ordinal:current.steps.length+1,enabled:true,config_json:{},preconditions_json:{}}); renderSteps();}
+function collect(){return {workflow_key:$('workflow_key').value,name:$('name').value,description:$('description').value,status:$('status').value,trigger_mode:$('trigger_mode').value,input_schema:JSON.parse($('input_schema').value||'{}'),steps:(current.steps||[]).map((s,i)=>({...s,ordinal:i+1,display_name:s.display_name||s.step_key}))};}
+async function saveWorkflow(){try{current=collect(); $('result').textContent=pretty(await api('/api/workflow-definitions',{method:'POST',body:JSON.stringify(current)})); await loadAll();}catch(e){$('result').textContent=e.message}}
+async function publishWorkflow(){try{$('result').textContent=pretty(await api('/api/workflow-definitions/'+encodeURIComponent($('workflow_key').value)+'/publish',{method:'POST'})); await loadAll();}catch(e){$('result').textContent=e.message}}
+async function launchWorkflow(){const root_domain=prompt('Root domain/input target?')||''; try{$('result').textContent=pretty(await api('/api/workflow-runs',{method:'POST',body:JSON.stringify({workflow_key:$('workflow_key').value,root_domain,input:{root_domain}})}));}catch(e){$('result').textContent=e.message}}
+loadAll().then(newWorkflow);
+</script>
+</body></html>

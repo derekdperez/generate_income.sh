@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Workflow Runs</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;margin:16px;background:#f8fafc;color:#0f172a}.panel{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:12px;margin-bottom:12px}table{width:100%;border-collapse:collapse;background:white}td,th{border:1px solid #cbd5e1;padding:7px;text-align:left;font-size:13px}th{background:#f1f5f9}.muted{color:#64748b}.badge{border:1px solid #cbd5e1;border-radius:999px;padding:2px 8px;font-weight:600}</style></head>
+<body>{% include "_navbar.html.j2" %}<h1>Workflow Runs</h1><div class="panel"><button onclick="loadRuns()">Refresh</button> <a href="/workflow-definitions">Launch from Workflow Definitions</a></div><div class="panel"><table><thead><tr><th>Run</th><th>Workflow</th><th>Domain</th><th>Status</th><th>Steps</th><th>Created</th></tr></thead><tbody id="rows"></tbody></table></div><pre id="detail" class="panel muted"></pre>
+<script>
+async function api(u){const r=await fetch(u);const j=await r.json();if(!r.ok)throw new Error(JSON.stringify(j));return j}
+async function loadRuns(){const data=await api('/api/workflow-runs'); rows.innerHTML=(data.items||[]).map(r=>`<tr onclick="loadDetail('${r.id}')"><td>${r.id}</td><td>${r.workflow_key} v${r.workflow_version}</td><td>${r.root_domain||''}</td><td><span class=badge>${r.status}</span></td><td>${r.completed_steps}/${r.total_steps}</td><td>${r.created_at_utc||''}</td></tr>`).join('')}
+async function loadDetail(id){detail.textContent=JSON.stringify((await api('/api/workflow-runs/'+id)).item,null,2)}
+loadRuns(); setInterval(loadRuns,10000)
+</script></body></html>
