@@ -233,3 +233,7 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - A dedicated download endpoint (`/api/coord/discovered-target-download`) now decouples binary/json artifact retrieval from the HTML detail page.
 - UI runtime boundary update:
   - Global network activity indicator moved to shared navbar include and driven via wrapped `fetch`, giving consistent non-blocking loading visibility across pages without per-page duplicate implementations.
+- Page-cache architecture update (2026-04-23):
+  - `server.py` now owns a reusable in-memory page-data cache (`_PageDataCache`) with TTL + bounded entry count and shared metadata envelope (`page_cache`) in API responses.
+  - Cache strategy for coordinator list pages is `cache_mode` driven (`prefer` for cache-first, `refresh` for source-first) and supports stale-cache fallback on source errors.
+  - A background warmer thread preloads default query keys for crawl progress, discovered targets, discovered files, and high-value files, plus a small default sitemap sample for top domains.

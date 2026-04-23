@@ -367,6 +367,12 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - UI responsiveness convention:
   - Keep loading feedback non-blocking. Use lightweight status text/spinners and avoid modal blockers for routine fetches.
   - Shared network activity indicators should live in navbar/shared includes so page-specific scripts stay focused on data logic.
+- Page-cache API convention:
+  - Cache-enabled coordinator list endpoints accept `cache_mode` query parameter with `prefer` (default, cache-first) and `refresh` (source-first).
+  - Cache-enabled responses include a `page_cache` object describing source (`live`/`cache`/`stale_cache`), timestamps, mode, and stale/error flags.
+- Cache-first UI convention:
+  - Initial page loads should request `cache_mode=prefer`.
+  - If initial payload source is cached, trigger a non-blocking follow-up fetch with `cache_mode=refresh` to reconcile with live source data.
 
 - Recon plugin artifact convention:
   - Progress artifact type: `<plugin_name>_progress_json`
