@@ -297,8 +297,6 @@ class CoordinatorStore:
         self._durable_checkpoint_interval_seconds = max(15, int(os.getenv("COORDINATOR_PROGRESS_PERSIST_INTERVAL_SECONDS", "60") or "60"))
         self._ensure_schema()
 
-    @staticmethod
-
     def _build_pool(self):
         if ConnectionPool is None:
             raise RuntimeError("psycopg_pool is required for CoordinatorStore")
@@ -316,6 +314,7 @@ class CoordinatorStore:
             open=True,
         )
 
+    @staticmethod
     def _resolve_connect_timeout_seconds() -> int:
         raw = str(
             os.getenv(
