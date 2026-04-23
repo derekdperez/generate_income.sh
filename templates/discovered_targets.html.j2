@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -7,134 +7,179 @@
   <style>
     body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
     h1 { margin-bottom: 8px; }
-    h2 { margin: 16px 0 8px; }
     .meta { margin-bottom: 12px; color: #475569; font-size: 13px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 14px; flex-wrap: wrap; }
     input, select { padding: 6px 8px; border: 1px solid #94a3b8; border-radius: 6px; }
     button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
     button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
-    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 14px; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
     .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
     .k { font-size: 12px; color: #64748b; }
     .v { font-size: 20px; font-weight: 700; margin-top: 4px; word-break: break-word; }
     .muted { color: #64748b; }
     .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 14px; }
-    .table-wrap { max-height: 440px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
-    .table-wrap.sitemap { max-height: 620px; }
-    table { width: max-content; min-width: 100%; border-collapse: collapse; background: #fff; border: 0; }
-    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: top; }
-    th { background: #e2e8f0; position: sticky; top: 0; z-index: 4; }
+    .table-wrap { max-height: 360px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    .table-wrap.sitemap { height: 560px; max-height: 560px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: left; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
     tr.selectable:hover { background: #eff6ff; cursor: pointer; }
     tr.selected { background: #dbeafe; }
-    .col-url { min-width: 420px; max-width: 420px; word-break: break-all; }
+    .busy { display: inline-flex; align-items: center; gap: 6px; }
+    .spinner { width: 13px; height: 13px; border: 2px solid #bfdbfe; border-top-color: #0284c7; border-radius: 50%; animation: spin 0.9s linear infinite; display: none; }
+    .busy.active .spinner { display: inline-block; }
+    .pager { display: inline-flex; gap: 6px; align-items: center; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .actions a { color: #1d4ed8; text-decoration: none; }
+    .actions a:hover { text-decoration: underline; }
     .chip-list { display: flex; gap: 4px; flex-wrap: wrap; }
-    .chip { background: #e2e8f0; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+    .chip { background: #e2e8f0; border-radius: 999px; padding: 1px 6px; font-size: 11px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   {% include '_navbar.html.j2' %}
   <h1>Discovered Targets</h1>
-  <div class="meta">Domains with at least one discovered URL in coordinator sessions. Select a domain row to inspect its sitemap.</div>
+  <div class="meta">Fast, cached, paged target explorer. Domain rows load first, URL rows are then loaded lazily by domain with sorting, filtering, and virtualized rendering.</div>
 
   <div class="toolbar">
     <input id="token" type="password" placeholder="Coordinator token">
-    <input id="searchText" type="text" placeholder="Search domains and counts">
-    <input id="limit" type="number" min="1" max="5000" value="2000" style="max-width: 120px;" title="Max domains">
-    <button class="primary" onclick="refreshDomains()">Refresh</button>
-    <span id="msg" class="muted"></span>
+    <input id="domainSearch" type="text" placeholder="Search domains">
+    <select id="domainSortKey">
+      <option value="saved_at_utc">Sort: Last Saved</option>
+      <option value="root_domain">Sort: Domain</option>
+      <option value="discovered_urls_count">Sort: URL Count</option>
+      <option value="status">Sort: Status</option>
+    </select>
+    <select id="domainSortDir">
+      <option value="desc">Desc</option>
+      <option value="asc">Asc</option>
+    </select>
+    <input id="domainPageSize" type="number" min="10" max="500" value="100" style="max-width: 100px;" title="Domain page size">
+    <button id="refreshDomainsBtn" class="primary">Refresh Domains</button>
+    <span id="domainBusy" class="busy muted"><span class="spinner" aria-hidden="true"></span><span id="domainBusyText">Idle</span></span>
   </div>
 
   <div id="cards" class="cards"></div>
 
   <div class="panel">
-    <strong>Domains</strong>
-    <div class="table-wrap">
-      <table id="discoveredTargetsTable">
+    <div class="toolbar" style="margin: 0 0 8px 0;">
+      <strong>Domains</strong>
+      <span class="pager" style="margin-left:auto;">
+        <button id="domainsPrevBtn">Prev</button>
+        <span id="domainsPagerMeta" class="muted">Page 1</span>
+        <button id="domainsNextBtn">Next</button>
+      </span>
+    </div>
+    <div class="table-wrap" id="domainsWrap">
+      <table>
         <thead>
           <tr>
-            <th>Domain</th>
-            <th>Start URL</th>
-            <th>Total URLs</th>
-            <th>Internal Links</th>
-            <th>Forms</th>
-            <th>Href Refs</th>
-            <th>Src Refs</th>
-            <th>Embedded Routes</th>
-            <th>Attribute Routes</th>
-            <th>Script URLs</th>
-            <th>Redirects</th>
-            <th>Crawl Responses</th>
-            <th>Wordlist Paths</th>
-            <th>AI Guesses</th>
-            <th>AI Probes</th>
-            <th>Seed URLs</th>
-            <th>Saved</th>
+            <th style="width: 22%;">Domain</th>
+            <th style="width: 37%;">Start URL</th>
+            <th style="width: 11%;">URLs</th>
+            <th style="width: 12%;">Status</th>
+            <th style="width: 18%;">Saved</th>
           </tr>
         </thead>
-        <tbody id="domainRows"><tr><td colspan="17">Loading...</td></tr></tbody>
+        <tbody id="domainRows"><tr><td colspan="5">Loading...</td></tr></tbody>
       </table>
     </div>
   </div>
 
   <div class="panel">
-    <strong id="sitemapTitle">Sitemap</strong>
-    <div class="toolbar" style="margin-top:8px;">
-      <input id="sitemapSearchText" type="text" placeholder="Search sitemap rows">
-      <span id="sitemapMeta" class="muted">Select a domain above.</span>
+    <div class="toolbar" style="margin-top:0;">
+      <strong id="sitemapTitle">Sitemap URLs</strong>
+      <input id="sitemapSearch" type="text" placeholder="Search URL, method, type, status" style="min-width: 240px;">
+      <select id="sitemapSubdomain" title="Filter by subdomain">
+        <option value="">All subdomains</option>
+      </select>
+      <select id="sitemapSortKey">
+        <option value="url">Sort: URL</option>
+        <option value="subdomain">Sort: Subdomain</option>
+        <option value="inbound_count">Sort: Inbound</option>
+        <option value="outbound_count">Sort: Outbound</option>
+        <option value="response_status_code">Sort: HTTP Status</option>
+        <option value="response_elapsed_ms">Sort: Load ms</option>
+        <option value="response_size_bytes">Sort: Size</option>
+        <option value="captured_at_utc">Sort: Captured</option>
+      </select>
+      <select id="sitemapSortDir">
+        <option value="asc">Asc</option>
+        <option value="desc">Desc</option>
+      </select>
+      <input id="sitemapPageSize" type="number" min="20" max="1000" value="200" style="max-width: 100px;" title="Sitemap page size">
+      <button id="refreshSitemapBtn" class="primary">Refresh URLs</button>
+      <span id="sitemapBusy" class="busy muted"><span class="spinner" aria-hidden="true"></span><span id="sitemapBusyText">Select a domain</span></span>
     </div>
-    <div class="table-wrap sitemap">
-      <table id="discoveredTargetSitemapTable">
+
+    <div class="toolbar" style="margin-top: 0;">
+      <span class="pager">
+        <button id="sitemapPrevBtn">Prev</button>
+        <span id="sitemapPagerMeta" class="muted">Page 1</span>
+        <button id="sitemapNextBtn">Next</button>
+      </span>
+      <span id="sitemapMeta" class="muted"></span>
+    </div>
+
+    <div class="table-wrap sitemap" id="sitemapWrap">
+      <table id="sitemapTable">
         <thead>
           <tr>
-            <th>URL</th>
-            <th>Inbound</th>
-            <th>Outbound</th>
-            <th>Discovered Via</th>
-            <th>Discovered From</th>
-            <th>Crawled</th>
-            <th>Requested</th>
-            <th>Exists</th>
-            <th>Existence Note</th>
-            <th>Response</th>
-            <th>Resp Status</th>
-            <th>Resp Time (ms)</th>
-            <th>Resp Size</th>
-            <th>Content Type</th>
-            <th>Crawl Status</th>
-            <th>Existence Status</th>
+            <th style="width: 26%;">URL</th>
+            <th style="width: 10%;">Subdomain</th>
+            <th style="width: 11%;">Path</th>
+            <th style="width: 5%;">In</th>
+            <th style="width: 5%;">Out</th>
+            <th style="width: 12%;">Found Via</th>
+            <th style="width: 8%;">Exists</th>
+            <th style="width: 6%;">Status</th>
+            <th style="width: 6%;">Load ms</th>
+            <th style="width: 7%;">Size</th>
+            <th style="width: 8%;">Type</th>
+            <th style="width: 16%;">Actions</th>
           </tr>
         </thead>
-        <tbody id="sitemapRows"><tr><td colspan="16">Select a domain above.</td></tr></tbody>
+        <tbody id="sitemapRows"><tr><td colspan="12">Select a domain.</td></tr></tbody>
       </table>
     </div>
   </div>
 
-  {% include '_grid_controls.html.j2' %}
   <script>
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
-    const DOMAIN_PAGE_KEY = "discovered_targets_domains_table_v1";
-    const SITEMAP_PAGE_KEY = "discovered_targets_sitemap_table_v1";
-    const METHOD_ORDER = [
-      ["internal_link", "Internal Links"],
-      ["form_action", "Forms"],
-      ["href_reference", "Href Refs"],
-      ["src_reference", "Src Refs"],
-      ["embedded_route", "Embedded Routes"],
-      ["attribute_route", "Attribute Routes"],
-      ["observed_in_script_file", "Script URLs"],
-      ["redirect_location", "Redirects"],
-      ["crawl_response", "Crawl Responses"],
-      ["file_path_wordlist", "Wordlist Paths"],
-      ["guessed_url", "AI Guesses"],
-      ["ai_probe_request", "AI Probes"],
-      ["seed_input", "Seed URLs"]
-    ];
-    let domainGridCtrl = null;
-    let sitemapGridCtrl = null;
-    let selectedDomain = "";
-    let domainRowsCache = [];
-    let sitemapRowsCache = [];
+    const DOMAIN_CACHE_PREFIX = "nightmare_discovered_targets_domains_v2";
+    const SITEMAP_CACHE_PREFIX = "nightmare_discovered_targets_sitemap_v2";
+    const DOMAIN_CACHE_TTL_MS = 30 * 1000;
+    const SITEMAP_CACHE_TTL_MS = 60 * 1000;
+    const SITEMAP_ROW_HEIGHT = 34;
+    const SITEMAP_OVERSCAN = 10;
 
+    const state = {
+      selectedDomain: "",
+      domains: [],
+      domainTotal: 0,
+      domainOffset: 0,
+      domainLimit: 100,
+      domainSortKey: "saved_at_utc",
+      domainSortDir: "desc",
+      sitemapRows: [],
+      sitemapTotal: 0,
+      sitemapOffset: 0,
+      sitemapLimit: 200,
+      sitemapSortKey: "url",
+      sitemapSortDir: "asc",
+      sitemapSearch: "",
+      sitemapSubdomain: "",
+      sitemapSubdomains: [],
+    };
+
+    const activeControllers = new Map();
+
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
     function readCookie(name) {
       const needle = `${name}=`;
       const cookies = String(document.cookie || "").split(";");
@@ -153,175 +198,447 @@
       const secure = location.protocol === "https:" ? "; Secure" : "";
       document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
     }
-    function esc(v) {
-      return String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[ch]));
-    }
     function authHeaders() {
       const token = document.getElementById("token").value.trim();
       if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
       else deleteCookie(TOKEN_COOKIE_NAME);
       return token ? { Authorization: `Bearer ${token}` } : {};
     }
-    function methodCount(row, key) {
-      const counts = row && typeof row.method_counts === "object" && row.method_counts ? row.method_counts : {};
-      const value = Number(counts[key] || 0);
-      return Number.isFinite(value) ? value : 0;
+    function formatBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return "0 B";
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
     }
-    function renderCards(rows) {
-      const totals = METHOD_ORDER.reduce((acc, [key]) => acc + rows.reduce((sum, row) => sum + methodCount(row, key), 0), 0);
-      document.getElementById("cards").innerHTML = `
-        <div class="card"><div class="k">Domains</div><div class="v">${rows.length}</div></div>
-        <div class="card"><div class="k">Total URLs Discovered</div><div class="v">${rows.reduce((sum, row) => sum + Number(row.discovered_urls_count || 0), 0)}</div></div>
-        <div class="card"><div class="k">Discovery Method Hits</div><div class="v">${totals}</div></div>
-        <div class="card"><div class="k">Selected Domain</div><div class="v">${esc(selectedDomain || "None")}</div></div>
-      `;
-    }
-    function bindGridControls() {
-      if (!window.NightmareGridControls) return;
-      if (!domainGridCtrl) {
-        domainGridCtrl = window.NightmareGridControls.enhance({
-          table: "discoveredTargetsTable",
-          page: "discovered_targets",
-          prefKey: DOMAIN_PAGE_KEY,
-          tokenInputId: "token",
-          mode: "full",
-          globalSearchInputId: "searchText"
-        });
+    function cacheGet(key, ttlMs) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+        const cachedAt = Number(parsed.cached_at || 0);
+        if (!Number.isFinite(cachedAt) || (Date.now() - cachedAt) > ttlMs) return null;
+        return parsed.payload && typeof parsed.payload === "object" ? parsed.payload : null;
+      } catch (_) {
+        return null;
       }
-      if (!sitemapGridCtrl) {
-        sitemapGridCtrl = window.NightmareGridControls.enhance({
-          table: "discoveredTargetSitemapTable",
-          page: "discovered_targets",
-          prefKey: SITEMAP_PAGE_KEY,
-          tokenInputId: "token",
-          mode: "full",
-          globalSearchInputId: "sitemapSearchText"
-        });
-      }
-      domainGridCtrl?.refresh?.();
-      sitemapGridCtrl?.refresh?.();
     }
-    function renderDomains(rows) {
-      domainRowsCache = Array.isArray(rows) ? rows.slice() : [];
-      renderCards(domainRowsCache);
+    function cacheSet(key, payload) {
+      try {
+        localStorage.setItem(key, JSON.stringify({ cached_at: Date.now(), payload }));
+      } catch (_) {
+        // Ignore cache write errors.
+      }
+    }
+    function buildCacheKey(prefix, args) {
+      return `${prefix}:${JSON.stringify(args || {})}`;
+    }
+    function setBusy(kind, isBusy, text) {
+      const root = document.getElementById(kind === "domains" ? "domainBusy" : "sitemapBusy");
+      const label = document.getElementById(kind === "domains" ? "domainBusyText" : "sitemapBusyText");
+      if (!root || !label) return;
+      if (isBusy) root.classList.add("active"); else root.classList.remove("active");
+      label.textContent = String(text || "");
+    }
+    async function fetchJson(path, requestKey) {
+      const previous = activeControllers.get(requestKey);
+      if (previous) previous.abort();
+      const controller = new AbortController();
+      activeControllers.set(requestKey, controller);
+      try {
+        const rsp = await fetch(path, { cache: "no-store", headers: authHeaders(), signal: controller.signal });
+        const payload = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) {
+          const message = String(payload.error || `HTTP ${rsp.status}`);
+          throw new Error(message);
+        }
+        return payload;
+      } finally {
+        if (activeControllers.get(requestKey) === controller) {
+          activeControllers.delete(requestKey);
+        }
+      }
+    }
+
+    function renderCards() {
+      const discoveredTotal = state.domains.reduce((sum, row) => sum + Number(row.discovered_urls_count || 0), 0);
+      document.getElementById("cards").innerHTML = [
+        ["Visible Domains", state.domains.length],
+        ["Domain Total", state.domainTotal],
+        ["Selected Domain", state.selectedDomain || "None"],
+        ["Visible URLs", state.sitemapRows.length],
+        ["URL Total", state.sitemapTotal],
+        ["Visible Discovered URLs", discoveredTotal],
+      ].map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+    }
+
+    function updateDomainsPager() {
+      const page = Math.floor(state.domainOffset / Math.max(1, state.domainLimit)) + 1;
+      const totalPages = Math.max(1, Math.ceil(Math.max(0, state.domainTotal) / Math.max(1, state.domainLimit)));
+      document.getElementById("domainsPagerMeta").textContent = `Page ${page} of ${totalPages} (${state.domainTotal} domains)`;
+      document.getElementById("domainsPrevBtn").disabled = state.domainOffset <= 0;
+      document.getElementById("domainsNextBtn").disabled = !((state.domainOffset + state.domainLimit) < state.domainTotal);
+    }
+
+    function renderDomains(payload) {
+      state.domains = Array.isArray(payload?.domains) ? payload.domains.slice() : [];
+      state.domainTotal = Number(payload?.total_domains || state.domains.length || 0);
+      updateDomainsPager();
       const tbody = document.getElementById("domainRows");
-      if (!domainRowsCache.length) {
-        tbody.innerHTML = '<tr><td colspan="17">No discovered target domains found.</td></tr>';
-        bindGridControls();
+      if (!state.domains.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No matching domains.</td></tr>';
+        renderCards();
         return;
       }
-      tbody.innerHTML = domainRowsCache.map((row) => `
-        <tr class="selectable ${selectedDomain === row.root_domain ? "selected" : ""}" data-domain="${esc(row.root_domain)}">
-          <td>${esc(row.root_domain)}</td>
-          <td>${esc(row.start_url || "")}</td>
-          <td data-raw="${Number(row.discovered_urls_count || 0)}">${Number(row.discovered_urls_count || 0)}</td>
-          ${METHOD_ORDER.map(([key]) => `<td data-raw="${methodCount(row, key)}">${methodCount(row, key)}</td>`).join("")}
-          <td>${esc(row.saved_at_utc || "")}</td>
-        </tr>
-      `).join("");
+      tbody.innerHTML = state.domains.map((row) => {
+        const selected = state.selectedDomain === row.root_domain ? "selected" : "";
+        return `
+          <tr class="selectable ${selected}" data-domain="${esc(row.root_domain)}">
+            <td class="mono" title="${esc(row.root_domain)}">${esc(row.root_domain)}</td>
+            <td title="${esc(row.start_url || "")}">${esc(row.start_url || "")}</td>
+            <td data-raw="${Number(row.discovered_urls_count || 0)}">${Number(row.discovered_urls_count || 0)}</td>
+            <td>${esc(row.status || "")}</td>
+            <td title="${esc(row.saved_at_utc || "")}">${esc(row.saved_at_utc || "")}</td>
+          </tr>
+        `;
+      }).join("");
       for (const tr of tbody.querySelectorAll("tr[data-domain]")) {
         tr.addEventListener("click", () => {
           const domain = String(tr.getAttribute("data-domain") || "");
-          if (!domain) return;
-          selectedDomain = domain;
-          renderDomains(domainRowsCache);
-          refreshSitemap(domain);
+          if (!domain || domain === state.selectedDomain) return;
+          state.selectedDomain = domain;
+          state.sitemapOffset = 0;
+          renderDomains({ domains: state.domains, total_domains: state.domainTotal });
+          loadSitemap({ useCacheFirst: true });
         });
       }
-      bindGridControls();
+      renderCards();
     }
+
+    function updateSitemapPager() {
+      const page = Math.floor(state.sitemapOffset / Math.max(1, state.sitemapLimit)) + 1;
+      const totalPages = Math.max(1, Math.ceil(Math.max(0, state.sitemapTotal) / Math.max(1, state.sitemapLimit)));
+      document.getElementById("sitemapPagerMeta").textContent = `Page ${page} of ${totalPages}`;
+      document.getElementById("sitemapPrevBtn").disabled = state.sitemapOffset <= 0;
+      document.getElementById("sitemapNextBtn").disabled = !((state.sitemapOffset + state.sitemapLimit) < state.sitemapTotal);
+    }
+
+    function ensureSubdomainOptions(options) {
+      const select = document.getElementById("sitemapSubdomain");
+      const current = state.sitemapSubdomain;
+      const values = ["", ...(Array.isArray(options) ? options : [])];
+      const unique = [];
+      const seen = new Set();
+      for (const value of values) {
+        const text = String(value || "");
+        if (seen.has(text)) continue;
+        seen.add(text);
+        unique.push(text);
+      }
+      select.innerHTML = unique.map((value) => {
+        const label = value === "" ? "All subdomains" : value;
+        return `<option value="${esc(value)}">${esc(label)}</option>`;
+      }).join("");
+      if (unique.includes(current)) {
+        select.value = current;
+      } else {
+        state.sitemapSubdomain = "";
+        select.value = "";
+      }
+    }
+
     function renderSitemap(payload) {
-      const sitemap = payload && payload.sitemap && typeof payload.sitemap === "object" ? payload.sitemap : {};
-      const pagesFromSitemap = Array.isArray(sitemap.pages) ? sitemap.pages : [];
-      const pagesFromPayload = Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload?.pages) ? payload.pages : []);
-      sitemapRowsCache = (pagesFromSitemap.length ? pagesFromSitemap : pagesFromPayload).slice();
-      document.getElementById("sitemapTitle").textContent = selectedDomain ? `Sitemap: ${selectedDomain}` : "Sitemap";
-      document.getElementById("sitemapMeta").textContent = selectedDomain
-        ? `${Number(sitemap.page_count || sitemapRowsCache.length || 0)} pages â€¢ start URL: ${(sitemap.start_url || payload?.start_url || "")}`
-        : "Select a domain above.";
+      state.sitemapRows = Array.isArray(payload?.rows) ? payload.rows.slice() : [];
+      state.sitemapTotal = Number(payload?.total_rows || state.sitemapRows.length || 0);
+      state.sitemapSubdomains = Array.isArray(payload?.subdomains) ? payload.subdomains.slice() : [];
+      ensureSubdomainOptions(state.sitemapSubdomains);
+      updateSitemapPager();
+      document.getElementById("sitemapTitle").textContent = state.selectedDomain ? `Sitemap URLs: ${state.selectedDomain}` : "Sitemap URLs";
+      const startUrl = payload?.sitemap?.start_url || "";
+      document.getElementById("sitemapMeta").textContent = state.selectedDomain
+        ? `${state.sitemapTotal} URL rows${startUrl ? ` | start URL: ${startUrl}` : ""}`
+        : "Select a domain first.";
+      const wrap = document.getElementById("sitemapWrap");
+      wrap.scrollTop = 0;
+      renderSitemapVirtualRows();
+      renderCards();
+    }
+
+    function actionsHtml(row) {
+      const links = [];
+      const maybePush = (href, label) => {
+        const path = String(href || "").trim();
+        if (!path) return;
+        links.push(`<a href="${esc(path)}" target="_blank" rel="noopener">${esc(label)}</a>`);
+      };
+      maybePush(row.view_response_path, "View");
+      maybePush(row.download_request_path, "Req JSON");
+      maybePush(row.download_response_path, "Resp JSON");
+      maybePush(row.download_response_body_path, "Resp Body");
+      maybePush(row.download_evidence_path, "Evidence");
+      return links.length ? `<div class="actions">${links.join("")}</div>` : "";
+    }
+
+    function renderSitemapVirtualRows() {
       const tbody = document.getElementById("sitemapRows");
-      if (!sitemapRowsCache.length) {
-        tbody.innerHTML = '<tr><td colspan="16">No sitemap rows available for this domain.</td></tr>';
-        bindGridControls();
+      const wrap = document.getElementById("sitemapWrap");
+      const rows = state.sitemapRows;
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="12">No URL rows match this filter.</td></tr>';
         return;
       }
-      tbody.innerHTML = sitemapRowsCache.map((row) => `
-        <tr>
-          <td class="col-url">${esc(row.url || "")}</td>
-          <td data-raw="${Number(row.inbound_count ?? row.parent_count ?? 0)}">${Number(row.inbound_count ?? row.parent_count ?? 0)}</td>
-          <td data-raw="${Number(row.outbound_count || 0)}">${Number(row.outbound_count || 0)}</td>
-          <td>${Array.isArray(row.discovered_via) && row.discovered_via.length ? `<div class="chip-list">${row.discovered_via.map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""}</td>
-          <td>${(() => { const discoveredFrom = Array.isArray(row.discovered_from) ? row.discovered_from : (Array.isArray(row.parents) ? row.parents : []); return discoveredFrom.length ? `<div class="chip-list">${discoveredFrom.slice(0, 8).map((item) => `<span class="chip">${esc(item)}</span>`).join("")}</div>` : ""; })()}</td>
-          <td>${(row.was_crawled || row.crawled) ? "yes" : ""}</td>
-          <td>${(row.crawl_requested || row.requested) ? "yes" : ""}</td>
-          <td>${esc(row.exists_status || ((row.exists_confirmed || row.exists) ? "exists" : "unknown"))}</td>
-          <td>${esc(row.exists_reason || "")}</td>
-          <td>${(row.response_available && row.view_response_path && (row.exists_status === "exists" || row.exists_confirmed || row.exists)) ? `<a href="${esc(row.view_response_path)}" target="_blank" rel="noopener">View Response</a>` : ""}</td>
-          <td data-raw="${Number(row.response_status_code || 0)}">${esc(row.response_status_code ?? "")}</td>
-          <td data-raw="${Number(row.response_elapsed_ms || 0)}">${esc(row.response_elapsed_ms ?? "")}</td>
-          <td data-raw="${Number(row.response_size_bytes || 0)}">${esc(row.response_size_bytes ?? "")}</td>
-          <td>${esc(row.response_content_type || row.content_type || "")}</td>
-          <td data-raw="${Number(row.crawl_status_code ?? row.status_code ?? 0)}">${esc(row.crawl_status_code ?? row.status_code ?? "")}</td>
-          <td data-raw="${Number(row.existence_status_code || 0)}">${esc(row.existence_status_code ?? "")}</td>
-        </tr>
-      `).join("");
-      bindGridControls();
+      const viewportHeight = Math.max(200, wrap.clientHeight || 560);
+      const start = Math.max(0, Math.floor((wrap.scrollTop || 0) / SITEMAP_ROW_HEIGHT) - SITEMAP_OVERSCAN);
+      const visibleCount = Math.ceil(viewportHeight / SITEMAP_ROW_HEIGHT) + (SITEMAP_OVERSCAN * 2);
+      const end = Math.min(rows.length, start + visibleCount);
+      const topPad = start * SITEMAP_ROW_HEIGHT;
+      const bottomPad = Math.max(0, (rows.length - end) * SITEMAP_ROW_HEIGHT);
+      const visibleRows = rows.slice(start, end).map((row) => {
+        const discoveredVia = Array.isArray(row.discovered_via) ? row.discovered_via : [];
+        const foundVia = discoveredVia.length
+          ? `<div class="chip-list">${discoveredVia.slice(0, 4).map((v) => `<span class="chip" title="${esc(v)}">${esc(v)}</span>`).join("")}</div>`
+          : "";
+        const statusCode = row.response_status_code ?? row.crawl_status_code ?? row.status_code ?? "";
+        const elapsed = row.response_elapsed_ms ?? "";
+        const bytes = row.response_size_bytes;
+        const bytesText = bytes === null || bytes === undefined || bytes === "" ? "" : formatBytes(bytes);
+        const exists = String(row.exists_status || (row.exists_confirmed ? "exists" : "unknown"));
+        return `
+          <tr>
+            <td class="mono" title="${esc(row.url || "")}">${esc(row.url || "")}</td>
+            <td title="${esc(row.subdomain || "")}">${esc(row.subdomain || "")}</td>
+            <td title="${esc(row.path || "")}">${esc(row.path || "")}</td>
+            <td data-raw="${Number(row.inbound_count || row.parent_count || 0)}">${Number(row.inbound_count || row.parent_count || 0)}</td>
+            <td data-raw="${Number(row.outbound_count || 0)}">${Number(row.outbound_count || 0)}</td>
+            <td>${foundVia}</td>
+            <td title="${esc(row.exists_reason || "")}">${esc(exists)}</td>
+            <td data-raw="${Number(statusCode || 0)}">${esc(statusCode)}</td>
+            <td data-raw="${Number(elapsed || 0)}">${esc(elapsed)}</td>
+            <td data-raw="${Number(bytes || 0)}" title="${esc(bytes || "")}">${esc(bytesText)}</td>
+            <td title="${esc(row.response_content_type || row.content_type || "")}">${esc(row.response_content_type || row.content_type || "")}</td>
+            <td>${actionsHtml(row)}</td>
+          </tr>
+        `;
+      }).join("");
+      const topSpacer = topPad > 0 ? `<tr><td colspan="12" style="height:${topPad}px;padding:0;border:0;"></td></tr>` : "";
+      const bottomSpacer = bottomPad > 0 ? `<tr><td colspan="12" style="height:${bottomPad}px;padding:0;border:0;"></td></tr>` : "";
+      tbody.innerHTML = `${topSpacer}${visibleRows}${bottomSpacer}`;
     }
-    async function refreshDomains() {
-      const msg = document.getElementById("msg");
-      msg.textContent = "Loading domainsâ€¦";
-      const limit = Math.max(1, Math.min(5000, Number(document.getElementById("limit").value || 2000)));
-      const q = document.getElementById("searchText").value.trim();
-      const rsp = await fetch(`/api/coord/discovered-targets?limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}`, {
-        cache: "no-store",
-        headers: authHeaders()
+
+    function domainsCacheKey() {
+      return buildCacheKey(DOMAIN_CACHE_PREFIX, {
+        q: document.getElementById("domainSearch").value.trim(),
+        offset: state.domainOffset,
+        limit: state.domainLimit,
+        sort_key: state.domainSortKey,
+        sort_dir: state.domainSortDir,
       });
-      const payload = await rsp.json().catch(() => ({}));
-      if (!rsp.ok) {
-        msg.textContent = String(payload.error || `HTTP ${rsp.status}`);
-        renderDomains([]);
-        return;
-      }
-      const rows = Array.isArray(payload.domains) ? payload.domains : [];
-      renderDomains(rows);
-      msg.textContent = `Loaded ${rows.length} domains`;
-      if (!selectedDomain && rows.length) {
-        selectedDomain = String(rows[0].root_domain || "");
-      }
-      if (selectedDomain && rows.some((row) => row.root_domain === selectedDomain)) {
-        refreshSitemap(selectedDomain);
-      } else if (!rows.length) {
-        selectedDomain = "";
-        renderSitemap({});
-      }
     }
-    async function refreshSitemap(domain) {
-      if (!domain) {
-        renderSitemap({});
-        return;
-      }
-      const msg = document.getElementById("msg");
-      msg.textContent = `Loading sitemap for ${domain}â€¦`;
-      const rsp = await fetch(`/api/coord/discovered-target-sitemap?root_domain=${encodeURIComponent(domain)}`, {
-        cache: "no-store",
-        headers: authHeaders()
+    function sitemapCacheKey() {
+      return buildCacheKey(SITEMAP_CACHE_PREFIX, {
+        root_domain: state.selectedDomain,
+        q: state.sitemapSearch,
+        subdomain: state.sitemapSubdomain,
+        offset: state.sitemapOffset,
+        limit: state.sitemapLimit,
+        sort_key: state.sitemapSortKey,
+        sort_dir: state.sitemapSortDir,
       });
-      const payload = await rsp.json().catch(() => ({}));
-      if (!rsp.ok) {
-        renderSitemap({});
-        msg.textContent = String(payload.error || `HTTP ${rsp.status}`);
+    }
+
+    async function loadDomains(options) {
+      const useCacheFirst = Boolean(options && options.useCacheFirst);
+      const q = document.getElementById("domainSearch").value.trim();
+      state.domainSortKey = document.getElementById("domainSortKey").value;
+      state.domainSortDir = document.getElementById("domainSortDir").value;
+      state.domainLimit = Math.max(10, Math.min(500, Number(document.getElementById("domainPageSize").value || 100)));
+      const params = new URLSearchParams({
+        q,
+        offset: String(state.domainOffset),
+        limit: String(state.domainLimit),
+        sort_key: state.domainSortKey,
+        sort_dir: state.domainSortDir,
+      });
+      const cacheKey = domainsCacheKey();
+      let renderedCached = false;
+      if (useCacheFirst) {
+        const cached = cacheGet(cacheKey, DOMAIN_CACHE_TTL_MS);
+        if (cached) {
+          renderDomains(cached);
+          setBusy("domains", true, "Loaded cached domains. Refreshing...");
+          renderedCached = true;
+        }
+      }
+      if (!renderedCached) setBusy("domains", true, "Loading domains...");
+      try {
+        const payload = await fetchJson(`/api/coord/discovered-targets?${params.toString()}`, "domains");
+        cacheSet(cacheKey, payload);
+        renderDomains(payload);
+        if (!state.selectedDomain && state.domains.length) {
+          state.selectedDomain = String(state.domains[0].root_domain || "");
+          renderDomains(payload);
+        }
+        setBusy("domains", false, `Loaded ${state.domains.length} domain rows.`);
+        if (state.selectedDomain) {
+          loadSitemap({ useCacheFirst: true }).catch((err) => {
+            setBusy("sitemap", false, `Failed to load URLs: ${err.message || err}`);
+          });
+        }
+      } catch (err) {
+        if (!renderedCached) {
+          document.getElementById("domainRows").innerHTML = `<tr><td colspan="5">${esc(err.message || err)}</td></tr>`;
+        }
+        setBusy("domains", false, `Domain load failed: ${err.message || err}`);
+      }
+    }
+
+    async function loadSitemap(options) {
+      if (!state.selectedDomain) {
+        state.sitemapRows = [];
+        state.sitemapTotal = 0;
+        renderSitemap({ rows: [], total_rows: 0, sitemap: {} });
+        setBusy("sitemap", false, "Select a domain");
         return;
       }
-      renderSitemap(payload);
-      msg.textContent = `Loaded sitemap for ${domain}`;
+      const useCacheFirst = Boolean(options && options.useCacheFirst);
+      state.sitemapSearch = document.getElementById("sitemapSearch").value.trim();
+      state.sitemapSubdomain = document.getElementById("sitemapSubdomain").value;
+      state.sitemapLimit = Math.max(20, Math.min(1000, Number(document.getElementById("sitemapPageSize").value || 200)));
+      state.sitemapSortKey = document.getElementById("sitemapSortKey").value;
+      state.sitemapSortDir = document.getElementById("sitemapSortDir").value;
+
+      const params = new URLSearchParams({
+        root_domain: state.selectedDomain,
+        q: state.sitemapSearch,
+        subdomain: state.sitemapSubdomain,
+        offset: String(state.sitemapOffset),
+        limit: String(state.sitemapLimit),
+        sort_key: state.sitemapSortKey,
+        sort_dir: state.sitemapSortDir,
+        include_details: "1",
+      });
+      const cacheKey = sitemapCacheKey();
+      let renderedCached = false;
+      if (useCacheFirst) {
+        const cached = cacheGet(cacheKey, SITEMAP_CACHE_TTL_MS);
+        if (cached) {
+          renderSitemap(cached);
+          setBusy("sitemap", true, "Loaded cached URLs. Refreshing...");
+          renderedCached = true;
+        }
+      }
+      if (!renderedCached) setBusy("sitemap", true, `Loading URLs for ${state.selectedDomain}...`);
+
+      try {
+        const payload = await fetchJson(`/api/coord/discovered-target-sitemap?${params.toString()}`, "sitemap");
+        cacheSet(cacheKey, payload);
+        renderSitemap(payload);
+        setBusy("sitemap", false, `Loaded ${state.sitemapRows.length} URL rows.`);
+      } catch (err) {
+        if (!renderedCached) {
+          document.getElementById("sitemapRows").innerHTML = `<tr><td colspan="12">${esc(err.message || err)}</td></tr>`;
+        }
+        setBusy("sitemap", false, `URL load failed: ${err.message || err}`);
+      }
     }
-    document.getElementById("token").value = readCookie(TOKEN_COOKIE_NAME);
-    document.getElementById("searchText").addEventListener("keydown", (ev) => { if (ev.key === "Enter") refreshDomains(); });
-    document.getElementById("sitemapSearchText").addEventListener("input", () => sitemapGridCtrl?.refresh?.());
-    refreshDomains();
-    setInterval(refreshDomains, 15000);
+
+    function debounce(fn, ms) {
+      let timer = null;
+      return (...args) => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), ms);
+      };
+    }
+
+    function bindEvents() {
+      document.getElementById("refreshDomainsBtn").addEventListener("click", () => {
+        state.domainOffset = 0;
+        loadDomains({ useCacheFirst: false });
+      });
+      document.getElementById("refreshSitemapBtn").addEventListener("click", () => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: false });
+      });
+      document.getElementById("domainsPrevBtn").addEventListener("click", () => {
+        state.domainOffset = Math.max(0, state.domainOffset - state.domainLimit);
+        loadDomains({ useCacheFirst: true });
+      });
+      document.getElementById("domainsNextBtn").addEventListener("click", () => {
+        state.domainOffset += state.domainLimit;
+        loadDomains({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapPrevBtn").addEventListener("click", () => {
+        state.sitemapOffset = Math.max(0, state.sitemapOffset - state.sitemapLimit);
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapNextBtn").addEventListener("click", () => {
+        state.sitemapOffset += state.sitemapLimit;
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("domainSearch").addEventListener("input", debounce(() => {
+        state.domainOffset = 0;
+        loadDomains({ useCacheFirst: true });
+      }, 260));
+      document.getElementById("domainSortKey").addEventListener("change", () => {
+        state.domainOffset = 0;
+        loadDomains({ useCacheFirst: true });
+      });
+      document.getElementById("domainSortDir").addEventListener("change", () => {
+        state.domainOffset = 0;
+        loadDomains({ useCacheFirst: true });
+      });
+      document.getElementById("domainPageSize").addEventListener("change", () => {
+        state.domainOffset = 0;
+        loadDomains({ useCacheFirst: true });
+      });
+
+      document.getElementById("sitemapSearch").addEventListener("input", debounce(() => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: true });
+      }, 260));
+      document.getElementById("sitemapSubdomain").addEventListener("change", () => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapSortKey").addEventListener("change", () => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapSortDir").addEventListener("change", () => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapPageSize").addEventListener("change", () => {
+        state.sitemapOffset = 0;
+        loadSitemap({ useCacheFirst: true });
+      });
+      document.getElementById("sitemapWrap").addEventListener("scroll", () => {
+        renderSitemapVirtualRows();
+      });
+
+      document.getElementById("token").addEventListener("change", () => {
+        state.domainOffset = 0;
+        state.sitemapOffset = 0;
+        loadDomains({ useCacheFirst: false });
+      });
+    }
+
+    function init() {
+      const cookieToken = readCookie(TOKEN_COOKIE_NAME);
+      if (cookieToken) document.getElementById("token").value = cookieToken;
+      bindEvents();
+      loadDomains({ useCacheFirst: true });
+      setInterval(() => {
+        loadDomains({ useCacheFirst: true });
+        if (state.selectedDomain) {
+          loadSitemap({ useCacheFirst: true });
+        }
+      }, 20000);
+    }
+
+    init();
   </script>
 </body>
 </html>
-
-

@@ -2598,6 +2598,32 @@ FUZZING_RESULT_NUMERIC_KEYS = {
     "duration_difference_ms",
 }
 FUZZING_RESULT_DEFAULT_SORT_KEY = "size_difference"
+DISCOVERED_TARGET_DOMAIN_SORT_KEYS = {"root_domain", "saved_at_utc", "discovered_urls_count", "status"}
+DISCOVERED_TARGET_DOMAIN_NUMERIC_KEYS = {"discovered_urls_count"}
+DISCOVERED_TARGET_SITEMAP_SORT_KEYS = {
+    "url",
+    "subdomain",
+    "path",
+    "inbound_count",
+    "outbound_count",
+    "exists_status",
+    "response_status_code",
+    "response_elapsed_ms",
+    "response_size_bytes",
+    "crawl_status_code",
+    "existence_status_code",
+    "captured_at_utc",
+}
+DISCOVERED_TARGET_SITEMAP_NUMERIC_KEYS = {
+    "inbound_count",
+    "outbound_count",
+    "response_status_code",
+    "response_elapsed_ms",
+    "response_size_bytes",
+    "crawl_status_code",
+    "existence_status_code",
+}
+DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY = "url"
 
 
 def _extractor_row_search_blob(row: dict[str, Any]) -> str:
@@ -2781,6 +2807,170 @@ def _apply_fuzzing_row_query(
         "sort_key": safe_sort_key,
         "sort_dir": safe_sort_dir,
         "column_filters": effective_filters,
+    }
+
+
+def _discovered_target_subdomain_for_row(row: dict[str, Any], root_domain: str) -> str:
+    existing = str(row.get("subdomain") or "").strip()
+    if existing:
+        return existing
+    url_text = str(row.get("url") or "").strip()
+    host = str(urlparse(url_text).hostname or "").strip().lower()
+    rd = str(root_domain or "").strip().lower()
+    if not host:
+        return ""
+    if rd and host == rd:
+        return "@root"
+    if rd and host.endswith(f".{rd}"):
+        return host[: -(len(rd) + 1)] or "@root"
+    return host
+
+
+def _discovered_target_sitemap_search_blob(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("url"),
+        row.get("subdomain"),
+        row.get("path"),
+        row.get("exists_status"),
+        row.get("exists_reason"),
+        row.get("request_method"),
+        row.get("response_content_type"),
+        row.get("content_type"),
+        " ".join(str(v or "") for v in (row.get("discovered_via") or [])),
+        " ".join(str(v or "") for v in (row.get("discovered_from") or row.get("parents") or [])),
+    ]
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def _apply_discovered_target_domain_query(
+    rows: list[dict[str, Any]],
+    *,
+    search_text: str,
+    sort_key: str,
+    sort_dir: str,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    q = str(search_text or "").strip().lower()
+    safe_sort_key = str(sort_key or "saved_at_utc").strip().lower()
+    if safe_sort_key not in DISCOVERED_TARGET_DOMAIN_SORT_KEYS:
+        safe_sort_key = "saved_at_utc"
+    descending = str(sort_dir or "desc").strip().lower() != "asc"
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if q:
+            blob = " ".join(
+                [
+                    str(row.get("root_domain") or ""),
+                    str(row.get("start_url") or ""),
+                    str(row.get("status") or ""),
+                    str(row.get("saved_at_utc") or ""),
+                ]
+            ).lower()
+            if q not in blob:
+                continue
+        filtered.append(row)
+
+    def _sort_value(item: dict[str, Any]) -> Any:
+        value = item.get(safe_sort_key)
+        if safe_sort_key in DISCOVERED_TARGET_DOMAIN_NUMERIC_KEYS:
+            return _safe_int(value, 0)
+        return str(value or "").lower()
+
+    filtered.sort(key=_sort_value, reverse=descending)
+    total_rows = len(filtered)
+    safe_limit = max(1, min(2000, int(limit or 200)))
+    safe_offset = max(0, int(offset or 0))
+    page_rows = filtered[safe_offset : safe_offset + safe_limit]
+    next_offset = safe_offset + safe_limit if (safe_offset + safe_limit) < total_rows else None
+    prev_offset = max(0, safe_offset - safe_limit) if safe_offset > 0 else None
+    return {
+        "rows": page_rows,
+        "total_rows": total_rows,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "prev_offset": prev_offset,
+        "has_more": next_offset is not None,
+        "sort_key": safe_sort_key,
+        "sort_dir": "desc" if descending else "asc",
+    }
+
+
+def _apply_discovered_target_sitemap_query(
+    rows: list[dict[str, Any]],
+    *,
+    root_domain: str,
+    search_text: str,
+    subdomain: str,
+    sort_key: str,
+    sort_dir: str,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    q = str(search_text or "").strip().lower()
+    subdomain_filter = str(subdomain or "").strip().lower()
+    safe_sort_key = str(sort_key or DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY).strip().lower()
+    if safe_sort_key not in DISCOVERED_TARGET_SITEMAP_SORT_KEYS:
+        safe_sort_key = DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY
+    descending = str(sort_dir or "asc").strip().lower() == "desc"
+
+    with_subdomains: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        clone = dict(row)
+        clone["subdomain"] = _discovered_target_subdomain_for_row(clone, root_domain)
+        with_subdomains.append(clone)
+
+    filtered_for_search: list[dict[str, Any]] = []
+    for row in with_subdomains:
+        if q and q not in _discovered_target_sitemap_search_blob(row):
+            continue
+        filtered_for_search.append(row)
+
+    subdomains = sorted(
+        {
+            str(row.get("subdomain") or "").strip()
+            for row in filtered_for_search
+            if str(row.get("subdomain") or "").strip()
+        },
+        key=lambda value: (value != "@root", value.lower()),
+    )
+
+    filtered: list[dict[str, Any]] = []
+    for row in filtered_for_search:
+        row_sub = str(row.get("subdomain") or "").strip().lower()
+        if subdomain_filter and subdomain_filter not in {"*", "all"} and row_sub != subdomain_filter:
+            continue
+        filtered.append(row)
+
+    def _sort_value(item: dict[str, Any]) -> Any:
+        value = item.get(safe_sort_key)
+        if safe_sort_key in DISCOVERED_TARGET_SITEMAP_NUMERIC_KEYS:
+            return _safe_int(value, 0)
+        return str(value or "").lower()
+
+    filtered.sort(key=_sort_value, reverse=descending)
+    total_rows = len(filtered)
+    safe_limit = max(1, min(2000, int(limit or 200)))
+    safe_offset = max(0, int(offset or 0))
+    page_rows = filtered[safe_offset : safe_offset + safe_limit]
+    next_offset = safe_offset + safe_limit if (safe_offset + safe_limit) < total_rows else None
+    prev_offset = max(0, safe_offset - safe_limit) if safe_offset > 0 else None
+    return {
+        "rows": page_rows,
+        "total_rows": total_rows,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "prev_offset": prev_offset,
+        "has_more": next_offset is not None,
+        "sort_key": safe_sort_key,
+        "sort_dir": "desc" if descending else "asc",
+        "subdomains": subdomains,
     }
 
 
@@ -3229,15 +3419,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._is_coordinator_authorized():
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
-            limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            limit = max(1, min(2000, _safe_int((query.get("limit") or [200])[0], 200)))
+            offset = max(0, _safe_int((query.get("offset") or [0])[0], 0))
             search_text = str((query.get("q") or [""])[0] or "").strip()
+            sort_key = str((query.get("sort_key") or ["saved_at_utc"])[0] or "saved_at_utc").strip().lower()
+            sort_dir = str((query.get("sort_dir") or ["desc"])[0] or "desc").strip().lower()
             try:
-                rows = self.coordinator_store.list_discovered_target_domains(limit=limit, q=search_text)
+                fetch_limit = max(limit + offset, limit)
+                rows = self.coordinator_store.list_discovered_target_domains(limit=min(20000, fetch_limit), q=search_text)
             except Exception as exc:
                 self.log_message("list_discovered_target_domains failed: %r", exc)
                 self._write_json({"error": "discovered targets query failed", "detail": str(exc)}, status=500)
                 return
-            self._write_json({"generated_at_utc": _iso_now(), "total_domains": len(rows), "domains": rows})
+            query_result = _apply_discovered_target_domain_query(
+                rows,
+                search_text=search_text,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
+                offset=offset,
+                limit=limit,
+            )
+            page_rows = query_result.get("rows", [])
+            self._write_json(
+                {
+                    "generated_at_utc": _iso_now(),
+                    "rows": page_rows,
+                    "domains": page_rows,
+                    "total_domains": int(query_result.get("total_rows", 0) or 0),
+                    "offset": int(query_result.get("offset", 0) or 0),
+                    "limit": int(query_result.get("limit", limit) or limit),
+                    "next_offset": query_result.get("next_offset"),
+                    "prev_offset": query_result.get("prev_offset"),
+                    "has_more": bool(query_result.get("has_more", False)),
+                    "sort_key": str(query_result.get("sort_key", "saved_at_utc") or "saved_at_utc"),
+                    "sort_dir": str(query_result.get("sort_dir", "desc") or "desc"),
+                    "search": search_text,
+                }
+            )
             return
         if path == "/api/coord/discovered-target-sitemap":
             if self.coordinator_store is None:
@@ -3250,6 +3468,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not root_domain:
                 self._write_json({"error": "root_domain is required"}, status=400)
                 return
+            limit = max(1, min(2000, _safe_int((query.get("limit") or [200])[0], 200)))
+            offset = max(0, _safe_int((query.get("offset") or [0])[0], 0))
+            search_text = str((query.get("q") or [""])[0] or "").strip()
+            subdomain = str((query.get("subdomain") or [""])[0] or "").strip()
+            sort_key = str((query.get("sort_key") or [DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY])[0] or DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY).strip()
+            sort_dir = str((query.get("sort_dir") or ["asc"])[0] or "asc").strip()
+            include_details = str((query.get("include_details") or ["1"])[0] or "1").strip().lower() in {"1", "true", "yes", "on"}
             try:
                 sitemap = self.coordinator_store.get_discovered_target_sitemap(root_domain)
             except Exception as exc:
@@ -3268,12 +3493,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "page_count": len(pages),
                     "pages": pages,
                 }
+            query_result = _apply_discovered_target_sitemap_query(
+                pages,
+                root_domain=root_domain,
+                search_text=search_text,
+                subdomain=subdomain,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
+                offset=offset,
+                limit=limit,
+            )
+            page_rows = query_result.get("rows", [])
+            if include_details and page_rows:
+                try:
+                    page_rows = self.coordinator_store.enrich_discovered_target_sitemap_rows(
+                        root_domain=root_domain,
+                        rows=list(page_rows),
+                    )
+                except Exception as exc:
+                    self.log_message("enrich_discovered_target_sitemap_rows failed: %r", exc)
             self._write_json(
                 {
                     "generated_at_utc": _iso_now(),
                     "root_domain": root_domain,
-                    "rows": pages,
-                    "pages": pages,
+                    "rows": page_rows,
+                    "pages": page_rows,
+                    "all_rows_count": len(pages),
+                    "total_rows": int(query_result.get("total_rows", 0) or 0),
+                    "offset": int(query_result.get("offset", 0) or 0),
+                    "limit": int(query_result.get("limit", limit) or limit),
+                    "next_offset": query_result.get("next_offset"),
+                    "prev_offset": query_result.get("prev_offset"),
+                    "has_more": bool(query_result.get("has_more", False)),
+                    "sort_key": str(query_result.get("sort_key", DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY) or DISCOVERED_TARGET_SITEMAP_DEFAULT_SORT_KEY),
+                    "sort_dir": str(query_result.get("sort_dir", "asc") or "asc"),
+                    "subdomains": query_result.get("subdomains", []),
+                    "search": search_text,
+                    "subdomain": subdomain,
+                    "include_details": include_details,
                     "sitemap": sitemap_payload,
                 }
             )
@@ -3301,6 +3558,87 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json(payload)
             return
+        if path == "/api/coord/discovered-target-download":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            url = str((query.get("url") or [""])[0] or "").strip()
+            part = str((query.get("part") or ["evidence_json"])[0] or "evidence_json").strip().lower()
+            if not root_domain or not url:
+                self._write_json({"error": "root_domain and url are required"}, status=400)
+                return
+            try:
+                payload = self.coordinator_store.get_discovered_target_response(root_domain, url)
+            except Exception as exc:
+                self.log_message("get_discovered_target_response failed (download): %r", exc)
+                self._write_json({"error": "discovered target response query failed", "detail": str(exc)}, status=500)
+                return
+            if not payload.get("found"):
+                self._write_json(payload, status=404)
+                return
+            url_token = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").strip("=").lower()[:20] or "url"
+            if part == "evidence_json":
+                self._write_bytes(
+                    json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    content_type="application/json; charset=utf-8",
+                    download_name=f"{root_domain}.{url_token}.evidence.json",
+                )
+                return
+            if part == "request_json":
+                request_payload = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+                self._write_bytes(
+                    json.dumps(request_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    content_type="application/json; charset=utf-8",
+                    download_name=f"{root_domain}.{url_token}.request.json",
+                )
+                return
+            if part == "response_json":
+                response_payload = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+                self._write_bytes(
+                    json.dumps(response_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    content_type="application/json; charset=utf-8",
+                    download_name=f"{root_domain}.{url_token}.response.json",
+                )
+                return
+            if part in {"request_body", "response_body"}:
+                container_key = "request" if part == "request_body" else "response"
+                container = payload.get(container_key) if isinstance(payload.get(container_key), dict) else {}
+                body_b64 = str(container.get("body_base64") or "")
+                if not body_b64:
+                    self._write_json({"error": f"{container_key} body is not available"}, status=404)
+                    return
+                try:
+                    body = base64.b64decode(body_b64)
+                except Exception:
+                    self._write_json({"error": f"{container_key} body is not valid base64"}, status=500)
+                    return
+                content_type = "application/octet-stream"
+                if part == "response_body":
+                    headers = container.get("headers") if isinstance(container.get("headers"), dict) else {}
+                    for key, value in headers.items():
+                        if str(key or "").strip().lower() == "content-type":
+                            content_type = str(value or "").strip() or content_type
+                            break
+                extension = ".bin"
+                lowered = content_type.lower()
+                if "json" in lowered:
+                    extension = ".json"
+                elif "html" in lowered:
+                    extension = ".html"
+                elif "text/" in lowered:
+                    extension = ".txt"
+                self._write_bytes(
+                    body,
+                    content_type=content_type,
+                    download_name=f"{root_domain}.{url_token}.{part}{extension}",
+                )
+                return
+            self._write_json({"error": "invalid part", "supported_parts": ["evidence_json", "request_json", "response_json", "request_body", "response_body"]}, status=400)
+            return
         if path == "/api/coord/discovered-files":
             if self.coordinator_store is None:
                 self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
@@ -3309,7 +3647,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
             limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
             rows = self.coordinator_store.list_discovered_files(limit=limit)
+            if search_text:
+                rows = [
+                    row
+                    for row in rows
+                    if search_text in " ".join(
+                        [
+                            str(row.get("root_domain") or ""),
+                            str(row.get("source_url") or ""),
+                            str(row.get("artifact_type") or ""),
+                        ]
+                    ).lower()
+                ]
             self._write_json({"generated_at_utc": _iso_now(), "rows": rows, "files": rows})
             return
         if path == "/api/coord/high-value-files":
@@ -3320,7 +3671,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
             limit = _safe_int((query.get("limit") or [5000])[0], 5000)
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
             rows = self.coordinator_store.list_high_value_files(limit=limit)
+            if search_text:
+                rows = [
+                    row
+                    for row in rows
+                    if search_text in " ".join(
+                        [
+                            str(row.get("root_domain") or ""),
+                            str(row.get("source_url") or ""),
+                            str(row.get("saved_relative") or ""),
+                        ]
+                    ).lower()
+                ]
             self._write_json({"generated_at_utc": _iso_now(), "rows": rows, "files": rows})
             return
         if path == "/api/coord/discovered-files/download":

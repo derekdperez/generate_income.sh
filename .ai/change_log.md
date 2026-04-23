@@ -1366,3 +1366,24 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile coordinator.py coordinator_app/runtime.py nightmare_shared/config.py`
   - `pytest -q tests/test_runtime_unit.py tests/test_config_utils.py tests/test_module_decomposition.py`
   - `pytest -q tests/test_refactor_modules.py tests/test_recon_workflow_config.py`
+
+## 2026-04-23
+
+- Upgraded discovered-target APIs and UI for responsive large-data browsing:
+  - `GET /api/coord/discovered-targets` now supports paging/sorting metadata (`offset`, `limit`, `sort_key`, `sort_dir`) and returns pagination fields (`next_offset`, `has_more`, etc.).
+  - `GET /api/coord/discovered-target-sitemap` now supports paging/search/subdomain/sort query params, returns subdomain option lists, and lazily enriches only returned rows.
+  - Added `GET /api/coord/discovered-target-download` for direct request/response/evidence downloads (`request_json`, `response_json`, `request_body`, `response_body`, `evidence_json`).
+- Added missing coordinator-store discovered-target detail path:
+  - Implemented `CoordinatorStore.get_discovered_target_response(...)`.
+  - Added evidence-file parsing helpers and row enrichment helper (`enrich_discovered_target_sitemap_rows`).
+  - Sitemap rows now include subdomain/path/existence summary and response metadata fields expected by UI.
+- Rebuilt `templates/discovered_targets.html.j2` into cached, paged, virtualized URL explorer:
+  - domain + sitemap paging
+  - per-domain URL search/filter/sort with subdomain split
+  - lazy refresh with local cache TTLs
+  - per-row links for view/request/response/evidence downloads.
+- Added non-blocking global network activity indicator in `templates/_navbar.html.j2` by wrapping `window.fetch`, so users always see when actions are in-flight without UI lock.
+- Enhanced `templates/discovered_target_response.html.j2` with download link section for request/response/evidence artifacts.
+- Validation:
+  - `python -m py_compile server.py server_app/store.py`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "discovered_target or discovered_files or render_discovered_targets_html_contains_expected_heading"`

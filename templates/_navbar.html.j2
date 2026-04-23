@@ -62,6 +62,39 @@
     .app-nav { margin-left: -16px; margin-right: -16px; }
     .app-nav-brand { width: 100%; margin-bottom: 2px; }
   }
+  .app-net-indicator {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 120;
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(15, 23, 42, 0.88);
+    color: #e2e8f0;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .app-net-indicator.active {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .app-net-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(186, 230, 253, 0.7);
+    border-top-color: #0ea5e9;
+    border-radius: 50%;
+    animation: app-net-spin 0.8s linear infinite;
+  }
+  @keyframes app-net-spin {
+    to { transform: rotate(360deg); }
+  }
 </style>
 <nav class="app-nav" aria-label="Primary">
   <div class="app-nav-inner">
@@ -85,6 +118,10 @@
     </div>
   </div>
 </nav>
+<div id="appNetIndicator" class="app-net-indicator" aria-live="polite">
+  <span class="app-net-spinner" aria-hidden="true"></span>
+  <span id="appNetIndicatorText">Working...</span>
+</div>
 <script>
   (() => {
     const path = window.location.pathname === "/" ? "/dashboard" : window.location.pathname;
@@ -101,6 +138,63 @@
       document.querySelectorAll(".app-nav-link").forEach((link) => {
         if (String(link.dataset.navPath || "") === path) link.classList.add("active");
       });
+    }
+
+    if (!window.NightmareUX) {
+      const indicator = document.getElementById("appNetIndicator");
+      const indicatorText = document.getElementById("appNetIndicatorText");
+      let activeRequests = 0;
+      let hiddenTimer = null;
+
+      function setIndicatorVisible(show, text) {
+        if (!indicator) return;
+        if (hiddenTimer) {
+          clearTimeout(hiddenTimer);
+          hiddenTimer = null;
+        }
+        if (show) {
+          indicator.classList.add("active");
+          if (indicatorText) indicatorText.textContent = String(text || "Working...");
+        } else {
+          hiddenTimer = setTimeout(() => {
+            indicator.classList.remove("active");
+            if (indicatorText) indicatorText.textContent = "Working...";
+          }, 140);
+        }
+      }
+
+      function beginNetwork(label) {
+        activeRequests += 1;
+        const text = label || `Loading (${activeRequests})...`;
+        setIndicatorVisible(true, text);
+      }
+
+      function endNetwork() {
+        activeRequests = Math.max(0, activeRequests - 1);
+        if (activeRequests <= 0) {
+          setIndicatorVisible(false);
+          return;
+        }
+        setIndicatorVisible(true, `Loading (${activeRequests})...`);
+      }
+
+      const originalFetch = window.fetch ? window.fetch.bind(window) : null;
+      if (originalFetch) {
+        window.fetch = async (...args) => {
+          beginNetwork();
+          try {
+            return await originalFetch(...args);
+          } finally {
+            endNetwork();
+          }
+        };
+      }
+
+      window.NightmareUX = {
+        beginNetwork,
+        endNetwork,
+        setIndicatorVisible,
+      };
     }
   })();
 </script>

@@ -32,6 +32,10 @@
   </div>
   <div id="summary" class="panel">Enter a domain and URL.</div>
   <div class="panel">
+    <h2>Downloads</h2>
+    <div id="downloadLinks" class="muted">Load a URL to enable request/response downloads.</div>
+  </div>
+  <div class="panel">
     <h2>Metadata</h2>
     <table><tbody id="metaRows"><tr><td class="muted">No data loaded.</td></tr></tbody></table>
   </div>
@@ -97,13 +101,14 @@ async function loadData() {
     msg.textContent = "root_domain and URL are required.";
     return;
   }
-  msg.textContent = "Loading…";
+  msg.textContent = "Loading...";
   const qs = new URLSearchParams({ root_domain: rootDomain, url });
   const rsp = await fetch(`/api/coord/discovered-target-response?${qs.toString()}`, { headers: authHeaders(), credentials: "same-origin" });
   const payload = await rsp.json().catch(() => ({}));
   if (!rsp.ok) {
     msg.textContent = payload.error || `HTTP ${rsp.status}`;
     document.getElementById("summary").innerHTML = `<span class="bad">${esc(payload.error || "Request failed")}</span>`;
+    document.getElementById("downloadLinks").textContent = "Load failed. Downloads are unavailable.";
     return;
   }
   msg.textContent = "";
@@ -113,6 +118,18 @@ async function loadData() {
     <div><strong>Exists:</strong> <span class="${summary.exists_status === "exists" ? "ok" : "bad"}">${esc(summary.exists_status || "unknown")}</span></div>
     <div><strong>Reason:</strong> ${esc(summary.exists_reason || summary.probe_note || "")}</div>
   `;
+  const links = [];
+  function pushLink(path, label) {
+    const href = String(path || "").trim();
+    if (!href) return;
+    links.push(`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`);
+  }
+  pushLink(payload.download_request_path, "Request JSON");
+  pushLink(payload.download_request_body_path, "Request Body");
+  pushLink(payload.download_response_path, "Response JSON");
+  pushLink(payload.download_response_body_path, "Response Body");
+  pushLink(payload.download_evidence_path, "Evidence JSON");
+  document.getElementById("downloadLinks").innerHTML = links.length ? links.join(" | ") : "No downloads available for this URL.";
   const meta = [
     ["Root Domain", payload.root_domain || ""],
     ["Captured At UTC", payload.captured_at_utc || summary.captured_at_utc || ""],

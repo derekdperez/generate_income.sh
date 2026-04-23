@@ -224,3 +224,12 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Coordinator runtime now uses a single execution pool type: generic plugin workers.
   - Legacy dedicated worker loops are no longer started even when legacy enable/worker knobs are set.
   - Scheduler + plugin-worker lanes remain the control-plane/data-plane split for workflow orchestration.
+
+- Discovered-target browsing architecture update (2026-04-23):
+  - API contract is now page-first for discovered-target datasets:
+    - domains endpoint: paged + sortable result metadata
+    - sitemap endpoint: paged + search/subdomain/sort parameters with optional row detail enrichment.
+  - Evidence-heavy fields (request/response metadata) are resolved in a lazy enrichment pass for only the active page slice, reducing per-request overhead on large sitemap inventories.
+  - A dedicated download endpoint (`/api/coord/discovered-target-download`) now decouples binary/json artifact retrieval from the HTML detail page.
+- UI runtime boundary update:
+  - Global network activity indicator moved to shared navbar include and driven via wrapped `fetch`, giving consistent non-blocking loading visibility across pages without per-page duplicate implementations.

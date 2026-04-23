@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import re
 import io
+import json
+import gzip
 import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -817,7 +819,7 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
                 and "jsonb_array_length(payload #> '{state,discovered_urls}')" in compact
             ) or (
                 "FROM domain_rows" in compact
-                and "SELECT root_domain, start_url, saved_at_utc, payload" in compact
+                and "LEFT JOIN coordinator_sessions sess ON sess.root_domain = d.root_domain" in compact
             ):
                 assert params == (5000,)
                 self._fetchall = [
@@ -825,19 +827,15 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
                         "example.com",
                         "https://example.com",
                         now,
-                        {
-                            "state": {
-                                "discovered_urls": ["https://example.com/", "https://example.com/app.js"],
-                                "url_inventory": {
-                                    "https://example.com/": {"discovered_via": ["seed_input", "internal_link"]},
-                                    "https://example.com/app.js": {"discovered_via": ["src_reference", "observed_in_script_file"]},
-                                },
-                            }
-                        },
                         0,  # pending_targets
                         0,  # running_targets
                         1,  # completed_targets
                         0,  # failed_targets
+                        0,  # pending_stage_tasks
+                        0,  # running_stage_tasks
+                        0,  # completed_stage_tasks
+                        0,  # failed_stage_tasks
+                        now,  # nightmare_session_updated_at_utc
                     )
                 ]
                 return
@@ -859,6 +857,10 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
                         }
                     },
                 )
+                return
+            if "FROM coordinator_artifacts" in compact and "WHERE root_domain = %s AND artifact_type = %s" in compact:
+                assert params == ("example.com", "nightmare_session_json")
+                self._fetchone = None
                 return
             raise AssertionError(f"Unexpected SQL in test: {compact}")
 
@@ -891,8 +893,6 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
     assert row["discovered_urls_count"] == 2
     assert row["method_counts"]["seed_input"] == 1
     assert row["method_counts"]["internal_link"] == 1
-    assert row["method_counts"]["src_reference"] == 1
-    assert row["method_counts"]["observed_in_script_file"] == 1
 
     sitemap = CoordinatorStore.get_discovered_target_sitemap(store, "example.com")
     assert sitemap is not None
@@ -901,6 +901,113 @@ def test_list_discovered_target_domains_uses_session_inventory_counts():
     pages = {row["url"]: row for row in sitemap["pages"]}
     assert pages["https://example.com/"]["outbound_count"] == 1
     assert pages["https://example.com/admin"]["inbound_count"] == 1
+
+
+def test_get_discovered_target_response_and_row_enrichment_include_download_links(tmp_path):
+    now = datetime(2026, 4, 23, tzinfo=timezone.utc)
+    url = "https://example.com/admin"
+    evidence_path = tmp_path / "crawl_response_abc_123.json.gz"
+    evidence_payload = {
+        "captured_at_utc": now.isoformat(),
+        "source_type": "existence_probe",
+        "request": {
+            "method": "GET",
+            "url": url,
+            "headers": {"Accept": "*/*"},
+            "body_base64": "",
+        },
+        "response": {
+            "status": 200,
+            "url": url,
+            "headers": {"Content-Type": "text/html; charset=utf-8"},
+            "body_base64": "aGVsbG8=",
+            "body_size_bytes": 5,
+            "elapsed_ms": 42,
+        },
+    }
+    with gzip.open(evidence_path, "wt", encoding="utf-8") as handle:
+        json.dump(evidence_payload, handle)
+
+    class FakeCursor:
+        def __init__(self):
+            self._fetchone = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "FROM coordinator_sessions" in compact and "WHERE root_domain = %s" in compact:
+                assert params == ("example.com",)
+                self._fetchone = (
+                    "example.com",
+                    "https://example.com/",
+                    200,
+                    now,
+                    {
+                        "state": {
+                            "discovered_urls": [url],
+                            "url_inventory": {
+                                url: {
+                                    "discovered_via": ["internal_link"],
+                                    "discovered_from": ["https://example.com/"],
+                                    "discovery_evidence_files": [str(evidence_path)],
+                                    "was_crawled": True,
+                                    "crawl_requested": True,
+                                    "crawl_status_code": 200,
+                                    "exists_confirmed": True,
+                                    "existence_status_code": 200,
+                                }
+                            },
+                        }
+                    },
+                )
+                return
+            if "FROM coordinator_artifacts" in compact and "WHERE root_domain = %s AND artifact_type = %s" in compact:
+                assert params == ("example.com", "nightmare_session_json")
+                self._fetchone = None
+                return
+            raise AssertionError(f"Unexpected SQL in test: {compact}")
+
+        def fetchone(self):
+            return self._fetchone
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._connect = lambda: FakeConnection()  # type: ignore[method-assign]
+
+    payload = CoordinatorStore.get_discovered_target_response(store, "example.com", url)
+    assert payload["found"] is True
+    assert payload["summary"]["response_status_code"] == 200
+    assert payload["summary"]["response_elapsed_ms"] == 42
+    assert payload["summary"]["response_size_bytes"] == 5
+    assert "api/coord/discovered-target-download" in str(payload["download_response_path"])
+
+    enriched = CoordinatorStore.enrich_discovered_target_sitemap_rows(
+        store,
+        root_domain="example.com",
+        rows=[{"url": url, "inbound_count": 1, "outbound_count": 0}],
+    )
+    assert len(enriched) == 1
+    assert enriched[0]["response_status_code"] == 200
+    assert enriched[0]["response_elapsed_ms"] == 42
+    assert enriched[0]["response_size_bytes"] == 5
+    assert enriched[0]["exists_status"] == "exists"
 
 
 def test_auth0r_overview_completed_only_uses_type_safe_ordering():

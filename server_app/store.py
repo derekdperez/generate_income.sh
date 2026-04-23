@@ -7,13 +7,14 @@ import hashlib
 import json
 import base64
 import io
+import gzip
 import os
 import zipfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 try:
     import psycopg
@@ -1763,19 +1764,70 @@ LIMIT %s;
             outbound_targets = link_graph.get(url) if isinstance(link_graph.get(url), list) else []
             outbound_clean = sorted({str(t or "").strip() for t in outbound_targets if str(t or "").strip()})
             discovered_from = sorted(set(parents))[:50]
-            crawl_status_code = record.get("status_code")
+            crawl_status_code = record.get("crawl_status_code", record.get("status_code"))
             existence_status_code = record.get("existence_status_code")
+            host = str(urlparse(url).hostname or "").strip().lower()
+            subdomain = ""
+            if host:
+                if host == rd:
+                    subdomain = "@root"
+                elif host.endswith(f".{rd}"):
+                    subdomain = host[: -(len(rd) + 1)] or "@root"
+                else:
+                    subdomain = host
+            parsed_url = urlparse(url)
+            path_text = str(parsed_url.path or "/")
+            query_text = str(parsed_url.query or "")
+            evidence_files = (
+                [str(item or "").strip() for item in record.get("discovery_evidence_files", [])]
+                if isinstance(record.get("discovery_evidence_files"), list)
+                else []
+            )
+            exists_confirmed = bool(record.get("exists_confirmed"))
+            soft_404 = bool(record.get("soft_404_detected"))
+            exists_status = "unknown"
+            if soft_404:
+                exists_status = "likely_soft_404"
+            elif exists_confirmed:
+                exists_status = "exists"
+            elif isinstance(existence_status_code, int):
+                if existence_status_code in {404, 410}:
+                    exists_status = "missing"
+                elif 200 <= existence_status_code < 400:
+                    exists_status = "exists"
+                elif existence_status_code >= 400:
+                    exists_status = "error"
+            elif isinstance(crawl_status_code, int):
+                if 200 <= crawl_status_code < 400:
+                    exists_status = "exists"
+                elif crawl_status_code in {404, 410}:
+                    exists_status = "missing"
+                elif crawl_status_code >= 400:
+                    exists_status = "error"
             page = {
                 "url": url,
+                "host": host,
+                "subdomain": subdomain,
+                "path": path_text,
+                "query": query_text,
                 "inbound_count": len(discovered_from),
                 "outbound_count": len(outbound_clean),
                 "discovered_via": discovered_via,
                 "discovered_from": discovered_from,
                 "was_crawled": bool(record.get("was_crawled")),
                 "crawl_requested": bool(record.get("crawl_requested")),
-                "exists_confirmed": bool(record.get("exists_confirmed")),
+                "exists_confirmed": exists_confirmed,
+                "exists_status": exists_status,
+                "exists_reason": str(
+                    record.get("existence_check_note")
+                    or record.get("crawl_note")
+                    or record.get("soft_404_reason")
+                    or ""
+                ).strip(),
                 "crawl_status_code": crawl_status_code,
                 "existence_status_code": existence_status_code,
+                "response_available": bool(evidence_files),
+                "evidence_file_count": len([item for item in evidence_files if item]),
                 # Backward-compatible aliases used by older API consumers.
                 "parent_count": len(discovered_from),
                 "parents": discovered_from,
@@ -1789,6 +1841,294 @@ LIMIT %s;
             "page_count": len(pages),
             "pages": pages,
         }
+
+    def _read_discovery_evidence_payload(self, evidence_path: Path) -> dict[str, Any]:
+        if not evidence_path.is_file():
+            return {}
+        try:
+            if evidence_path.suffix.lower() == ".gz":
+                with gzip.open(evidence_path, "rt", encoding="utf-8") as handle:
+                    parsed = json.load(handle)
+            else:
+                parsed = json.loads(evidence_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_header_value(headers: dict[str, Any], *names: str) -> str:
+        if not isinstance(headers, dict):
+            return ""
+        lowered = {str(k or "").strip().lower(): str(v or "") for k, v in headers.items()}
+        for name in names:
+            value = lowered.get(str(name or "").strip().lower(), "")
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _exists_status_from_row(
+        *,
+        exists_confirmed: bool,
+        soft_404_detected: bool,
+        existence_status_code: Optional[int],
+        crawl_status_code: Optional[int],
+    ) -> str:
+        if soft_404_detected:
+            return "likely_soft_404"
+        if exists_confirmed:
+            return "exists"
+        if isinstance(existence_status_code, int):
+            if existence_status_code in {404, 410}:
+                return "missing"
+            if 200 <= existence_status_code < 400:
+                return "exists"
+            if existence_status_code >= 400:
+                return "error"
+        if isinstance(crawl_status_code, int):
+            if crawl_status_code in {404, 410}:
+                return "missing"
+            if 200 <= crawl_status_code < 400:
+                return "exists"
+            if crawl_status_code >= 400:
+                return "error"
+        return "unknown"
+
+    def _pick_best_discovery_evidence(self, evidence_files: list[str]) -> tuple[dict[str, Any], str]:
+        best_payload: dict[str, Any] = {}
+        best_path = ""
+        best_score = -1
+        for raw_path in reversed(list(evidence_files or [])):
+            text = str(raw_path or "").strip()
+            if not text:
+                continue
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute():
+                candidate = (Path.cwd() / candidate).resolve()
+            payload = self._read_discovery_evidence_payload(candidate)
+            if not payload:
+                continue
+            source_type = str(payload.get("source_type") or "").strip().lower()
+            score = 0
+            if source_type == "existence_probe":
+                score += 3
+            elif source_type == "crawl_response":
+                score += 2
+            if isinstance(payload.get("response"), dict):
+                score += 2
+            if isinstance(payload.get("request"), dict):
+                score += 1
+            if score > best_score:
+                best_score = score
+                best_payload = payload
+                best_path = str(candidate)
+            if score >= 6:
+                break
+        return best_payload, best_path
+
+    @staticmethod
+    def _lookup_inventory_record(inventory: dict[str, Any], raw_url: str) -> dict[str, Any]:
+        text = str(raw_url or "").strip()
+        if not text or not isinstance(inventory, dict):
+            return {}
+        if isinstance(inventory.get(text), dict):
+            return inventory.get(text)  # type: ignore[return-value]
+        normalized = text.split("#", 1)[0].strip()
+        if isinstance(inventory.get(normalized), dict):
+            return inventory.get(normalized)  # type: ignore[return-value]
+        if normalized.endswith("/") and isinstance(inventory.get(normalized[:-1]), dict):
+            return inventory.get(normalized[:-1])  # type: ignore[return-value]
+        if (normalized + "/") in inventory and isinstance(inventory.get(normalized + "/"), dict):
+            return inventory.get(normalized + "/")  # type: ignore[return-value]
+        return {}
+
+    def _build_discovered_target_row_payload(
+        self,
+        *,
+        root_domain: str,
+        url: str,
+        record: dict[str, Any],
+        include_body: bool,
+    ) -> dict[str, Any]:
+        evidence_files = (
+            [str(item or "").strip() for item in record.get("discovery_evidence_files", [])]
+            if isinstance(record.get("discovery_evidence_files"), list)
+            else []
+        )
+        evidence_payload, evidence_path = self._pick_best_discovery_evidence(evidence_files)
+        request_payload = evidence_payload.get("request") if isinstance(evidence_payload.get("request"), dict) else {}
+        response_payload = evidence_payload.get("response") if isinstance(evidence_payload.get("response"), dict) else {}
+        response_headers = response_payload.get("headers") if isinstance(response_payload.get("headers"), dict) else {}
+        request_headers = request_payload.get("headers") if isinstance(request_payload.get("headers"), dict) else {}
+        response_status = self._coerce_int(response_payload.get("status"))
+        response_elapsed_ms = self._coerce_int(response_payload.get("elapsed_ms"))
+        response_size = self._coerce_int(response_payload.get("body_size_bytes"))
+        if response_size is None:
+            response_size = self._coerce_int(response_payload.get("body_size"))
+        if response_size is None:
+            body_b64 = str(response_payload.get("body_base64") or "")
+            if body_b64:
+                try:
+                    response_size = len(base64.b64decode(body_b64))
+                except Exception:
+                    response_size = None
+
+        crawl_status_code = self._coerce_int(record.get("crawl_status_code", record.get("status_code")))
+        existence_status_code = self._coerce_int(record.get("existence_status_code"))
+        exists_confirmed = bool(record.get("exists_confirmed"))
+        soft_404_detected = bool(record.get("soft_404_detected"))
+        exists_status = self._exists_status_from_row(
+            exists_confirmed=exists_confirmed,
+            soft_404_detected=soft_404_detected,
+            existence_status_code=existence_status_code,
+            crawl_status_code=crawl_status_code,
+        )
+        exists_reason = str(
+            record.get("existence_check_note")
+            or record.get("crawl_note")
+            or record.get("soft_404_reason")
+            or ""
+        ).strip()
+        request_method = str(request_payload.get("method") or record.get("existence_check_method") or "").strip().upper()
+        view_path = (
+            f"/discovered-target-response?root_domain={quote(root_domain, safe='')}&url={quote(url, safe='')}"
+        )
+        download_base = (
+            f"/api/coord/discovered-target-download?root_domain={quote(root_domain, safe='')}&url={quote(url, safe='')}"
+        )
+        summary = {
+            "exists_status": exists_status,
+            "exists_reason": exists_reason,
+            "probe_note": str(record.get("existence_check_note") or "").strip(),
+            "request_method": request_method,
+            "response_status_code": response_status if response_status is not None else crawl_status_code,
+            "response_url": str(response_payload.get("url") or ""),
+            "response_elapsed_ms": response_elapsed_ms,
+            "response_size_bytes": response_size,
+            "response_content_type": self._resolve_header_value(
+                response_headers,
+                "content-type",
+            )
+            or str(record.get("content_type") or ""),
+            "body_truncated": bool(response_payload.get("body_truncated")),
+            "soft_404_detected": soft_404_detected,
+            "soft_404_reason": str(record.get("soft_404_reason") or "").strip(),
+            "captured_at_utc": str(evidence_payload.get("captured_at_utc") or ""),
+            "evidence_source_type": str(evidence_payload.get("source_type") or ""),
+            "evidence_path": evidence_path,
+        }
+        request_out = dict(request_payload)
+        response_out = dict(response_payload)
+        if not include_body:
+            request_out.pop("body_base64", None)
+            response_out.pop("body_base64", None)
+        payload = {
+            "found": True,
+            "root_domain": root_domain,
+            "url": url,
+            "summary": summary,
+            "request": request_out,
+            "response": response_out,
+            "captured_at_utc": summary["captured_at_utc"],
+            "discovered_via": record.get("discovered_via") if isinstance(record.get("discovered_via"), list) else [],
+            "discovered_from": record.get("discovered_from") if isinstance(record.get("discovered_from"), list) else [],
+            "response_available": bool(response_out),
+            "view_response_path": view_path,
+            "download_request_path": f"{download_base}&part=request_json",
+            "download_response_path": f"{download_base}&part=response_json",
+            "download_response_body_path": f"{download_base}&part=response_body",
+            "download_request_body_path": f"{download_base}&part=request_body",
+            "download_evidence_path": f"{download_base}&part=evidence_json",
+            "evidence_path": evidence_path,
+            "evidence_file_count": len([item for item in evidence_files if item]),
+        }
+        return payload
+
+    def get_discovered_target_response(self, root_domain: str, url: str) -> dict[str, Any]:
+        rd = str(root_domain or "").strip().lower()
+        target_url = str(url or "").strip()
+        if not rd or not target_url:
+            return {"found": False, "root_domain": rd, "url": target_url, "error": "root_domain and url are required"}
+        session = self.load_session(rd) or {}
+        state = session.get("state") if isinstance(session.get("state"), dict) else {}
+        inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
+        record = self._lookup_inventory_record(inventory, target_url)
+        if not record:
+            return {"found": False, "root_domain": rd, "url": target_url, "error": "url not found in discovered inventory"}
+        payload = self._build_discovered_target_row_payload(
+            root_domain=rd,
+            url=target_url,
+            record=record,
+            include_body=True,
+        )
+        payload["start_url"] = str(session.get("start_url") or "").strip()
+        payload["saved_at_utc"] = str(session.get("saved_at_utc") or "").strip()
+        return payload
+
+    def enrich_discovered_target_sitemap_rows(
+        self,
+        *,
+        root_domain: str,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rd = str(root_domain or "").strip().lower()
+        if not rd or not rows:
+            return []
+        session = self.load_session(rd) or {}
+        state = session.get("state") if isinstance(session.get("state"), dict) else {}
+        inventory = state.get("url_inventory") if isinstance(state.get("url_inventory"), dict) else {}
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_url = str(row.get("url") or "").strip()
+            if not row_url:
+                enriched.append(dict(row))
+                continue
+            record = self._lookup_inventory_record(inventory, row_url)
+            if not record:
+                enriched.append(dict(row))
+                continue
+            details = self._build_discovered_target_row_payload(
+                root_domain=rd,
+                url=row_url,
+                record=record,
+                include_body=False,
+            )
+            summary = details.get("summary") if isinstance(details.get("summary"), dict) else {}
+            merged = dict(row)
+            merged.update(
+                {
+                    "exists_status": str(summary.get("exists_status") or merged.get("exists_status") or "unknown"),
+                    "exists_reason": str(summary.get("exists_reason") or merged.get("exists_reason") or ""),
+                    "response_status_code": summary.get("response_status_code"),
+                    "response_elapsed_ms": summary.get("response_elapsed_ms"),
+                    "response_size_bytes": summary.get("response_size_bytes"),
+                    "response_content_type": str(summary.get("response_content_type") or merged.get("content_type") or ""),
+                    "captured_at_utc": str(summary.get("captured_at_utc") or ""),
+                    "request_method": str(summary.get("request_method") or ""),
+                    "response_available": bool(details.get("response_available")),
+                    "view_response_path": str(details.get("view_response_path") or ""),
+                    "download_request_path": str(details.get("download_request_path") or ""),
+                    "download_response_path": str(details.get("download_response_path") or ""),
+                    "download_response_body_path": str(details.get("download_response_body_path") or ""),
+                    "download_request_body_path": str(details.get("download_request_body_path") or ""),
+                    "download_evidence_path": str(details.get("download_evidence_path") or ""),
+                    "evidence_path": str(details.get("evidence_path") or ""),
+                    "evidence_file_count": int(details.get("evidence_file_count") or merged.get("evidence_file_count") or 0),
+                }
+            )
+            enriched.append(merged)
+        return enriched
 
     def list_discovered_files(self, *, limit: int = 5000) -> list[dict[str, Any]]:
         safe_limit = max(1, min(20000, int(limit or 5000)))

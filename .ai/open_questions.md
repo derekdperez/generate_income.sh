@@ -25,3 +25,6 @@
 - Workflow config propagation question:
   - `/api/coord/workflow-config` currently updates the central repo workflow file and uses worker `reload` commands.
   - If worker VMs run from divergent code/config trees, confirm whether workflow definitions should instead be stored canonically in DB/artifacts and pulled by workers from API.
+- Discovered-target metrics completeness:
+  - Crawl evidence (`crawl_response`) currently does not guarantee elapsed-time capture, while probe evidence (`existence_probe`) does.
+  - Confirm whether URL inventory should store a canonical per-URL elapsed metric so sitemap rows can always show load time without heuristic fallback.

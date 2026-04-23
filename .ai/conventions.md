@@ -358,6 +358,16 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Legacy per-tool worker loops (`nightmare/fozzy/extractor/auth0r`) are deprecated and must not be started.
   - `plugin_workers` is authoritative and defaults to at least `1`; do not derive plugin worker count from legacy per-tool worker settings.
 
+- Discovered-target API convention:
+  - Large UI tables should expose server-side paging fields (`offset`, `limit`, `next_offset`, `prev_offset`, `has_more`) even when backward-compatible aliases (`rows`, `pages`, `domains`) are retained.
+  - URL sitemap APIs should support `q`, `subdomain`, `sort_key`, and `sort_dir` so UI search/sort can stay server-driven on large domains.
+  - Expensive evidence parsing should happen lazily on the current page/window of rows, not on every discovered URL in a domain.
+- Discovered-target artifact download convention:
+  - Request/response/evidence exports are served through `/api/coord/discovered-target-download` with explicit `part` values (`request_json`, `response_json`, `request_body`, `response_body`, `evidence_json`).
+- UI responsiveness convention:
+  - Keep loading feedback non-blocking. Use lightweight status text/spinners and avoid modal blockers for routine fetches.
+  - Shared network activity indicators should live in navbar/shared includes so page-specific scripts stay focused on data logic.
+
 - Recon plugin artifact convention:
   - Progress artifact type: `<plugin_name>_progress_json`
   - Completion artifact type: `<plugin_name>_complete_flag`
