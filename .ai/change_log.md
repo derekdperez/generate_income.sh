@@ -1583,6 +1583,24 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `pytest -q tests/test_refactor_modules.py -k "worker_template_renders_database_link or workflows_template_renders or server_template_renders or crawl_progress_template_renders"`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe"`
 
+## 2026-04-24
+
+- Fixed workflow definition save failures caused by FK references from `workflow_step_runs` to `workflow_steps`.
+  - Root cause: `save_workflow_definition(...)` deleted all `workflow_steps` rows for a definition before re-inserting, which violates `workflow_step_runs_step_definition_id_fkey` when historical runs reference those step IDs.
+  - `workflow_app/store.py` now:
+    - Adds `workflow_steps.is_archived` (DDL + migration).
+    - Replaces delete/reinsert with in-place upsert by stable step `id` (fallback by `step_key`), preserving referenced step IDs.
+    - Archives removed steps (`is_archived=true`, `enabled=false`, moved to high ordinals) instead of deleting.
+    - Filters archived steps out of definition reads and step counts (`get_workflow_definition`, `list_workflow_definitions`) so removed steps do not reappear in the builder.
+    - Adds payload validation for duplicate `step_key` and duplicate `ordinal` to return explicit errors before DB unique-constraint failures.
+- Added regression tests:
+  - `tests/test_workflow_store.py::test_save_workflow_definition_archives_removed_steps_without_deleting`
+  - `tests/test_workflow_store.py::test_get_workflow_definition_excludes_archived_steps`
+- Validation:
+  - `python -m py_compile workflow_app/store.py tests/test_workflow_store.py`
+  - `pytest -q tests/test_workflow_store.py`
+  - `pytest -q tests/test_refactor_modules.py -k "workflows_template_renders or server_template_renders"`
+
 ## 2026-04-23
 
 - Restored worker-control backward compatibility after worker snapshot/event refactor in `server_app/store.py`.

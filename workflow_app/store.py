@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
   display_name TEXT NOT NULL,
   plugin_key TEXT NOT NULL,
   ordinal INTEGER NOT NULL,
+  is_archived BOOLEAN NOT NULL DEFAULT FALSE,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   continue_on_error BOOLEAN NOT NULL DEFAULT FALSE,
   retry_failed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -212,6 +213,7 @@ ALTER TABLE workflow_definitions
   ADD COLUMN IF NOT EXISTS updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE workflow_steps
   ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE,
   ADD COLUMN IF NOT EXISTS continue_on_error BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS retry_failed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -515,7 +517,7 @@ SELECT w.id::text, w.workflow_key, w.version, w.name, w.description, w.status, w
        w.input_schema, w.ui_schema, w.tags, w.updated_at_utc,
        COALESCE(COUNT(s.id),0) AS step_count
 FROM workflow_definitions w
-LEFT JOIN workflow_steps s ON s.workflow_definition_id = w.id
+LEFT JOIN workflow_steps s ON s.workflow_definition_id = w.id AND COALESCE(s.is_archived, FALSE) = FALSE
 GROUP BY w.id
 ORDER BY w.updated_at_utc DESC, w.workflow_key ASC;
 """
@@ -550,7 +552,10 @@ FROM workflow_definitions WHERE workflow_key=%s;
 SELECT id::text, step_key, display_name, plugin_key, ordinal, enabled, continue_on_error,
        retry_failed, max_attempts, timeout_seconds, input_bindings, config_json,
        preconditions_json, outputs_json
-FROM workflow_steps WHERE workflow_definition_id=%s ORDER BY ordinal ASC;
+FROM workflow_steps
+WHERE workflow_definition_id=%s
+  AND COALESCE(is_archived, FALSE) = FALSE
+ORDER BY ordinal ASC;
 """,
             (r[0],),
         )
@@ -600,26 +605,133 @@ RETURNING id::text, version;
             ),
         )
         wf_id, version = cur.fetchone()
-        cur.execute("DELETE FROM workflow_steps WHERE workflow_definition_id=%s", (wf_id,))
+        cur.execute(
+            """
+SELECT id::text, step_key, ordinal, COALESCE(is_archived, FALSE)
+FROM workflow_steps
+WHERE workflow_definition_id=%s
+ORDER BY ordinal ASC;
+""",
+            (wf_id,),
+        )
+        existing_steps = cur.fetchall()
+        existing_by_id: dict[str, dict[str, Any]] = {}
+        existing_by_step_key: dict[str, dict[str, Any]] = {}
+        for row in existing_steps:
+            row_id = str(row[0] or "").strip()
+            row_step_key = str(row[1] or "").strip().lower()
+            row_ordinal = int(row[2] or 0)
+            row_archived = bool(row[3]) if len(row) > 3 else False
+            if not row_id:
+                continue
+            item = {"id": row_id, "step_key": row_step_key, "ordinal": row_ordinal, "is_archived": row_archived}
+            existing_by_id[row_id] = item
+            if row_step_key and row_step_key not in existing_by_step_key:
+                existing_by_step_key[row_step_key] = item
+
+        normalized_steps: list[dict[str, Any]] = []
+        seen_step_keys: set[str] = set()
+        seen_ordinals: set[int] = set()
         for idx, step in enumerate(steps, start=1):
             step_key = slugify_key(str(step.get("step_key") or step.get("display_name") or f"step-{idx}"), fallback=f"step-{idx}")
             plugin_key = slugify_key(str(step.get("plugin_key") or step.get("plugin_name") or step.get("stage") or ""), fallback="")
             if not plugin_key:
                 raise ValueError(f"step {idx} is missing plugin_key")
+            ordinal = int(step.get("ordinal") or idx)
+            if step_key in seen_step_keys:
+                raise ValueError(f"duplicate step_key in workflow payload: {step_key}")
+            if ordinal in seen_ordinals:
+                raise ValueError(f"duplicate step ordinal in workflow payload: {ordinal}")
+            seen_step_keys.add(step_key)
+            seen_ordinals.add(ordinal)
+
+            incoming_id = str(step.get("id") or "").strip()
+            step_id = ""
+            if incoming_id and incoming_id in existing_by_id:
+                step_id = incoming_id
+            elif step_key in existing_by_step_key:
+                step_id = str(existing_by_step_key[step_key].get("id") or "").strip()
+            if not step_id:
+                step_id = str(uuid.uuid4())
+            normalized_steps.append(
+                {
+                    "id": step_id,
+                    "step_key": step_key,
+                    "display_name": str(step.get("display_name") or step_key),
+                    "plugin_key": plugin_key,
+                    "ordinal": ordinal,
+                    "enabled": bool(step.get("enabled", True)),
+                    "continue_on_error": bool(step.get("continue_on_error", False)),
+                    "retry_failed": bool(step.get("retry_failed", False)),
+                    "max_attempts": max(1, int(step.get("max_attempts") or 1)),
+                    "timeout_seconds": int(step.get("timeout_seconds") or 0),
+                    "input_bindings": json.dumps(_json(step.get("input_bindings"), {})),
+                    "config_json": json.dumps(_json(step.get("config_json", step.get("config")), {})),
+                    "preconditions_json": json.dumps(_json(step.get("preconditions_json", step.get("preconditions")), {})),
+                    "outputs_json": json.dumps(_json(step.get("outputs_json", step.get("outputs")), {})),
+                }
+            )
+
+        retained_ids = {str(item["id"]) for item in normalized_steps}
+        retired_ids = [row_id for row_id in existing_by_id.keys() if row_id not in retained_ids]
+        max_incoming_ordinal = max((int(item["ordinal"]) for item in normalized_steps), default=0)
+        max_existing_ordinal = max((int(item.get("ordinal") or 0) for item in existing_by_id.values()), default=0)
+        retire_ordinal_base = max(max_incoming_ordinal, max_existing_ordinal, 0) + 1000
+        for offset, step_id in enumerate(retired_ids, start=1):
             cur.execute(
                 """
-INSERT INTO workflow_steps(id, workflow_definition_id, step_key, display_name, plugin_key, ordinal,
- enabled, continue_on_error, retry_failed, max_attempts, timeout_seconds, input_bindings,
- config_json, preconditions_json, outputs_json)
-VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb);
+UPDATE workflow_steps
+SET is_archived = TRUE,
+    enabled = FALSE,
+    ordinal = %s,
+    updated_at_utc = NOW()
+WHERE id = %s AND workflow_definition_id = %s;
+""",
+                (retire_ordinal_base + offset, step_id, wf_id),
+            )
+
+        for step in normalized_steps:
+            cur.execute(
+                """
+INSERT INTO workflow_steps(
+  id, workflow_definition_id, step_key, display_name, plugin_key, ordinal,
+  is_archived, enabled, continue_on_error, retry_failed, max_attempts, timeout_seconds,
+  input_bindings, config_json, preconditions_json, outputs_json
+)
+VALUES(%s,%s,%s,%s,%s,%s,FALSE,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)
+ON CONFLICT (id) DO UPDATE SET
+  step_key = EXCLUDED.step_key,
+  display_name = EXCLUDED.display_name,
+  plugin_key = EXCLUDED.plugin_key,
+  ordinal = EXCLUDED.ordinal,
+  is_archived = FALSE,
+  enabled = EXCLUDED.enabled,
+  continue_on_error = EXCLUDED.continue_on_error,
+  retry_failed = EXCLUDED.retry_failed,
+  max_attempts = EXCLUDED.max_attempts,
+  timeout_seconds = EXCLUDED.timeout_seconds,
+  input_bindings = EXCLUDED.input_bindings,
+  config_json = EXCLUDED.config_json,
+  preconditions_json = EXCLUDED.preconditions_json,
+  outputs_json = EXCLUDED.outputs_json,
+  updated_at_utc = NOW();
 """,
                 (
-                    str(uuid.uuid4()), wf_id, step_key, str(step.get("display_name") or step_key), plugin_key, int(step.get("ordinal") or idx),
-                    bool(step.get("enabled", True)), bool(step.get("continue_on_error", False)), bool(step.get("retry_failed", False)),
-                    max(1, int(step.get("max_attempts") or 1)), int(step.get("timeout_seconds") or 0),
-                    json.dumps(_json(step.get("input_bindings"), {})), json.dumps(_json(step.get("config_json", step.get("config")), {})),
-                    json.dumps(_json(step.get("preconditions_json", step.get("preconditions")), {})),
-                    json.dumps(_json(step.get("outputs_json", step.get("outputs")), {})),
+                    str(step["id"]),
+                    wf_id,
+                    str(step["step_key"]),
+                    str(step["display_name"]),
+                    str(step["plugin_key"]),
+                    int(step["ordinal"]),
+                    bool(step["enabled"]),
+                    bool(step["continue_on_error"]),
+                    bool(step["retry_failed"]),
+                    int(step["max_attempts"]),
+                    int(step["timeout_seconds"]),
+                    str(step["input_bindings"]),
+                    str(step["config_json"]),
+                    str(step["preconditions_json"]),
+                    str(step["outputs_json"]),
                 ),
             )
         cur.execute(

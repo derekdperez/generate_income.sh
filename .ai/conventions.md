@@ -93,6 +93,11 @@
 - Dashboard/worker client URL encoding convention: use `encodeURIComponent(...).replace(/%2F/g, "/")` instead of `replaceAll` for broader JS runtime compatibility.
 - Dashboard refresh UX convention: never silently swallow summary-fetch failures; show explicit on-page load failure messaging so operators can distinguish empty data from failed API calls.
 
+- Workflow builder persistence convention:
+  - Never hard-delete `workflow_steps` rows during workflow saves; historical `workflow_step_runs.step_definition_id` references must remain valid.
+  - Persist workflow step edits via stable-step upserts (prefer incoming `id`, fallback by `step_key`) and archive removed steps (`is_archived=true`) instead of deleting.
+  - Workflow definition reads and step counts should exclude archived steps so removed steps stay hidden in the UI while FK history remains intact.
+
 - Worker snapshot compatibility convention: when adding optional columns to worker-control SQL projections, map row data defensively (index-safe defaults) so reduced tuples from tests/legacy callers do not crash snapshot rendering.
 - Worker event-source convention: keep `coordinator_recent_events` as primary source for latest worker events, but preserve `_event_stream.read(...)` fallback for legacy/runtime compatibility and deterministic test fakes.
 
