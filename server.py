@@ -3894,6 +3894,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/workflows":
             self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
             return
+        if path in {"/workflow-runs", "/workflow-definitions"}:
+            self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
+            return
         if path == "/crawl-progress":
             self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")
             return
@@ -5412,6 +5415,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_json({"error": "unauthorized"}, status=401)
             return
 
+        def _parse_status_filters(payload: dict[str, Any]) -> list[str]:
+            out: list[str] = []
+            raw_list = payload.get("statuses")
+            if isinstance(raw_list, list):
+                candidates = [str(item or "").strip().lower() for item in raw_list]
+            else:
+                single = str(payload.get("status", "") or "").strip().lower()
+                candidates = [single] if single else []
+            expanded: list[str] = []
+            for item in candidates:
+                if not item:
+                    continue
+                expanded.extend([part.strip().lower() for part in item.split(",") if part.strip()])
+            for item in expanded:
+                mapped = "failed" if item in {"errored", "error"} else item
+                if mapped not in {"pending", "running", "completed", "failed"}:
+                    continue
+                if mapped not in out:
+                    out.append(mapped)
+            return out
+
         if path == "/api/coord/register-targets":
             targets_payload = body.get("targets", [])
             targets: list[str] = []
@@ -5740,14 +5764,101 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 plugin_single = str(body.get("plugin", "") or "").strip().lower()
                 plugins = [plugin_single] if plugin_single else []
+            statuses = _parse_status_filters(body)
             hard_delete = bool(body.get("hard_delete", False))
             result = self.coordinator_store.reset_stage_tasks(
                 workflow_id=workflow_id,
                 root_domains=root_domains,
                 plugins=plugins,
+                statuses=statuses,
                 hard_delete=hard_delete,
             )
             self._write_json(result)
+            return
+
+        if path == "/api/coord/targets/reset":
+            root_domains_raw = body.get("root_domains")
+            if isinstance(root_domains_raw, list):
+                root_domains = [str(item or "").strip().lower() for item in root_domains_raw if str(item or "").strip()]
+            else:
+                root_domain_single = str(body.get("root_domain", "") or "").strip().lower()
+                root_domains = [root_domain_single] if root_domain_single else []
+            statuses = _parse_status_filters(body)
+            hard_delete = bool(body.get("hard_delete", False))
+            result = self.coordinator_store.reset_targets(
+                root_domains=root_domains,
+                statuses=statuses,
+                hard_delete=hard_delete,
+            )
+            self._write_json(result)
+            return
+
+        if path == "/api/coord/tasks/reset":
+            workflow_id = str(body.get("workflow_id", "") or "").strip().lower()
+            root_domains_raw = body.get("root_domains")
+            if isinstance(root_domains_raw, list):
+                root_domains = [str(item or "").strip().lower() for item in root_domains_raw if str(item or "").strip()]
+            else:
+                root_domain_single = str(body.get("root_domain", "") or "").strip().lower()
+                root_domains = [root_domain_single] if root_domain_single else []
+            plugins_raw = body.get("plugins")
+            if isinstance(plugins_raw, list):
+                plugins = [str(item or "").strip().lower() for item in plugins_raw if str(item or "").strip()]
+            else:
+                plugin_single = str(body.get("plugin", "") or "").strip().lower()
+                plugins = [plugin_single] if plugin_single else []
+            statuses = _parse_status_filters(body)
+            hard_delete = bool(body.get("hard_delete", False))
+
+            scope_raw = body.get("scopes")
+            if isinstance(scope_raw, list):
+                scope_values = [str(item or "").strip().lower() for item in scope_raw if str(item or "").strip()]
+            else:
+                scope_single = str(body.get("scope", "") or "").strip().lower()
+                scope_values = [scope_single] if scope_single else ["stage_tasks"]
+            scopes: list[str] = []
+            for scope in scope_values:
+                if scope in {"all", "*"}:
+                    scopes = ["stage_tasks", "targets"]
+                    break
+                if scope in {"stage", "stages", "stage_task", "stage_tasks"} and "stage_tasks" not in scopes:
+                    scopes.append("stage_tasks")
+                if scope in {"target", "targets", "target_queue", "coordinator_targets"} and "targets" not in scopes:
+                    scopes.append("targets")
+            if not scopes:
+                scopes = ["stage_tasks"]
+
+            stage_result: dict[str, Any] | None = None
+            target_result: dict[str, Any] | None = None
+            if "stage_tasks" in scopes:
+                stage_result = self.coordinator_store.reset_stage_tasks(
+                    workflow_id=workflow_id,
+                    root_domains=root_domains,
+                    plugins=plugins,
+                    statuses=statuses,
+                    hard_delete=hard_delete,
+                )
+            if "targets" in scopes:
+                target_result = self.coordinator_store.reset_targets(
+                    root_domains=root_domains,
+                    statuses=statuses,
+                    hard_delete=hard_delete,
+                )
+            total_affected = int((stage_result or {}).get("affected_rows") or 0) + int((target_result or {}).get("affected_rows") or 0)
+            self._write_json(
+                {
+                    "ok": True,
+                    "scopes": scopes,
+                    "workflow_id": workflow_id,
+                    "root_domains": root_domains,
+                    "plugins": plugins,
+                    "statuses": statuses,
+                    "hard_delete": hard_delete,
+                    "total_affected_rows": total_affected,
+                    "stage_tasks": stage_result,
+                    "targets": target_result,
+                }
+            )
             return
 
         if path == "/api/coord/workflow-config":

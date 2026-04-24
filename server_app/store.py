@@ -4460,6 +4460,7 @@ WHERE workflow_id = %s
         workflow_id: str = "",
         root_domains: Optional[list[str]] = None,
         plugins: Optional[list[str]] = None,
+        statuses: Optional[list[str]] = None,
         hard_delete: bool = False,
     ) -> dict[str, Any]:
         widf = str(workflow_id or "").strip().lower()
@@ -4473,6 +4474,17 @@ WHERE workflow_id = %s
             for item in (plugins or [])
             if str(item or "").strip()
         ]
+        normalized_statuses: list[str] = []
+        for item in (statuses or []):
+            text = str(item or "").strip().lower()
+            if not text:
+                continue
+            if text in {"errored", "error"}:
+                text = "failed"
+            if text not in {"pending", "running", "completed", "failed"}:
+                continue
+            if text not in normalized_statuses:
+                normalized_statuses.append(text)
         where_sql = ["1=1"]
         params: list[Any] = []
         if widf:
@@ -4484,6 +4496,9 @@ WHERE workflow_id = %s
         if stages:
             where_sql.append("stage = ANY(%s)")
             params.append(stages)
+        if normalized_statuses:
+            where_sql.append("status = ANY(%s)")
+            params.append(normalized_statuses)
         where_clause = " AND ".join(where_sql)
         if hard_delete:
             sql = f"""
@@ -4522,6 +4537,7 @@ WHERE {where_clause};
                 "workflow_id": widf or "",
                 "root_domains": domains,
                 "plugins": stages,
+                "statuses": normalized_statuses,
                 "hard_delete": bool(hard_delete),
                 "affected_rows": affected,
             },
@@ -4531,6 +4547,84 @@ WHERE {where_clause};
             "workflow_id": widf or "",
             "root_domains": domains,
             "plugins": stages,
+            "statuses": normalized_statuses,
+            "hard_delete": bool(hard_delete),
+            "affected_rows": affected,
+            "reset_at_utc": _iso_now(),
+        }
+
+    def reset_targets(
+        self,
+        *,
+        root_domains: Optional[list[str]] = None,
+        statuses: Optional[list[str]] = None,
+        hard_delete: bool = False,
+    ) -> dict[str, Any]:
+        domains = [
+            str(item or "").strip().lower()
+            for item in (root_domains or [])
+            if str(item or "").strip()
+        ]
+        normalized_statuses: list[str] = []
+        for item in (statuses or []):
+            text = str(item or "").strip().lower()
+            if not text:
+                continue
+            if text in {"errored", "error"}:
+                text = "failed"
+            if text not in {"pending", "running", "completed", "failed"}:
+                continue
+            if text not in normalized_statuses:
+                normalized_statuses.append(text)
+        where_sql = ["1=1"]
+        params: list[Any] = []
+        if domains:
+            where_sql.append("root_domain = ANY(%s)")
+            params.append(domains)
+        if normalized_statuses:
+            where_sql.append("status = ANY(%s)")
+            params.append(normalized_statuses)
+        where_clause = " AND ".join(where_sql)
+        if hard_delete:
+            sql = f"""
+DELETE FROM coordinator_targets
+WHERE {where_clause};
+"""
+        else:
+            sql = f"""
+UPDATE coordinator_targets
+SET status = 'pending',
+    error = NULL,
+    exit_code = NULL,
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    started_at_utc = NULL,
+    completed_at_utc = NULL,
+    heartbeat_at_utc = NULL,
+    attempt_count = 0,
+    updated_at_utc = NOW()
+WHERE {where_clause};
+"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                affected = int(cur.rowcount or 0)
+            conn.commit()
+        self.record_system_event(
+            "target.reset",
+            "targets",
+            {
+                "source": "coordinator_store.reset_targets",
+                "root_domains": domains,
+                "statuses": normalized_statuses,
+                "hard_delete": bool(hard_delete),
+                "affected_rows": affected,
+            },
+        )
+        return {
+            "ok": True,
+            "root_domains": domains,
+            "statuses": normalized_statuses,
             "hard_delete": bool(hard_delete),
             "affected_rows": affected,
             "reset_at_utc": _iso_now(),

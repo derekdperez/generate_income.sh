@@ -185,6 +185,12 @@
           <label>Workflow ID (blank = all)
             <input id="resetWorkflowId" type="text" placeholder="default">
           </label>
+          <label>Scope
+            <select id="resetScope">
+              <option value="stage_tasks" selected>stage tasks only</option>
+              <option value="all">stage tasks + target queue</option>
+            </select>
+          </label>
           <label>Hard delete
             <select id="resetHardDelete">
               <option value="false" selected>false</option>
@@ -197,9 +203,13 @@
           <label class="full">Plugins (comma separated)
             <input id="resetPlugins" type="text" placeholder="nightmare_crawl_core,extractor">
           </label>
+          <label class="full">Statuses (comma separated, blank = all)
+            <input id="resetStatuses" type="text" placeholder="failed">
+          </label>
         </div>
         <div class="toolbar">
           <button class="primary" type="submit">Reset</button>
+          <button type="button" id="resetFailedAllButton">Reset failed at scale</button>
         </div>
       </form>
       <div id="resetResult" class="result-box muted">No reset action yet.</div>
@@ -648,18 +658,34 @@
         document.getElementById("enqueueResult").textContent = String(error && error.message ? error.message : error);
       }
     }
-    async function resetTasks({ workflow = "", root = "", plugins = [], hardDelete = false } = {}) {
+    async function resetTasks({ workflow = "", root = "", plugins = [], hardDelete = false, statuses = [], scope = "" } = {}) {
       const workflowId = String(workflow || document.getElementById("resetWorkflowId").value || "").trim().toLowerCase();
       const rootDomains = root ? [String(root).trim().toLowerCase()] : parseCsv(document.getElementById("resetRootDomains").value);
       const pluginList = Array.isArray(plugins) && plugins.length ? plugins : parseCsv(document.getElementById("resetPlugins").value);
+      const statusList = Array.isArray(statuses) && statuses.length ? statuses : parseCsv(document.getElementById("resetStatuses").value);
+      const scopeValue = String(scope || document.getElementById("resetScope").value || "stage_tasks").trim().toLowerCase() || "stage_tasks";
       const hardDeleteValue = hardDelete || (String(document.getElementById("resetHardDelete").value || "false").toLowerCase() === "true");
       try {
-        const payload = await postJson("/api/coord/stage/reset", {
-          workflow_id: workflowId,
-          root_domains: rootDomains,
-          plugins: pluginList,
-          hard_delete: hardDeleteValue,
-        });
+        const resetPath = scopeValue === "stage_tasks" ? "/api/coord/stage/reset" : "/api/coord/tasks/reset";
+        const payload = await postJson(
+          resetPath,
+          scopeValue === "stage_tasks"
+            ? {
+                workflow_id: workflowId,
+                root_domains: rootDomains,
+                plugins: pluginList,
+                statuses: statusList,
+                hard_delete: hardDeleteValue,
+              }
+            : {
+                scope: scopeValue,
+                workflow_id: workflowId,
+                root_domains: rootDomains,
+                plugins: pluginList,
+                statuses: statusList,
+                hard_delete: hardDeleteValue,
+              },
+        );
         document.getElementById("resetResult").textContent = JSON.stringify(payload, null, 2);
         await refreshAllData();
       } catch (error) {
@@ -685,6 +711,9 @@
     document.getElementById("resetForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       await resetTasks();
+    });
+    document.getElementById("resetFailedAllButton").addEventListener("click", async () => {
+      await resetTasks({ statuses: ["failed"], scope: "all" });
     });
     ["searchDomain", "searchWorkflow", "searchPlugin", "statusFilter"].forEach((id) => {
       document.getElementById(id).addEventListener("input", renderAll);
