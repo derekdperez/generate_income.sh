@@ -20,3 +20,6 @@
   - `POST /api/coord/workflow/run` now performs an immediate persistence re-check and one controlled re-enqueue retry if the first enqueue pass reports scheduled rows but the table still reads empty.
   - Response payloads now include `requeue_attempted` and `requeue_counts` so transient post-enqueue wipes are visible.
   - FastAPI error payload for zero-persist condition now returns structured diagnostics.
+- Relaxed persistence verification to avoid false negatives from plugin-filter mismatches:
+  - Workflow run now verifies persisted rows at `workflow_id + root_domain` scope (with plugin-filter count reported separately for diagnostics).
+  - Error payload now reports both `persisted_stage_task_rows_root_workflow` and `persisted_stage_task_rows_plugin_filtered`.

@@ -738,10 +738,15 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                     }
                 )
 
-        persisted_stage_task_rows = store.count_stage_tasks(
+        persisted_stage_task_rows_plugin_filtered = store.count_stage_tasks(
             workflow_id=workflow_id,
             root_domains=root_domains,
             plugins=plugin_names,
+        )
+        persisted_stage_task_rows = store.count_stage_tasks(
+            workflow_id=workflow_id,
+            root_domains=root_domains,
+            plugins=[],
         )
         if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
             requeue_attempted = True
@@ -777,10 +782,15 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                         retry_counts["failed"] += 1
                     else:
                         retry_counts["other"] += 1
-            persisted_stage_task_rows = store.count_stage_tasks(
+            persisted_stage_task_rows_plugin_filtered = store.count_stage_tasks(
                 workflow_id=workflow_id,
                 root_domains=root_domains,
                 plugins=plugin_names,
+            )
+            persisted_stage_task_rows = store.count_stage_tasks(
+                workflow_id=workflow_id,
+                root_domains=root_domains,
+                plugins=[],
             )
         if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
             raise HTTPException(
@@ -792,6 +802,8 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                     "selected_plugins": sorted(selected_plugins),
                     "requeue_attempted": requeue_attempted,
                     "requeue_counts": retry_counts,
+                    "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),
+                    "persisted_stage_task_rows_root_workflow": int(persisted_stage_task_rows),
                 },
             )
 
@@ -805,6 +817,7 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             "saved_parameter_overrides": saved_parameter_overrides,
             "counts": counts,
             "persisted_stage_task_rows": int(persisted_stage_task_rows),
+            "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),
             "requeue_attempted": requeue_attempted,
             "requeue_counts": retry_counts,
             "results": rows[:1000],
