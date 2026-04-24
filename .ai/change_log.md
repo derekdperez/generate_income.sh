@@ -23,3 +23,6 @@
 - Relaxed persistence verification to avoid false negatives from plugin-filter mismatches:
   - Workflow run now verifies persisted rows at `workflow_id + root_domain` scope (with plugin-filter count reported separately for diagnostics).
   - Error payload now reports both `persisted_stage_task_rows_root_workflow` and `persisted_stage_task_rows_plugin_filtered`.
+- Fixed force-run claim behavior for coordinator stage tasks:
+  - `try_claim_stage_with_resources` now allows tasks marked with `checkpoint_json.force_run_override` to bypass the `coordinator_targets.status='running'` gate during candidate selection.
+  - This makes the Workflows-page `Run` action actually claimable by idle workers when prerequisites are intentionally overridden.

@@ -4655,6 +4655,7 @@ WHERE (
   AND (%s::text[] IS NULL OR stage = ANY(%s))
   AND (
       stage = 'recon_subdomain_enumeration'
+      OR (COALESCE(checkpoint_json, '{}'::jsonb) ? 'force_run_override')
       OR NOT EXISTS (
           SELECT 1
           FROM coordinator_targets q
