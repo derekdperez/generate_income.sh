@@ -42,17 +42,27 @@
 let plugins=[], current={steps:[]};
 const $=id=>document.getElementById(id);
 function pretty(v){return JSON.stringify(v,null,2)}
-async function api(url, opts={}){const r=await fetch(url,{headers:{'content-type':'application/json'},...opts}); const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(JSON.stringify(j)); return j;}
-async function loadAll(){plugins=(await api('/api/plugin-definitions')).items||[]; const data=await api('/api/workflow-definitions'); $('workflowList').innerHTML=(data.items||[]).map(w=>`<div class="item" onclick="loadWorkflow('${w.workflow_key}')"><b>${w.name}</b><div class="muted">${w.workflow_key} v${w.version} · ${w.status} · ${w.step_count} steps</div></div>`).join('');}
+function esc(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function api(url, opts={}){
+  const headers={'content-type':'application/json',...(opts.headers||{})};
+  return window.NightmareAuth ? NightmareAuth.fetchJson(url,{...opts,headers}) : (async()=>{const r=await fetch(url,{headers,...opts}); const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(JSON.stringify(j)); return j})();
+}
+async function loadAll(){
+  plugins=(await api('/api/plugin-definitions')).items||[];
+  const data=await api('/api/workflow-definitions');
+  $('workflowList').innerHTML=(data.items||[]).map(w=>`<div class="item" onclick="loadWorkflow('${esc(w.workflow_key)}')"><b>${esc(w.name)}</b><div class="muted">${esc(w.workflow_key)} v${esc(w.version)} · ${esc(w.status)} · ${esc(w.step_count)} steps</div></div>`).join('');
+}
 function newWorkflow(){current={workflow_key:'',name:'',description:'',status:'draft',trigger_mode:'manual',input_schema:{type:'object',additionalProperties:true},steps:[]}; render();}
 async function loadWorkflow(key){current=(await api('/api/workflow-definitions/'+encodeURIComponent(key))).item; render();}
 function render(){['workflow_key','name','description','status','trigger_mode'].forEach(id=>$(id).value=current[id]||''); $('input_schema').value=pretty(current.input_schema||{}); renderSteps();}
-function renderSteps(){ $('steps').innerHTML=(current.steps||[]).map((s,i)=>`<div class="step"><div class="row"><label>Step key<input onchange="current.steps[${i}].step_key=this.value" value="${s.step_key||''}"></label><label>Plugin<select onchange="current.steps[${i}].plugin_key=this.value">${plugins.map(p=>`<option value="${p.plugin_key}" ${p.plugin_key==s.plugin_key?'selected':''}>${p.display_name||p.plugin_key}</option>`).join('')}</select></label></div><label>Config JSON<textarea onchange="current.steps[${i}].config_json=JSON.parse(this.value||'{}')">${pretty(s.config_json||{})}</textarea></label><label>Preconditions JSON<textarea onchange="current.steps[${i}].preconditions_json=JSON.parse(this.value||'{}')">${pretty(s.preconditions_json||{})}</textarea></label><button onclick="current.steps.splice(${i},1);renderSteps()">Remove</button></div>`).join('');}
+function renderSteps(){
+  $('steps').innerHTML=(current.steps||[]).map((s,i)=>`<div class="step"><div class="row"><label>Step key<input onchange="current.steps[${i}].step_key=this.value" value="${esc(s.step_key||'')}"></label><label>Plugin<select onchange="current.steps[${i}].plugin_key=this.value">${plugins.map(p=>`<option value="${esc(p.plugin_key)}" ${p.plugin_key==s.plugin_key?'selected':''}>${esc(p.display_name||p.plugin_key)}</option>`).join('')}</select></label></div><label>Config JSON<textarea onchange="current.steps[${i}].config_json=JSON.parse(this.value||'{}')">${esc(pretty(s.config_json||{}))}</textarea></label><label>Preconditions JSON<textarea onchange="current.steps[${i}].preconditions_json=JSON.parse(this.value||'{}')">${esc(pretty(s.preconditions_json||{}))}</textarea></label><button onclick="current.steps.splice(${i},1);renderSteps()">Remove</button></div>`).join('');
+}
 function addStep(){current.steps=current.steps||[]; const p=plugins[0]||{plugin_key:''}; current.steps.push({step_key:'step_'+(current.steps.length+1),display_name:'Step '+(current.steps.length+1),plugin_key:p.plugin_key,ordinal:current.steps.length+1,enabled:true,config_json:{},preconditions_json:{}}); renderSteps();}
 function collect(){return {workflow_key:$('workflow_key').value,name:$('name').value,description:$('description').value,status:$('status').value,trigger_mode:$('trigger_mode').value,input_schema:JSON.parse($('input_schema').value||'{}'),steps:(current.steps||[]).map((s,i)=>({...s,ordinal:i+1,display_name:s.display_name||s.step_key}))};}
 async function saveWorkflow(){try{current=collect(); $('result').textContent=pretty(await api('/api/workflow-definitions',{method:'POST',body:JSON.stringify(current)})); await loadAll();}catch(e){$('result').textContent=e.message}}
 async function publishWorkflow(){try{$('result').textContent=pretty(await api('/api/workflow-definitions/'+encodeURIComponent($('workflow_key').value)+'/publish',{method:'POST'})); await loadAll();}catch(e){$('result').textContent=e.message}}
 async function launchWorkflow(){const root_domain=prompt('Root domain/input target?')||''; try{$('result').textContent=pretty(await api('/api/workflow-runs',{method:'POST',body:JSON.stringify({workflow_key:$('workflow_key').value,root_domain,input:{root_domain}})}));}catch(e){$('result').textContent=e.message}}
-loadAll().then(newWorkflow);
+loadAll().then(newWorkflow).catch(e=>{$('result').textContent=e.message});
 </script>
 </body></html>

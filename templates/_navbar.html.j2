@@ -180,17 +180,50 @@
         setIndicatorVisible(true, `Loading (${activeRequests})...`);
       }
 
+      const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+      function readCookie(name) {
+        return document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) || "";
+      }
+      function readAuthToken() {
+        const cookieToken = decodeURIComponent(readCookie(TOKEN_COOKIE_NAME) || "").trim();
+        if (cookieToken) return cookieToken;
+        const tokenInput = document.getElementById("token");
+        const inputToken = tokenInput && "value" in tokenInput ? String(tokenInput.value || "").trim() : "";
+        if (inputToken) return inputToken;
+        try { return String(window.localStorage.getItem(TOKEN_COOKIE_NAME) || "").trim(); } catch { return ""; }
+      }
+      function withAuthHeaders(init) {
+        const next = { ...(init || {}) };
+        const headers = new Headers(next.headers || {});
+        const token = readAuthToken();
+        if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+        next.headers = headers;
+        next.credentials = next.credentials || "same-origin";
+        return next;
+      }
       const originalFetch = window.fetch ? window.fetch.bind(window) : null;
       if (originalFetch) {
-        window.fetch = async (...args) => {
+        window.fetch = async (input, init = {}) => {
           beginNetwork();
           try {
-            return await originalFetch(...args);
+            let requestUrl = "";
+            try { requestUrl = typeof input === "string" ? input : String(input && input.url || ""); } catch { requestUrl = ""; }
+            const sameOrigin = !/^https?:\/\//i.test(requestUrl) || requestUrl.startsWith(window.location.origin);
+            const finalInit = sameOrigin ? withAuthHeaders(init) : init;
+            return await originalFetch(input, finalInit);
           } finally {
             endNetwork();
           }
         };
       }
+      window.NightmareAuth = { readAuthToken, withAuthHeaders, fetchJson: async (url, init = {}) => {
+        const rsp = await window.fetch(url, withAuthHeaders(init));
+        const text = await rsp.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+        if (!rsp.ok) throw new Error(data.error || data.detail || text || `HTTP ${rsp.status}`);
+        return data;
+      }};
 
       window.NightmareUX = {
         beginNetwork,

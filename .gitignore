@@ -219,3 +219,5 @@ __marimo__/
 output/
 *.zip
 packed.json
+# Local deployment secrets
+deploy/.env

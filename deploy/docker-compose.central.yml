@@ -42,7 +42,6 @@ services:
     volumes:
       - ../output:/app/output
       - ../config:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${TLS_CERT_FILE:?set TLS_CERT_FILE}:/run/tls/server.crt:ro
       - ${TLS_KEY_FILE:?set TLS_KEY_FILE}:/run/tls/server.key:ro
     ports:
@@ -74,7 +73,7 @@ services:
       APP_ROLE: coordinator
       COORDINATOR_BASE_URL: https://server
       COORDINATOR_API_TOKEN: ${COORDINATOR_API_TOKEN:?set COORDINATOR_API_TOKEN}
-      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-true}
+      COORDINATOR_INSECURE_TLS: ${COORDINATOR_INSECURE_TLS:-false}
       DATABASE_URL: postgresql://${POSTGRES_USER:-nightmare}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nightmare}
     volumes:
       - ../output:/app/output

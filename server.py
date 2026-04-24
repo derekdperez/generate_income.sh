@@ -69,10 +69,26 @@ from reporting.server_pages import (
     render_view_logs_html,
     render_workflows_html,
     render_workers_html,
+    render_workflow_definitions_html,
+    render_workflow_runs_html,
+    render_plugin_definitions_html,
 )
 from server_app.store import CoordinatorStore
 from auth0r.profile_store import Auth0rProfileStore
 from logging_app.store import LogStore
+
+from workflow_app.store import (
+    create_workflow_run,
+    get_workflow_definition,
+    get_workflow_run,
+    list_plugin_definitions,
+    list_workflow_definitions,
+    list_workflow_runs,
+    publish_workflow_definition,
+    save_workflow_definition,
+    seed_builtin_plugins,
+    upsert_plugin_definition,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_ROOT = BASE_DIR / "output"
@@ -537,6 +553,27 @@ def _discover_domain_log_files(domain_dir: Path, domain: str) -> list[Path]:
         out.append(path.resolve())
     return sorted(out, key=lambda p: p.name.lower())
 
+
+
+
+def _normalize_and_validate_relative_path(root: Path, rel: str) -> Optional[Path]:
+    """Resolve a user-provided relative path under root, rejecting traversal/absolute paths."""
+    try:
+        root_resolved = Path(root).resolve()
+        original = str(rel or "").strip()
+        if not original or original.startswith(("/", "\\")):
+            return None
+        raw = original.replace("\\", "/")
+        if raw.startswith("../") or "/../" in raw or raw == "..":
+            return None
+        candidate = (root_resolved / raw).resolve()
+        try:
+            candidate.relative_to(root_resolved)
+        except ValueError:
+            return None
+        return candidate
+    except Exception:
+        return None
 
 def _read_tail_lines(path: Path, *, lines: int = DEFAULT_VIEW_LOG_LINES) -> str:
     line_count = max(1, int(lines or DEFAULT_VIEW_LOG_LINES))
@@ -3587,14 +3624,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             raise
 
+    def _is_same_origin_value(self, value: str) -> bool:
+        raw = str(value or "").strip()
+        if not raw:
+            return True
+        try:
+            parsed = urlparse(raw)
+        except Exception:
+            return False
+        host = str(self.headers.get("Host", "") or "").strip().lower()
+        origin_host = str(parsed.netloc or "").strip().lower()
+        return bool(host and origin_host == host)
+
+    def _send_cors_headers(self) -> None:
+        origin = str(self.headers.get("Origin", "") or "").strip()
+        if origin and self._is_same_origin_value(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Coordinator-Token, X-Master-Report-Token")
+
+    def _reject_cross_site_post(self) -> bool:
+        origin = str(self.headers.get("Origin", "") or "").strip()
+        referer = str(self.headers.get("Referer", "") or "").strip()
+        if origin and not self._is_same_origin_value(origin):
+            self._write_json({"error": "cross-site POST rejected"}, status=403)
+            return True
+        if not origin and referer and not self._is_same_origin_value(referer):
+            self._write_json({"error": "cross-site POST rejected"}, status=403)
+            return True
+        return False
+
     def _write_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_cors_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3663,9 +3730,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_cors_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3682,9 +3747,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_cors_headers()
         if download_name:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(download_name))
             self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
@@ -3700,19 +3763,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not content_type:
             content_type = "application/octet-stream"
         try:
-            data = file_path.read_bytes()
+            size = file_path.stat().st_size
+            fh = file_path.open("rb")
         except OSError:
             self._write_text("Read error", status=500)
             return
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        with fh:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self._send_cors_headers()
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            shutil.copyfileobj(fh, self.wfile, length=1024 * 1024)
 
     def _read_json_body(self) -> dict[str, Any]:
         try:
@@ -3743,15 +3806,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         cookie_token = self._read_cookie("nightmare_coord_token").strip()
         if cookie_token == token:
             return True
-        try:
-            parsed = urlparse(self.path)
-            query = parse_qs(parsed.query)
-        except Exception:
-            query = {}
-        for key in ("coordinator_token", "token", "api_token"):
-            candidate = str((query.get(key) or [""])[0] or "").strip()
-            if candidate and candidate == token:
-                return True
         return False
 
     def _read_cookie(self, name: str) -> str:
@@ -3852,10 +3906,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 lock.release()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if not self._is_same_origin_value(str(self.headers.get("Origin", "") or "")):
+            self.send_response(403)
+            self.end_headers()
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_cors_headers()
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
@@ -3892,8 +3948,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/workflows":
             self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
             return
-        if path in {"/workflow-runs", "/workflow-definitions"}:
-            self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
+        if path == "/workflow-definitions":
+            self._write_text(render_workflow_definitions_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/workflow-runs":
+            self._write_text(render_workflow_runs_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/plugin-definitions":
+            self._write_text(render_plugin_definitions_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/crawl-progress":
             self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")
@@ -4333,6 +4395,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "invalid log path"}, status=400)
                 return
             self._write_json({"path": str(resolved), "tail": _read_tail_lines(resolved, lines=DEFAULT_VIEW_LOG_LINES)})
+            return
+        if path == "/api/plugin-definitions":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                seed_builtin_plugins(self.coordinator_store)
+                self._write_json({"items": list_plugin_definitions(self.coordinator_store)})
+            except Exception as exc:
+                self._write_json({"error": "plugin definition query failed", "detail": str(exc)}, status=500)
+            return
+        if path == "/api/workflow-definitions":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                self._write_json({"items": list_workflow_definitions(self.coordinator_store)})
+            except Exception as exc:
+                self._write_json({"error": "workflow definition query failed", "detail": str(exc)}, status=500)
+            return
+        if path.startswith("/api/workflow-definitions/"):
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            key = unquote(path[len("/api/workflow-definitions/"):]).strip("/")
+            try:
+                item = get_workflow_definition(self.coordinator_store, key)
+            except Exception as exc:
+                self._write_json({"error": "workflow definition query failed", "detail": str(exc)}, status=500)
+                return
+            if item is None:
+                self._write_json({"error": "workflow definition not found"}, status=404)
+                return
+            self._write_json({"item": item})
+            return
+        if path == "/api/workflow-runs":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = max(1, min(500, _safe_int((query.get("limit") or [100])[0], 100)))
+            try:
+                self._write_json({"items": list_workflow_runs(self.coordinator_store, limit=limit)})
+            except Exception as exc:
+                self._write_json({"error": "workflow run query failed", "detail": str(exc)}, status=500)
+            return
+        if path.startswith("/api/workflow-runs/"):
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            run_id = unquote(path[len("/api/workflow-runs/"):]).strip("/")
+            try:
+                item = get_workflow_run(self.coordinator_store, run_id)
+            except Exception as exc:
+                self._write_json({"error": "workflow run query failed", "detail": str(exc)}, status=500)
+                return
+            if item is None:
+                self._write_json({"error": "workflow run not found"}, status=404)
+                return
+            self._write_json({"item": item})
             return
         if path == "/api/coord/database-status":
             if self.coordinator_store is None:
@@ -5385,7 +5521,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/files/"):
             rel = unquote(path[len("/files/"):])
-            resolved = _normalize_and_validate_relative_path(self.app_root, rel)
+            resolved = _normalize_and_validate_relative_path(self.output_root, rel)
             if resolved is None:
                 self._write_text("Invalid path", status=400)
                 return
@@ -5404,11 +5540,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if self._reject_cross_site_post():
+            return
         body = self._read_json_body()
 
         if path == "/api/regenerate-master-report":
             self._handle_regenerate_master_report()
             return
+
+        if path in {"/api/plugin-definitions", "/api/workflow-definitions", "/api/workflow-runs"} or path.startswith("/api/workflow-definitions/"):
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            actor = str(self.headers.get("X-Actor", "") or "web").strip() or "web"
+            try:
+                if path == "/api/plugin-definitions":
+                    item = upsert_plugin_definition(self.coordinator_store, body, actor=actor)
+                    self._write_json({"ok": True, "item": item})
+                    return
+                if path == "/api/workflow-definitions":
+                    item = save_workflow_definition(self.coordinator_store, body, actor=actor)
+                    self._write_json({"ok": True, "item": item})
+                    return
+                if path == "/api/workflow-runs":
+                    item = create_workflow_run(self.coordinator_store, body, actor=actor)
+                    self._write_json({"ok": True, "item": item})
+                    return
+                suffix = path[len("/api/workflow-definitions/"):].strip("/")
+                if suffix.endswith("/publish"):
+                    key = unquote(suffix[: -len("/publish")].strip("/"))
+                    item = publish_workflow_definition(self.coordinator_store, key, actor=actor)
+                    self._write_json({"ok": True, "item": item})
+                    return
+            except KeyError as exc:
+                self._write_json({"error": str(exc)}, status=404)
+                return
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=400)
+                return
+            except Exception as exc:
+                self._write_json({"error": "workflow API request failed", "detail": str(exc)}, status=500)
+                return
 
         if not path.startswith("/api/coord/"):
             self._write_json({"error": "not found"}, status=404)

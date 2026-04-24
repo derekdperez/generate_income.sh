@@ -59,6 +59,27 @@ def test_is_coordinator_authorized_rejects_incorrect_cookie_token():
     assert not handler._is_coordinator_authorized()
 
 
+def test_is_coordinator_authorized_rejects_query_string_token():
+    handler = _make_handler(
+        coordinator_token="secret-token",
+        headers={},
+    )
+    handler.path = "/api/coord/events?coordinator_token=secret-token"
+    assert not handler._is_coordinator_authorized()
+
+
+def test_normalize_relative_path_rejects_traversal(tmp_path):
+    from server import _normalize_and_validate_relative_path
+
+    root = tmp_path / "root"
+    root.mkdir()
+    safe = root / "safe.txt"
+    safe.write_text("ok")
+
+    assert _normalize_and_validate_relative_path(root, "safe.txt") == safe.resolve()
+    assert _normalize_and_validate_relative_path(root, "../safe.txt") is None
+    assert _normalize_and_validate_relative_path(root, "/etc/passwd") is None
+
 def test_enrich_worker_snapshot_with_live_details_merges_log_data():
     class FakeLogStore:
         def latest_events_by_source_ids(self, source_ids):

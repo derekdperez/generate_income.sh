@@ -72,3 +72,15 @@ def render_discovered_target_response_html() -> str:
 
 def render_configurations_html() -> str:
     return render_template("configurations.html.j2")
+
+
+def render_workflow_definitions_html() -> str:
+    return render_template("workflow_definitions.html.j2")
+
+
+def render_workflow_runs_html() -> str:
+    return render_template("workflow_runs.html.j2")
+
+
+def render_plugin_definitions_html() -> str:
+    return render_template("plugin_definitions.html.j2")
