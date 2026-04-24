@@ -5254,6 +5254,80 @@ WHERE {where_clause};
             "reset_at_utc": _iso_now(),
         }
 
+    def delete_artifacts(
+        self,
+        *,
+        root_domain: str,
+        artifact_types: Optional[list[str]] = None,
+    ) -> int:
+        rd = str(root_domain or "").strip().lower()
+        if not rd:
+            return 0
+        types = [
+            str(item or "").strip().lower()
+            for item in (artifact_types or [])
+            if str(item or "").strip()
+        ]
+        where_sql = ["root_domain = %s"]
+        params: list[Any] = [rd]
+        if types:
+            where_sql.append("artifact_type = ANY(%s)")
+            params.append(types)
+        where_clause = " AND ".join(where_sql)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM coordinator_artifact_manifest_entries WHERE {where_clause};", tuple(params))
+                cur.execute(f"DELETE FROM coordinator_artifacts WHERE {where_clause};", tuple(params))
+                deleted = int(cur.rowcount or 0)
+            conn.commit()
+        self.record_system_event(
+            "artifact.deleted",
+            f"artifact:{rd}",
+            {
+                "source": "coordinator_store.delete_artifacts",
+                "root_domain": rd,
+                "artifact_types": types,
+                "deleted_rows": deleted,
+            },
+        )
+        return deleted
+
+    def delete_sessions(
+        self,
+        *,
+        root_domains: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        domains = [
+            str(item or "").strip().lower()
+            for item in (root_domains or [])
+            if str(item or "").strip()
+        ]
+        if not domains:
+            return {
+                "ok": True,
+                "root_domains": [],
+                "affected_rows": 0,
+            }
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM coordinator_sessions WHERE root_domain = ANY(%s);", (domains,))
+                deleted = int(cur.rowcount or 0)
+            conn.commit()
+        self.record_system_event(
+            "session.deleted",
+            "sessions",
+            {
+                "source": "coordinator_store.delete_sessions",
+                "root_domains": domains,
+                "deleted_rows": deleted,
+            },
+        )
+        return {
+            "ok": True,
+            "root_domains": domains,
+            "affected_rows": deleted,
+        }
+
     def upload_artifact(
         self,
         *,

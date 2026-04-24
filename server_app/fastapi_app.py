@@ -33,6 +33,8 @@ def _parse_status_filters(payload: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     for value in values:
         status = "failed" if value in {"errored", "error"} else value
+        if status not in {"pending", "ready", "running", "completed", "failed"}:
+            continue
         if not status or status in seen:
             continue
         seen.add(status)

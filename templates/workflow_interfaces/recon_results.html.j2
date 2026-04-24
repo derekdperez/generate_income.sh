@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ workflow_interface.title or "Recon Results" }}</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin: 0 0 6px; }
+    .muted { color: #64748b; font-size: 13px; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-top: 12px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    input, select { border: 1px solid #94a3b8; border-radius: 6px; padding: 6px 8px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    .table-wrap { overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 64vh; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #cbd5e1; font-size: 12px; text-align: left; padding: 6px 8px; vertical-align: top; }
+    th { background: #f1f5f9; position: sticky; top: 0; z-index: 1; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .status { font-size: 12px; margin-top: 10px; white-space: pre-wrap; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px; min-height: 54px; }
+    .link-btn { border: 0; background: transparent; color: #1d4ed8; padding: 0; cursor: pointer; text-decoration: underline; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .modal { width: min(720px, 92vw); max-height: 86vh; overflow: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; }
+    .subdomain-list { columns: 2; gap: 16px; }
+    .subdomain-list li { break-inside: avoid; margin: 0 0 4px; }
+    @media (max-width: 1000px) { .subdomain-list { columns: 1; } }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html.j2' %}
+  <h1>{{ workflow_interface.title or "Recon Workflow Results" }}</h1>
+  <div class="muted">{{ workflow_interface.description or "Operational view of recon results and cleanup actions by target." }}</div>
+
+  <section class="panel">
+    <div class="toolbar">
+      <input id="token" type="password" placeholder="Coordinator token">
+      <input id="search" type="text" placeholder="Search domain">
+      <select id="limit">
+        <option value="100">100</option>
+        <option value="250" selected>250</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+      </select>
+      <button type="button" class="primary" id="refreshBtn">Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Domain</th>
+            <th>Subdomains</th>
+            <th>URLs Discovered</th>
+            <th>Requests</th>
+            <th>URLs In Queue</th>
+            <th>Potential Takeovers</th>
+            <th>High Value Targets</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <tr><td colspan="8" class="muted">Loading results...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="statusBox" class="status muted">Ready.</div>
+  </section>
+
+  <div id="subdomainBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <h2 id="subdomainTitle">Subdomains</h2>
+      <ol id="subdomainList" class="subdomain-list"></ol>
+      <div class="toolbar">
+        <button type="button" id="closeSubdomainsBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const WORKFLOW_ID = "{{ workflow_id or 'run-recon' }}".trim().toLowerCase() || "run-recon";
+      const state = { rows: [] };
+
+      function authHeaders() {
+        if (window.NightmareAuth && typeof window.NightmareAuth.withAuthHeaders === "function") {
+          return window.NightmareAuth.withAuthHeaders({}).headers;
+        }
+        const token = String(document.getElementById("token").value || "").trim();
+        const headers = new Headers();
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+        return headers;
+      }
+      async function fetchJson(url, init = {}) {
+        const rsp = await fetch(url, { ...init, headers: authHeaders(), credentials: "same-origin", cache: "no-store" });
+        const payload = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) throw new Error(String(payload.error || payload.detail || `HTTP ${rsp.status}`));
+        return payload;
+      }
+      function setStatus(text, isError = false) {
+        const box = document.getElementById("statusBox");
+        box.textContent = String(text || "");
+        box.style.color = isError ? "#991b1b" : "#0f172a";
+      }
+      function escapeHtml(value) {
+        return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
+      }
+
+      function renderRows() {
+        const tbody = document.getElementById("rows");
+        if (!state.rows.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="muted">No recon result rows found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = state.rows.map((row) => {
+          const domain = String(row.root_domain || "");
+          return `
+            <tr>
+              <td class="mono">${escapeHtml(domain)}</td>
+              <td><button type="button" class="link-btn" data-subdomains="${escapeHtml(domain)}">${Number(row.subdomain_count || 0)}</button></td>
+              <td>${Number(row.discovered_url_count || 0)}</td>
+              <td>${Number(row.request_count || 0)}</td>
+              <td>${Number(row.urls_in_queue_count || 0)}</td>
+              <td>${Number(row.takeover_count || 0)}</td>
+              <td>${Number(row.high_value_count || 0)}</td>
+              <td>
+                <div class="actions">
+                  <button type="button" data-clear-data="${escapeHtml(domain)}">Clear Workflow Data</button>
+                  <button type="button" data-clear-tasks="${escapeHtml(domain)}">Clear All Tasks</button>
+                  <button type="button" data-open-rr="${escapeHtml(domain)}">Open Request/Response Data</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+        tbody.querySelectorAll("button[data-subdomains]").forEach((button) => {
+          button.addEventListener("click", () => showSubdomains(String(button.getAttribute("data-subdomains") || "")));
+        });
+        tbody.querySelectorAll("button[data-clear-data]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const domain = String(button.getAttribute("data-clear-data") || "");
+            try {
+              setStatus(`Clearing workflow data for ${domain}...`);
+              const payload = await fetchJson("/api/coord/workflow/clear-data", {
+                method: "POST",
+                body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domain: domain }),
+              });
+              setStatus(`Cleared workflow data for ${domain}. Deleted artifacts: ${payload.deleted_artifacts_total || 0}.`);
+              await loadRows();
+            } catch (err) {
+              setStatus(err.message || err, true);
+            }
+          });
+        });
+        tbody.querySelectorAll("button[data-clear-tasks]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const domain = String(button.getAttribute("data-clear-tasks") || "");
+            try {
+              setStatus(`Clearing workflow tasks for ${domain}...`);
+              const payload = await fetchJson("/api/coord/workflow/clear-generated-tasks", {
+                method: "POST",
+                body: JSON.stringify({
+                  workflow_id: WORKFLOW_ID,
+                  root_domains: [domain],
+                  hard_delete: true,
+                  stop_running_workers: false,
+                }),
+              });
+              const affected = Number((payload.result || {}).affected_rows || 0);
+              const running = Number(payload.running_tasks_remaining || 0);
+              if (running > 0) {
+                setStatus(`Cleared ${affected} task rows for ${domain}. ${running} tasks are still running and were not deleted.`, true);
+              } else {
+                setStatus(`Cleared ${affected} task rows for ${domain}.`);
+              }
+              await loadRows();
+            } catch (err) {
+              setStatus(err.message || err, true);
+            }
+          });
+        });
+        tbody.querySelectorAll("button[data-open-rr]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const domain = String(button.getAttribute("data-open-rr") || "");
+            const url = `/http-requests?root_domain=${encodeURIComponent(domain)}`;
+            window.open(url, "_blank", "noopener");
+          });
+        });
+      }
+
+      async function loadRows() {
+        const q = String(document.getElementById("search").value || "").trim();
+        const limit = Number(document.getElementById("limit").value || 250);
+        const payload = await fetchJson(
+          `/api/coord/workflow-interface/recon/results?workflow_id=${encodeURIComponent(WORKFLOW_ID)}&limit=${encodeURIComponent(limit)}&q=${encodeURIComponent(q)}`
+        );
+        state.rows = Array.isArray(payload.rows) ? payload.rows : [];
+        renderRows();
+        setStatus(`Loaded ${state.rows.length} target rows.`);
+      }
+
+      async function showSubdomains(rootDomain) {
+        const domain = String(rootDomain || "").trim().toLowerCase();
+        if (!domain) return;
+        const payload = await fetchJson(`/api/coord/workflow-interface/recon/subdomains?root_domain=${encodeURIComponent(domain)}`);
+        const rows = Array.isArray(payload.subdomains) ? payload.subdomains : [];
+        document.getElementById("subdomainTitle").textContent = `Subdomains for ${domain} (${rows.length})`;
+        document.getElementById("subdomainList").innerHTML = rows.map((item) => `<li class="mono">${escapeHtml(item)}</li>`).join("");
+        document.getElementById("subdomainBackdrop").style.display = "flex";
+      }
+
+      document.getElementById("refreshBtn").addEventListener("click", async () => {
+        try { setStatus("Refreshing..."); await loadRows(); } catch (err) { setStatus(err.message || err, true); }
+      });
+      document.getElementById("search").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        document.getElementById("refreshBtn").click();
+      });
+      document.getElementById("limit").addEventListener("change", () => document.getElementById("refreshBtn").click());
+      document.getElementById("closeSubdomainsBtn").addEventListener("click", () => {
+        document.getElementById("subdomainBackdrop").style.display = "none";
+      });
+      document.getElementById("subdomainBackdrop").addEventListener("click", (event) => {
+        if (event.target === document.getElementById("subdomainBackdrop")) {
+          document.getElementById("subdomainBackdrop").style.display = "none";
+        }
+      });
+
+      const params = new URLSearchParams(window.location.search || "");
+      const initialDomain = String(params.get("root_domain") || "").trim();
+      if (initialDomain) document.getElementById("search").value = initialDomain;
+      const cookieToken = document.cookie.split(";").map((x) => x.trim()).find((x) => x.startsWith("nightmare_coord_token="));
+      if (cookieToken) document.getElementById("token").value = decodeURIComponent(cookieToken.split("=", 2)[1] || "");
+      if (window.localStorage && !document.getElementById("token").value) {
+        const token = String(window.localStorage.getItem("nightmare_coord_token") || "").trim();
+        if (token) document.getElementById("token").value = token;
+      }
+      document.getElementById("token").addEventListener("change", () => {
+        const token = String(document.getElementById("token").value || "").trim();
+        try { window.localStorage.setItem("nightmare_coord_token", token); } catch (_) {}
+      });
+
+      (async () => {
+        try {
+          setStatus("Loading recon results...");
+          await loadRows();
+        } catch (err) {
+          setStatus(err.message || err, true);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>

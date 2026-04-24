@@ -52,6 +52,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from output_cleanup import clear_output_root_children
+from nightmare_shared.templating import render_template
 from reporting.server_pages import (
     render_auth0r_html,
     render_crawl_progress_html,
@@ -125,6 +126,8 @@ WORKFLOW_SNAPSHOT_PAGE_CACHE_TTL_SECONDS = 12
 EST_TZ = timezone(timedelta(hours=-5), name="EST")
 WORKFLOW_FILE_SUFFIX = ".workflow.json"
 WORKFLOW_FILE_GLOB = f"*{WORKFLOW_FILE_SUFFIX}"
+WORKFLOW_INTERFACE_ROUTE_PREFIX = "/workflow-interfaces"
+WORKFLOW_INTERFACE_TYPES = ("control", "results")
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -232,6 +235,224 @@ def _workflow_catalog_payload() -> dict[str, dict[str, Any]]:
         if workflow_id:
             catalog[workflow_id] = payload
     return catalog
+
+
+def _normalize_workflow_interface_route(value: Any, *, workflow_id: str, interface_type: str) -> str:
+    raw = str(value or "").strip()
+    default = f"{WORKFLOW_INTERFACE_ROUTE_PREFIX}/{workflow_id}/{interface_type}"
+    if not raw:
+        return default
+    candidate = raw.split("?", 1)[0].split("#", 1)[0].strip()
+    if not candidate:
+        return default
+    if not candidate.startswith("/"):
+        candidate = f"/{candidate}"
+    parts = [part for part in candidate.split("/") if part]
+    return "/" + "/".join(parts) if parts else default
+
+
+def _normalize_workflow_interface_template(value: Any) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        return ""
+    parts = [part for part in raw.split("/") if part]
+    if not parts:
+        return ""
+    if any(part == ".." for part in parts):
+        return ""
+    normalized = "/".join(parts)
+    if not normalized.endswith(".j2"):
+        return ""
+    template_path = (BASE_DIR / "templates" / normalized).resolve()
+    templates_root = (BASE_DIR / "templates").resolve()
+    try:
+        template_path.relative_to(templates_root)
+    except ValueError:
+        return ""
+    if not template_path.is_file():
+        return ""
+    return normalized
+
+
+def _workflow_interface_catalog_payload() -> dict[str, Any]:
+    interfaces: list[dict[str, Any]] = []
+    routes: dict[str, dict[str, Any]] = {}
+    for path in _iter_workflow_paths():
+        payload = _load_workflow_payload(path)
+        workflow_id = _normalize_workflow_id(payload.get("workflow_id"), default=_workflow_id_from_path(path))
+        if not workflow_id:
+            continue
+        raw_interfaces = payload.get("interfaces")
+        if not isinstance(raw_interfaces, dict):
+            continue
+        ordered_keys: list[str] = []
+        for key in WORKFLOW_INTERFACE_TYPES:
+            if key in raw_interfaces:
+                ordered_keys.append(key)
+        for key in sorted(raw_interfaces.keys()):
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+        for interface_type in ordered_keys:
+            item = raw_interfaces.get(interface_type)
+            if isinstance(item, str):
+                item = {"template": item}
+            if not isinstance(item, dict):
+                continue
+            if not bool(item.get("enabled", True)):
+                continue
+            template_name = _normalize_workflow_interface_template(
+                item.get("template", item.get("page", item.get("html_page", "")))
+            )
+            if not template_name:
+                continue
+            safe_type = _normalize_workflow_id(interface_type, default="page") or "page"
+            route = _normalize_workflow_interface_route(
+                item.get("route", item.get("path", "")),
+                workflow_id=workflow_id,
+                interface_type=safe_type,
+            )
+            title = str(item.get("title") or f"{workflow_id} {safe_type.title()}").strip() or f"{workflow_id} {safe_type.title()}"
+            nav_label = str(item.get("nav_label") or title).strip() or title
+            description = str(item.get("description") or "").strip()
+            entry = {
+                "workflow_id": workflow_id,
+                "interface_type": safe_type,
+                "title": title,
+                "nav_label": nav_label,
+                "description": description,
+                "route": route,
+                "template": template_name,
+                "path_rel": _to_repo_relative_path(path) or str(path),
+            }
+            interfaces.append(entry)
+            if route not in routes:
+                routes[route] = entry
+    interfaces.sort(key=lambda row: (str(row.get("workflow_id") or ""), str(row.get("interface_type") or "")))
+    return {"generated_at_utc": _iso_now(), "interfaces": interfaces, "routes": routes}
+
+
+def _decode_json_bytes(payload: bytes) -> Any:
+    raw = bytes(payload or b"")
+    if not raw:
+        return {}
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def _extract_recon_subdomains(payload: Any) -> list[str]:
+    items: set[str] = set()
+    if isinstance(payload, dict):
+        subdomains = payload.get("subdomains")
+        if isinstance(subdomains, list):
+            for item in subdomains:
+                text = str(item or "").strip().lower()
+                if text:
+                    items.add(text)
+        entries = payload.get("entries")
+        if isinstance(entries, list):
+            for row in entries:
+                if not isinstance(row, dict):
+                    continue
+                text = str(row.get("subdomain") or "").strip().lower()
+                if text:
+                    items.add(text)
+    elif isinstance(payload, list):
+        for item in payload:
+            text = str(item or "").strip().lower()
+            if text:
+                items.add(text)
+    return sorted(items)
+
+
+def _extract_recon_takeover_count(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    for key in (
+        "potential_takeover_count",
+        "potential_takeovers_count",
+        "takeover_count",
+        "findings_count",
+        "match_count",
+        "anomaly_count",
+    ):
+        value = _safe_int(payload.get(key), -1)
+        if value >= 0:
+            return value
+    for key in ("potential_takeovers", "findings", "matches", "anomalies"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return len(rows)
+    return 0
+
+
+def _extract_recon_high_value_count(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    for key in ("match_count", "high_value_count", "findings_count", "result_count"):
+        value = _safe_int(payload.get(key), -1)
+        if value >= 0:
+            return value
+    rows = payload.get("rows")
+    if isinstance(rows, list):
+        return len(rows)
+    return 0
+
+
+def _extract_request_count(payload: Any) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for key in ("request_count", "total_requests", "count"):
+            value = _safe_int(payload.get(key), -1)
+            if value >= 0:
+                return value
+        for key in ("requests", "rows", "items"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return len(rows)
+    return 0
+
+
+def _workflow_running_tasks_summary(
+    snapshot: dict[str, Any],
+    *,
+    workflow_id: str,
+    root_domains: Optional[set[str]] = None,
+    plugins: Optional[set[str]] = None,
+) -> dict[str, Any]:
+    running_count = 0
+    workers: set[str] = set()
+    domains = snapshot.get("domains") if isinstance(snapshot.get("domains"), list) else []
+    for domain in domains:
+        if not isinstance(domain, dict):
+            continue
+        root_domain = str(domain.get("root_domain") or "").strip().lower()
+        if not root_domain:
+            continue
+        if root_domains and root_domain not in root_domains:
+            continue
+        plugin_tasks = domain.get("plugin_tasks") if isinstance(domain.get("plugin_tasks"), dict) else {}
+        workflow_tasks = plugin_tasks.get(workflow_id) if isinstance(plugin_tasks.get(workflow_id), dict) else {}
+        for plugin_name, row in workflow_tasks.items():
+            if not isinstance(row, dict):
+                continue
+            safe_plugin = str(plugin_name or "").strip().lower()
+            if plugins and safe_plugin not in plugins:
+                continue
+            if str(row.get("status") or "").strip().lower() != "running":
+                continue
+            running_count += 1
+            worker_id = str(row.get("worker_id") or "").strip()
+            if worker_id:
+                workers.add(worker_id)
+    return {"running_tasks": running_count, "running_workers": sorted(workers)}
 
 
 def _workflow_stage_prerequisites_satisfied(
@@ -3593,6 +3814,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def master_report_regen_token(self) -> str:
         return str(getattr(self.server, "master_report_regen_token", "") or "").strip()  # type: ignore[attr-defined]
 
+    def _get_workflow_interface_catalog(self) -> dict[str, Any]:
+        cached = getattr(self.server, "workflow_interface_catalog", None)  # type: ignore[attr-defined]
+        if isinstance(cached, dict) and isinstance(cached.get("interfaces"), list) and isinstance(cached.get("routes"), dict):
+            return cached
+        fresh = _workflow_interface_catalog_payload()
+        setattr(self.server, "workflow_interface_catalog", fresh)  # type: ignore[attr-defined]
+        return fresh
+
+    def _refresh_workflow_interface_catalog(self) -> dict[str, Any]:
+        fresh = _workflow_interface_catalog_payload()
+        setattr(self.server, "workflow_interface_catalog", fresh)  # type: ignore[attr-defined]
+        return fresh
+
+    def _render_workflow_interface_page(self, interface_entry: dict[str, Any]) -> str:
+        workflow_id = str(interface_entry.get("workflow_id") or "").strip().lower()
+        workflow_path = _resolve_workflow_path(workflow_id) if workflow_id else None
+        workflow_payload = _load_workflow_payload(workflow_path) if isinstance(workflow_path, Path) else {}
+        return render_template(
+            str(interface_entry.get("template") or ""),
+            workflow_id=workflow_id,
+            workflow=workflow_payload,
+            workflow_interface=interface_entry,
+        )
+
     def log_message(self, format: str, *args: Any) -> None:
         # Keep server output concise.
         message = format % args
@@ -3992,6 +4237,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/auth0r":
             self._write_text(render_auth0r_html(), content_type="text/html; charset=utf-8")
+            return
+        interface_catalog = self._get_workflow_interface_catalog()
+        interface_route_map = interface_catalog.get("routes") if isinstance(interface_catalog.get("routes"), dict) else {}
+        interface_entry = interface_route_map.get(path) if isinstance(interface_route_map, dict) else None
+        if isinstance(interface_entry, dict):
+            try:
+                page_html = self._render_workflow_interface_page(interface_entry)
+            except Exception as exc:
+                self._write_text(f"Workflow interface render failed: {exc}", status=500)
+                return
+            self._write_text(page_html, content_type="text/html; charset=utf-8")
             return
 
         if path == "/api/coord/http-requests":
@@ -5439,6 +5695,185 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json({"root_domain": root_domain, "artifacts": self.coordinator_store.list_artifacts(root_domain)})
             return
+        if path == "/api/coord/workflow-interfaces":
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            catalog = self._get_workflow_interface_catalog()
+            self._write_json(
+                {
+                    "ok": True,
+                    "generated_at_utc": str(catalog.get("generated_at_utc") or _iso_now()),
+                    "interfaces": catalog.get("interfaces") if isinstance(catalog.get("interfaces"), list) else [],
+                }
+            )
+            return
+        if path == "/api/coord/workflow-interface/recon/domains":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            workflow_id = _normalize_workflow_id((query.get("workflow_id") or ["run-recon"])[0], default="run-recon")
+            limit = max(1, min(10000, _safe_int((query.get("limit") or [5000])[0], 5000)))
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            snapshot = self.coordinator_store.workflow_scheduler_snapshot(limit=limit)
+            domains = snapshot.get("domains") if isinstance(snapshot.get("domains"), list) else []
+            rows: list[dict[str, Any]] = []
+            for domain in domains:
+                if not isinstance(domain, dict):
+                    continue
+                root_domain = str(domain.get("root_domain") or "").strip().lower()
+                if not root_domain:
+                    continue
+                if search_text and search_text not in root_domain:
+                    continue
+                plugin_tasks_all = domain.get("plugin_tasks") if isinstance(domain.get("plugin_tasks"), dict) else {}
+                workflow_tasks = plugin_tasks_all.get(workflow_id) if isinstance(plugin_tasks_all.get(workflow_id), dict) else {}
+                running_count = 0
+                pending_count = 0
+                completed_count = 0
+                failed_count = 0
+                for item in workflow_tasks.values():
+                    if not isinstance(item, dict):
+                        continue
+                    status = str(item.get("status") or "").strip().lower()
+                    if status == "running":
+                        running_count += 1
+                    elif status in {"pending", "ready"}:
+                        pending_count += 1
+                    elif status == "completed":
+                        completed_count += 1
+                    elif status == "failed":
+                        failed_count += 1
+                rows.append(
+                    {
+                        "root_domain": root_domain,
+                        "status": str(domain.get("status") or ""),
+                        "discovered_urls_count": int(domain.get("discovered_urls_count") or 0),
+                        "frontier_count": int(domain.get("frontier_count") or 0),
+                        "pending_targets": int((domain.get("targets") or {}).get("pending", 0) if isinstance(domain.get("targets"), dict) else 0),
+                        "running_targets": int((domain.get("targets") or {}).get("running", 0) if isinstance(domain.get("targets"), dict) else 0),
+                        "workflow_pending_tasks": pending_count,
+                        "workflow_running_tasks": running_count,
+                        "workflow_completed_tasks": completed_count,
+                        "workflow_failed_tasks": failed_count,
+                    }
+                )
+            rows.sort(key=lambda item: str(item.get("root_domain") or ""))
+            self._write_json(
+                {
+                    "ok": True,
+                    "workflow_id": workflow_id,
+                    "count": len(rows),
+                    "rows": rows,
+                }
+            )
+            return
+        if path == "/api/coord/workflow-interface/recon/subdomains":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            root_domain = str((query.get("root_domain") or [""])[0] or "").strip().lower()
+            if not root_domain:
+                self._write_json({"error": "root_domain is required"}, status=400)
+                return
+            artifact = self.coordinator_store.get_artifact(root_domain, "recon_subdomains_json", include_content=True)
+            payload = _decode_json_bytes(bytes(artifact.get("content") or b"")) if isinstance(artifact, dict) else {}
+            subdomains = _extract_recon_subdomains(payload)
+            self._write_json({"ok": True, "root_domain": root_domain, "count": len(subdomains), "subdomains": subdomains})
+            return
+        if path == "/api/coord/workflow-interface/recon/results":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            workflow_id = _normalize_workflow_id((query.get("workflow_id") or ["run-recon"])[0], default="run-recon")
+            limit = max(1, min(2000, _safe_int((query.get("limit") or [250])[0], 250)))
+            search_text = str((query.get("q") or [""])[0] or "").strip().lower()
+            snapshot = self.coordinator_store.workflow_scheduler_snapshot(limit=max(limit, 500))
+            domains = snapshot.get("domains") if isinstance(snapshot.get("domains"), list) else []
+            rows: list[dict[str, Any]] = []
+            for domain in domains:
+                if not isinstance(domain, dict):
+                    continue
+                root_domain = str(domain.get("root_domain") or "").strip().lower()
+                if not root_domain:
+                    continue
+                if search_text and search_text not in root_domain:
+                    continue
+                artifacts = domain.get("artifacts") if isinstance(domain.get("artifacts"), list) else []
+                artifact_map: dict[str, dict[str, Any]] = {}
+                for item in artifacts:
+                    if not isinstance(item, dict):
+                        continue
+                    artifact_type = str(item.get("artifact_type") or "").strip().lower()
+                    if artifact_type:
+                        artifact_map[artifact_type] = item
+
+                subdomain_count = 0
+                if "recon_subdomains_json" in artifact_map:
+                    artifact = self.coordinator_store.get_artifact(root_domain, "recon_subdomains_json", include_content=True)
+                    payload = _decode_json_bytes(bytes(artifact.get("content") or b"")) if isinstance(artifact, dict) else {}
+                    subdomain_count = len(_extract_recon_subdomains(payload))
+
+                requests_count = int((artifact_map.get("nightmare_requests_json") or {}).get("summary_request_count") or 0)
+                if requests_count <= 0 and "nightmare_requests_json" in artifact_map:
+                    artifact = self.coordinator_store.get_artifact(root_domain, "nightmare_requests_json", include_content=True)
+                    payload = _decode_json_bytes(bytes(artifact.get("content") or b"")) if isinstance(artifact, dict) else {}
+                    requests_count = _extract_request_count(payload)
+
+                takeover_count = int((artifact_map.get("recon_subdomain_takeover_summary_json") or {}).get("summary_anomaly_count") or 0)
+                if takeover_count <= 0 and "recon_subdomain_takeover_summary_json" in artifact_map:
+                    artifact = self.coordinator_store.get_artifact(root_domain, "recon_subdomain_takeover_summary_json", include_content=True)
+                    payload = _decode_json_bytes(bytes(artifact.get("content") or b"")) if isinstance(artifact, dict) else {}
+                    takeover_count = _extract_recon_takeover_count(payload)
+
+                high_value_count = int((artifact_map.get("recon_extractor_high_value_summary_json") or {}).get("summary_match_count") or 0)
+                if high_value_count <= 0 and "recon_extractor_high_value_summary_json" in artifact_map:
+                    artifact = self.coordinator_store.get_artifact(root_domain, "recon_extractor_high_value_summary_json", include_content=True)
+                    payload = _decode_json_bytes(bytes(artifact.get("content") or b"")) if isinstance(artifact, dict) else {}
+                    high_value_count = _extract_recon_high_value_count(payload)
+
+                plugin_tasks_all = domain.get("plugin_tasks") if isinstance(domain.get("plugin_tasks"), dict) else {}
+                workflow_tasks = plugin_tasks_all.get(workflow_id) if isinstance(plugin_tasks_all.get(workflow_id), dict) else {}
+                running_task_count = 0
+                for task_row in workflow_tasks.values():
+                    if not isinstance(task_row, dict):
+                        continue
+                    if str(task_row.get("status") or "").strip().lower() == "running":
+                        running_task_count += 1
+
+                rows.append(
+                    {
+                        "root_domain": root_domain,
+                        "subdomain_count": max(0, int(subdomain_count)),
+                        "discovered_url_count": int(domain.get("discovered_urls_count") or 0),
+                        "request_count": max(0, int(requests_count)),
+                        "urls_in_queue_count": int(domain.get("frontier_count") or 0),
+                        "takeover_count": max(0, int(takeover_count)),
+                        "high_value_count": max(0, int(high_value_count)),
+                        "running_task_count": running_task_count,
+                    }
+                )
+                if len(rows) >= limit:
+                    break
+            rows.sort(key=lambda item: str(item.get("root_domain") or ""))
+            self._write_json(
+                {
+                    "ok": True,
+                    "workflow_id": workflow_id,
+                    "count": len(rows),
+                    "rows": rows,
+                }
+            )
+            return
         if path == "/api/coord/workflow-config":
             if self.coordinator_store is None:
                 self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
@@ -5641,7 +6076,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 expanded.extend([part.strip().lower() for part in item.split(",") if part.strip()])
             for item in expanded:
                 mapped = "failed" if item in {"errored", "error"} else item
-                if mapped not in {"pending", "running", "completed", "failed"}:
+                if mapped not in {"pending", "ready", "running", "completed", "failed"}:
                     continue
                 if mapped not in out:
                     out.append(mapped)
@@ -6080,6 +6515,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             workflow_path = _resolve_workflow_path(workflow_id) or _default_workflow_path_for_id(workflow_id)
             workflow_path.parent.mkdir(parents=True, exist_ok=True)
             workflow_path.write_text(json.dumps(workflow_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            interface_catalog = self._refresh_workflow_interface_catalog()
             self.coordinator_store.record_system_event(
                 "workflow.config.updated",
                 f"workflow:{workflow_id}",
@@ -6097,6 +6533,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "path_rel": _to_repo_relative_path(workflow_path),
                     "workflow": workflow_payload,
                     "available_workflows": _workflow_index_payload(),
+                    "available_interfaces": interface_catalog.get("interfaces") if isinstance(interface_catalog.get("interfaces"), list) else [],
                 }
             )
             return
@@ -6118,11 +6555,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": f"workflow config is empty or invalid: {workflow_path.name}"}, status=500)
                 return
             plugins = [item for item in (workflow.get("plugins") if isinstance(workflow.get("plugins"), list) else []) if isinstance(item, dict)]
+            selected_plugins_raw = body.get("plugins")
+            selected_plugins: set[str] = set()
+            if isinstance(selected_plugins_raw, str):
+                selected_plugins = {
+                    str(item or "").strip().lower()
+                    for item in selected_plugins_raw.split(",")
+                    if str(item or "").strip()
+                }
+            elif isinstance(selected_plugins_raw, list):
+                selected_plugins = {
+                    str(item or "").strip().lower()
+                    for item in selected_plugins_raw
+                    if str(item or "").strip()
+                }
             runnable_plugins = [plugin for plugin in plugins if bool(plugin.get("enabled", True))]
-            starter_plugins = runnable_plugins
+            if selected_plugins:
+                runnable_plugins = [
+                    plugin
+                    for plugin in runnable_plugins
+                    if str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower() in selected_plugins
+                ]
+            starter_plugins = list(runnable_plugins)
             if not runnable_plugins:
                 self._write_json({"error": "workflow has no enabled plugins"}, status=400)
                 return
+            plugin_parameter_overrides_raw = body.get("plugin_parameter_overrides")
+            plugin_parameter_overrides: dict[str, dict[str, Any]] = {}
+            if isinstance(plugin_parameter_overrides_raw, dict):
+                for plugin_name, params in plugin_parameter_overrides_raw.items():
+                    safe_name = str(plugin_name or "").strip().lower()
+                    if not safe_name or not isinstance(params, dict):
+                        continue
+                    plugin_parameter_overrides[safe_name] = dict(params)
+            saved_parameter_overrides = False
+            if plugin_parameter_overrides and bool(body.get("persist_parameter_overrides", True)):
+                changed = False
+                for plugin in plugins:
+                    plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
+                    if not plugin_name:
+                        continue
+                    override = plugin_parameter_overrides.get(plugin_name)
+                    if not isinstance(override, dict):
+                        continue
+                    current_params = dict(plugin.get("parameters") or {}) if isinstance(plugin.get("parameters"), dict) else {}
+                    merged_params = {**current_params, **override}
+                    if merged_params != current_params:
+                        plugin["parameters"] = merged_params
+                        changed = True
+                if changed:
+                    workflow["plugins"] = plugins
+                    workflow_path.write_text(json.dumps(workflow, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                    self._refresh_workflow_interface_catalog()
+                    saved_parameter_overrides = True
             root_domains_raw = body.get("root_domains")
             root_domains: list[str] = []
             if isinstance(root_domains_raw, list):
@@ -6185,7 +6670,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "status": str(result.get("status") or ""),
                         }
                     )
-            self.coordinator_store.record_system_event(
+                self.coordinator_store.record_system_event(
                 "workflow.run.enqueued",
                 f"workflow:{workflow_id}",
                 {
@@ -6197,21 +6682,177 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         for item in starter_plugins
                     ],
                     "counts": counts,
+                    "selected_plugins": sorted(selected_plugins),
+                    "saved_parameter_overrides": saved_parameter_overrides,
                 },
             )
+            reload_workers_queued: list[str] = []
+            if saved_parameter_overrides and bool(body.get("reload_workers", True)):
+                worker_snapshot = self.coordinator_store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS)
+                workers = worker_snapshot.get("workers") if isinstance(worker_snapshot.get("workers"), list) else []
+                for row in workers:
+                    if not isinstance(row, dict):
+                        continue
+                    worker_id = str(row.get("worker_id") or "").strip()
+                    if not worker_id or not self._is_workflow_runtime_worker(worker_id):
+                        continue
+                    if self.coordinator_store.queue_worker_command(
+                        worker_id,
+                        "reload",
+                        payload={"source": "workflow_run_overrides", "workflow_id": workflow_id},
+                    ):
+                        reload_workers_queued.append(worker_id)
             self._write_json(
                 {
                     "ok": True,
                     "workflow_id": workflow_id,
                     "domains_count": len(root_domains),
                     "domains": root_domains,
+                    "selected_plugins": sorted(selected_plugins),
                     "starter_plugins": [
                         str(item.get("name") or item.get("plugin_name") or item.get("stage") or "").strip().lower()
                         for item in starter_plugins
                     ],
+                    "saved_parameter_overrides": saved_parameter_overrides,
+                    "reload_workers_queued": reload_workers_queued,
                     "counts": counts,
                     "results": rows[:1000],
                     "results_truncated": max(0, len(rows) - 1000),
+                }
+            )
+            return
+
+        if path == "/api/coord/workflow/clear-generated-tasks":
+            workflow_id = _normalize_workflow_id(body.get("workflow_id"), default="run-recon")
+            plugin_values = body.get("plugins")
+            selected_plugins: set[str] = set()
+            if isinstance(plugin_values, str):
+                selected_plugins = {
+                    str(item or "").strip().lower()
+                    for item in plugin_values.split(",")
+                    if str(item or "").strip()
+                }
+            elif isinstance(plugin_values, list):
+                selected_plugins = {
+                    str(item or "").strip().lower()
+                    for item in plugin_values
+                    if str(item or "").strip()
+                }
+            root_domains_raw = body.get("root_domains")
+            root_domains = (
+                sorted({str(item or "").strip().lower() for item in root_domains_raw if str(item or "").strip()})
+                if isinstance(root_domains_raw, list)
+                else []
+            )
+            hard_delete = bool(body.get("hard_delete", True))
+            stop_running_workers = bool(body.get("stop_running_workers", False))
+            snapshot_limit = max(1000, min(20000, _safe_int(body.get("snapshot_limit", 5000), 5000)))
+            snapshot = self.coordinator_store.workflow_scheduler_snapshot(limit=snapshot_limit)
+            root_domain_filter = set(root_domains) if root_domains else None
+            plugin_filter = set(selected_plugins) if selected_plugins else None
+            running = _workflow_running_tasks_summary(
+                snapshot,
+                workflow_id=workflow_id,
+                root_domains=root_domain_filter,
+                plugins=plugin_filter,
+            )
+            result = self.coordinator_store.reset_stage_tasks(
+                workflow_id=workflow_id,
+                root_domains=root_domains,
+                plugins=sorted(selected_plugins),
+                statuses=["pending", "ready", "completed", "failed"],
+                hard_delete=hard_delete,
+            )
+            stop_commands_queued: list[str] = []
+            if stop_running_workers and running["running_workers"]:
+                for worker_id in running["running_workers"]:
+                    if self.coordinator_store.queue_worker_command(
+                        worker_id,
+                        "stop",
+                        payload={"source": "workflow_clear_tasks", "workflow_id": workflow_id},
+                    ):
+                        stop_commands_queued.append(worker_id)
+            warning = ""
+            if int(running["running_tasks"] or 0) > 0:
+                warning = (
+                    "Not all tasks were deleted because some matching tasks are currently running. "
+                    "Stop those workers, then clear again to remove running tasks."
+                )
+            self._write_json(
+                {
+                    "ok": True,
+                    "workflow_id": workflow_id,
+                    "root_domains": root_domains,
+                    "plugins": sorted(selected_plugins),
+                    "hard_delete": hard_delete,
+                    "result": result,
+                    "running_tasks_remaining": int(running["running_tasks"] or 0),
+                    "running_workers": list(running["running_workers"] or []),
+                    "warning": warning,
+                    "stop_commands_queued": stop_commands_queued,
+                }
+            )
+            return
+
+        if path == "/api/coord/workflow/clear-data":
+            workflow_id = _normalize_workflow_id(body.get("workflow_id"), default="run-recon")
+            workflow_path = _resolve_workflow_path(workflow_id)
+            if workflow_path is None:
+                self._write_json({"error": f"workflow not found: {workflow_id or 'unknown'}"}, status=404)
+                return
+            workflow = _load_workflow_payload(workflow_path)
+            if not workflow:
+                self._write_json({"error": f"workflow config is empty or invalid: {workflow_path.name}"}, status=500)
+                return
+            root_domains_raw = body.get("root_domains")
+            root_domains = (
+                sorted({str(item or "").strip().lower() for item in root_domains_raw if str(item or "").strip()})
+                if isinstance(root_domains_raw, list)
+                else []
+            )
+            if not root_domains:
+                one_domain = str(body.get("root_domain") or "").strip().lower()
+                if one_domain:
+                    root_domains = [one_domain]
+            if not root_domains:
+                self._write_json({"error": "root_domain or root_domains is required"}, status=400)
+                return
+            artifact_types: set[str] = set()
+            for plugin in (workflow.get("plugins") if isinstance(workflow.get("plugins"), list) else []):
+                if not isinstance(plugin, dict):
+                    continue
+                outputs = plugin.get("outputs") if isinstance(plugin.get("outputs"), dict) else {}
+                output_artifacts = outputs.get("artifacts") if isinstance(outputs.get("artifacts"), list) else []
+                for artifact in output_artifacts:
+                    text = str(artifact or "").strip().lower()
+                    if text:
+                        artifact_types.add(text)
+            per_domain: list[dict[str, Any]] = []
+            total_deleted_artifacts = 0
+            total_deleted_sessions = 0
+            for root_domain in root_domains:
+                deleted_artifacts = self.coordinator_store.delete_artifacts(
+                    root_domain=root_domain,
+                    artifact_types=sorted(artifact_types),
+                )
+                deleted_sessions = self.coordinator_store.delete_sessions(root_domains=[root_domain])
+                total_deleted_artifacts += int(deleted_artifacts or 0)
+                total_deleted_sessions += int((deleted_sessions or {}).get("affected_rows") or 0)
+                per_domain.append(
+                    {
+                        "root_domain": root_domain,
+                        "deleted_artifacts": int(deleted_artifacts or 0),
+                        "deleted_sessions": int((deleted_sessions or {}).get("affected_rows") or 0),
+                    }
+                )
+            self._write_json(
+                {
+                    "ok": True,
+                    "workflow_id": workflow_id,
+                    "artifact_types": sorted(artifact_types),
+                    "domains": per_domain,
+                    "deleted_artifacts_total": total_deleted_artifacts,
+                    "deleted_sessions_total": total_deleted_sessions,
                 }
             )
             return
@@ -6824,6 +7465,7 @@ def main(argv: list[str] | None = None) -> int:
         srv.fuzzing_zip_index_cache = _ZipFileIndexCache()  # type: ignore[attr-defined]
         srv.log_store = log_store  # type: ignore[attr-defined]
         srv.auth0r_store = auth0r_store  # type: ignore[attr-defined]
+        srv.workflow_interface_catalog = _workflow_interface_catalog_payload()  # type: ignore[attr-defined]
         _start_default_page_cache_warmer(srv, coordinator_store=coordinator_store)
         return srv
 

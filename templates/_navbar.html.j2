@@ -103,6 +103,7 @@
       <a class="app-nav-link" href="/operations" data-nav-path="/operations">Operations</a>
       <a class="app-nav-link" href="/workers" data-nav-path="/workers">Workers</a>
       <a class="app-nav-link" href="/workflows" data-nav-path="/workflows">Workflows</a>
+      <span id="workflowInterfaceNav"></span>
       <a class="app-nav-link" href="/workflow-definitions" data-nav-path="/workflow-definitions">Workflow Builder</a>
       <a class="app-nav-link" href="/plugin-definitions" data-nav-path="/plugin-definitions">Plugins</a>
       <a class="app-nav-link" href="/workflow-runs" data-nav-path="/workflow-runs">Workflow Runs</a>
@@ -130,18 +131,21 @@
     const path = window.location.pathname === "/" ? "/workers" : window.location.pathname;
     const hash = String(window.location.hash || "").toLowerCase();
     const currentWithHash = `${path}${hash}`;
-    let matched = false;
-    document.querySelectorAll(".app-nav-link").forEach((link) => {
-      if (String(link.dataset.navPath || "") === currentWithHash) {
-        link.classList.add("active");
-        matched = true;
-      }
-    });
-    if (!matched) {
+    function markActiveNav() {
+      let matched = false;
+      document.querySelectorAll(".app-nav-link").forEach((link) => {
+        link.classList.remove("active");
+        if (String(link.dataset.navPath || "") === currentWithHash) {
+          link.classList.add("active");
+          matched = true;
+        }
+      });
+      if (matched) return;
       document.querySelectorAll(".app-nav-link").forEach((link) => {
         if (String(link.dataset.navPath || "") === path) link.classList.add("active");
       });
     }
+    markActiveNav();
 
     if (!window.NightmareUX) {
       const indicator = document.getElementById("appNetIndicator");
@@ -232,5 +236,30 @@
         setIndicatorVisible,
       };
     }
+
+    async function hydrateWorkflowInterfaceNav() {
+      const host = document.getElementById("workflowInterfaceNav");
+      if (!host || !window.NightmareAuth || typeof window.NightmareAuth.fetchJson !== "function") return;
+      try {
+        const payload = await window.NightmareAuth.fetchJson("/api/coord/workflow-interfaces", { method: "GET", cache: "no-store" });
+        const items = Array.isArray(payload.interfaces) ? payload.interfaces : [];
+        const links = items
+          .map((item) => {
+            if (!item || typeof item !== "object") return "";
+            const route = String(item.route || "").trim();
+            const label = String(item.nav_label || item.title || "").trim();
+            if (!route || !label) return "";
+            const navPath = `${route}${String(item.hash || "")}`;
+            return `<a class="app-nav-link" href="${route}" data-nav-path="${navPath}">${label}</a>`;
+          })
+          .filter(Boolean)
+          .join("");
+        host.innerHTML = links;
+        markActiveNav();
+      } catch (_) {
+        host.innerHTML = "";
+      }
+    }
+    hydrateWorkflowInterfaceNav();
   })();
 </script>

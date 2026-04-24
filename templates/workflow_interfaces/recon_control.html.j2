@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ workflow_interface.title or "Recon Control" }}</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin: 0 0 6px; }
+    .muted { color: #64748b; font-size: 13px; }
+    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; margin-top: 12px; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; }
+    .panel h2 { margin: 0 0 10px; font-size: 16px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    input, select, textarea { border: 1px solid #94a3b8; border-radius: 6px; padding: 6px 8px; }
+    input[type="text"], input[type="password"] { min-width: 180px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    button.warn { background: #dc2626; border-color: #b91c1c; color: #fff; }
+    .table-wrap { max-height: 58vh; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #cbd5e1; font-size: 12px; text-align: left; padding: 6px 8px; vertical-align: top; }
+    th { background: #f1f5f9; position: sticky; top: 0; z-index: 1; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .status { font-size: 12px; margin-top: 10px; white-space: pre-wrap; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px; min-height: 54px; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .modal { width: min(820px, 94vw); max-height: 88vh; overflow: auto; background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; }
+    .modal textarea { width: 100%; min-height: 300px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .checkline { display: inline-flex; align-items: center; gap: 6px; }
+    @media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } .table-wrap { max-height: 42vh; } }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html.j2' %}
+  <h1>{{ workflow_interface.title or "Recon Workflow Control" }}</h1>
+  <div class="muted">{{ workflow_interface.description or "Configure domains and recon steps, then generate workflow tasks." }}</div>
+
+  <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
+    <label class="checkline"><input id="allDomains" type="checkbox"> ALL domains</label>
+    <button type="button" id="selectVisibleBtn">Select Visible Domains</button>
+    <button type="button" id="clearSelectedBtn">Clear Domain Selection</button>
+  </div>
+
+  <div class="layout">
+    <section class="panel">
+      <h2>Target Selection</h2>
+      <div class="toolbar">
+        <input id="domainSearch" type="text" placeholder="Search domain">
+        <select id="domainStatusFilter">
+          <option value="">All statuses</option>
+          <option value="running">Running</option>
+          <option value="queued">Queued</option>
+          <option value="failed">Failed</option>
+          <option value="completed">Completed</option>
+        </select>
+        <button type="button" class="primary" id="refreshDomainsBtn">Refresh Domains</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Domain</th>
+              <th>Status</th>
+              <th>URLs</th>
+              <th>Queue</th>
+              <th>Run</th>
+              <th>Wait</th>
+              <th>Done</th>
+              <th>Fail</th>
+            </tr>
+          </thead>
+          <tbody id="domainRows">
+            <tr><td colspan="9" class="muted">Loading domains...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Feature Selection</h2>
+      <div class="toolbar">
+        <button type="button" id="selectAllPluginsBtn">Select All Steps</button>
+        <button type="button" id="clearPluginsBtn">Clear Step Selection</button>
+        <button type="button" class="primary" id="refreshWorkflowBtn">Refresh Workflow</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Step</th>
+              <th>Description</th>
+              <th>Configure</th>
+            </tr>
+          </thead>
+          <tbody id="pluginRows">
+            <tr><td colspan="4" class="muted">Loading workflow...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h2 style="margin-top:14px;">Run Controls</h2>
+      <div class="toolbar">
+        <button type="button" class="primary" id="generateBtn">Generate Workflow Tasks</button>
+        <button type="button" class="warn" id="clearTasksBtn">Clear All Current Workflow Tasks</button>
+      </div>
+      <div id="statusBox" class="status muted">Ready.</div>
+    </section>
+  </div>
+
+  <div id="configBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <h2 id="configTitle">Configure Step</h2>
+      <div class="muted" style="margin-bottom:8px;">Edit JSON parameters for this workflow step.</div>
+      <textarea id="configTextarea"></textarea>
+      <div class="toolbar" style="margin-top:10px;">
+        <button type="button" class="primary" id="saveConfigBtn">Save</button>
+        <button type="button" id="cancelConfigBtn">Cancel</button>
+      </div>
+      <div id="configError" class="muted"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const WORKFLOW_ID = "{{ workflow_id or 'run-recon' }}".trim().toLowerCase() || "run-recon";
+      const state = {
+        domains: [],
+        selectedDomains: new Set(),
+        plugins: [],
+        selectedPlugins: new Set(),
+        pluginOverrides: {},
+        editingPlugin: "",
+      };
+
+      function authHeaders() {
+        if (window.NightmareAuth && typeof window.NightmareAuth.withAuthHeaders === "function") {
+          return window.NightmareAuth.withAuthHeaders({}).headers;
+        }
+        const token = String(document.getElementById("token").value || "").trim();
+        const headers = new Headers();
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+        return headers;
+      }
+      async function fetchJson(url, init = {}) {
+        const rsp = await fetch(url, { ...init, headers: authHeaders(), credentials: "same-origin", cache: "no-store" });
+        const payload = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) throw new Error(String(payload.error || payload.detail || `HTTP ${rsp.status}`));
+        return payload;
+      }
+      function setStatus(text, isError = false) {
+        const box = document.getElementById("statusBox");
+        box.textContent = String(text || "");
+        box.style.color = isError ? "#991b1b" : "#0f172a";
+      }
+
+      function pluginName(plugin) {
+        return String(plugin.plugin_name || plugin.name || plugin.stage || "").trim().toLowerCase();
+      }
+
+      function selectedDomainList() {
+        return Array.from(state.selectedDomains).sort();
+      }
+      function selectedPluginList() {
+        return Array.from(state.selectedPlugins).sort();
+      }
+      function allDomainsSelected() {
+        return Boolean(document.getElementById("allDomains").checked);
+      }
+
+      function renderDomains() {
+        const search = String(document.getElementById("domainSearch").value || "").trim().toLowerCase();
+        const statusFilter = String(document.getElementById("domainStatusFilter").value || "").trim().toLowerCase();
+        const rows = state.domains.filter((row) => {
+          if (search && !String(row.root_domain || "").includes(search)) return false;
+          if (statusFilter) {
+            const status = String(row.status || "").toLowerCase();
+            if (statusFilter === "queued" && status !== "queued") return false;
+            if (statusFilter === "running" && status !== "running") return false;
+            if (statusFilter === "failed" && status !== "failed") return false;
+            if (statusFilter === "completed" && status !== "completed") return false;
+          }
+          return true;
+        });
+        const tbody = document.getElementById("domainRows");
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="9" class="muted">No domains matched.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map((row) => {
+          const domain = String(row.root_domain || "");
+          const checked = state.selectedDomains.has(domain) ? "checked" : "";
+          return `
+            <tr>
+              <td><input type="checkbox" data-domain="${domain}" ${checked}></td>
+              <td class="mono">${domain}</td>
+              <td>${String(row.status || "")}</td>
+              <td>${Number(row.discovered_urls_count || 0)}</td>
+              <td>${Number(row.frontier_count || 0)}</td>
+              <td>${Number(row.workflow_running_tasks || 0)}</td>
+              <td>${Number(row.workflow_pending_tasks || 0)}</td>
+              <td>${Number(row.workflow_completed_tasks || 0)}</td>
+              <td>${Number(row.workflow_failed_tasks || 0)}</td>
+            </tr>
+          `;
+        }).join("");
+        tbody.querySelectorAll("input[type=checkbox][data-domain]").forEach((input) => {
+          input.addEventListener("change", () => {
+            const domain = String(input.getAttribute("data-domain") || "");
+            if (!domain) return;
+            if (input.checked) state.selectedDomains.add(domain);
+            else state.selectedDomains.delete(domain);
+          });
+        });
+      }
+
+      function renderPlugins() {
+        const tbody = document.getElementById("pluginRows");
+        if (!state.plugins.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">No workflow plugins found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = state.plugins.map((plugin) => {
+          const name = pluginName(plugin);
+          const checked = state.selectedPlugins.has(name) ? "checked" : "";
+          const desc = String(plugin.description || "");
+          return `
+            <tr>
+              <td><input type="checkbox" data-plugin="${name}" ${checked}></td>
+              <td class="mono">${name}</td>
+              <td>${desc}</td>
+              <td><button type="button" data-config="${name}">Configure</button></td>
+            </tr>
+          `;
+        }).join("");
+        tbody.querySelectorAll("input[type=checkbox][data-plugin]").forEach((input) => {
+          input.addEventListener("change", () => {
+            const name = String(input.getAttribute("data-plugin") || "");
+            if (!name) return;
+            if (input.checked) state.selectedPlugins.add(name);
+            else state.selectedPlugins.delete(name);
+          });
+        });
+        tbody.querySelectorAll("button[data-config]").forEach((button) => {
+          button.addEventListener("click", () => openConfigModal(String(button.getAttribute("data-config") || "")));
+        });
+      }
+
+      async function loadDomains() {
+        const payload = await fetchJson(`/api/coord/workflow-interface/recon/domains?workflow_id=${encodeURIComponent(WORKFLOW_ID)}&limit=10000`);
+        state.domains = Array.isArray(payload.rows) ? payload.rows : [];
+        renderDomains();
+      }
+
+      async function loadWorkflow() {
+        const payload = await fetchJson(`/api/coord/workflow-config?workflow_id=${encodeURIComponent(WORKFLOW_ID)}`);
+        const workflow = payload.workflow && typeof payload.workflow === "object" ? payload.workflow : {};
+        const plugins = Array.isArray(workflow.plugins) ? workflow.plugins.filter((item) => item && typeof item === "object") : [];
+        state.plugins = plugins;
+        state.selectedPlugins = new Set(plugins.map((plugin) => pluginName(plugin)).filter(Boolean));
+        state.pluginOverrides = {};
+        renderPlugins();
+      }
+
+      function openConfigModal(pluginNameValue) {
+        const target = String(pluginNameValue || "").trim().toLowerCase();
+        if (!target) return;
+        const plugin = state.plugins.find((item) => pluginName(item) === target);
+        if (!plugin) return;
+        state.editingPlugin = target;
+        const params = state.pluginOverrides[target] || (plugin.parameters && typeof plugin.parameters === "object" ? plugin.parameters : {});
+        document.getElementById("configTitle").textContent = `Configure ${target}`;
+        document.getElementById("configTextarea").value = JSON.stringify(params, null, 2);
+        document.getElementById("configError").textContent = "";
+        document.getElementById("configBackdrop").style.display = "flex";
+      }
+      function closeConfigModal() {
+        document.getElementById("configBackdrop").style.display = "none";
+        state.editingPlugin = "";
+      }
+
+      async function generateTasks() {
+        const plugins = selectedPluginList();
+        if (!plugins.length) throw new Error("Select at least one workflow step.");
+        const domains = selectedDomainList();
+        if (!allDomainsSelected() && !domains.length) throw new Error("Select one or more domains, or choose ALL domains.");
+        const body = {
+          workflow_id: WORKFLOW_ID,
+          root_domains: allDomainsSelected() ? [] : domains,
+          plugins,
+          all_domains: allDomainsSelected(),
+          domain_limit: 10000,
+          plugin_parameter_overrides: state.pluginOverrides,
+          persist_parameter_overrides: true,
+          reload_workers: true,
+          reason: "workflow_interface_generate_tasks",
+        };
+        return fetchJson("/api/coord/workflow/run", { method: "POST", body: JSON.stringify(body) });
+      }
+
+      async function clearCurrentTasks() {
+        const plugins = selectedPluginList();
+        const domains = selectedDomainList();
+        if (!allDomainsSelected() && !domains.length) throw new Error("Select one or more domains, or choose ALL domains.");
+        const body = {
+          workflow_id: WORKFLOW_ID,
+          root_domains: allDomainsSelected() ? [] : domains,
+          plugins,
+          hard_delete: true,
+          stop_running_workers: false,
+        };
+        return fetchJson("/api/coord/workflow/clear-generated-tasks", { method: "POST", body: JSON.stringify(body) });
+      }
+
+      document.getElementById("refreshDomainsBtn").addEventListener("click", async () => {
+        try { setStatus("Refreshing domains..."); await loadDomains(); setStatus("Domain list refreshed."); } catch (err) { setStatus(err.message || err, true); }
+      });
+      document.getElementById("refreshWorkflowBtn").addEventListener("click", async () => {
+        try { setStatus("Refreshing workflow..."); await loadWorkflow(); setStatus("Workflow reloaded."); } catch (err) { setStatus(err.message || err, true); }
+      });
+      document.getElementById("domainSearch").addEventListener("input", renderDomains);
+      document.getElementById("domainStatusFilter").addEventListener("change", renderDomains);
+      document.getElementById("selectVisibleBtn").addEventListener("click", () => {
+        const search = String(document.getElementById("domainSearch").value || "").trim().toLowerCase();
+        const statusFilter = String(document.getElementById("domainStatusFilter").value || "").trim().toLowerCase();
+        state.domains.forEach((row) => {
+          const domain = String(row.root_domain || "");
+          if (!domain) return;
+          if (search && !domain.includes(search)) return;
+          if (statusFilter && String(row.status || "").toLowerCase() !== statusFilter) return;
+          state.selectedDomains.add(domain);
+        });
+        renderDomains();
+      });
+      document.getElementById("clearSelectedBtn").addEventListener("click", () => { state.selectedDomains.clear(); renderDomains(); });
+      document.getElementById("selectAllPluginsBtn").addEventListener("click", () => {
+        state.selectedPlugins = new Set(state.plugins.map((plugin) => pluginName(plugin)).filter(Boolean));
+        renderPlugins();
+      });
+      document.getElementById("clearPluginsBtn").addEventListener("click", () => { state.selectedPlugins.clear(); renderPlugins(); });
+      document.getElementById("generateBtn").addEventListener("click", async () => {
+        try {
+          setStatus("Generating workflow tasks...");
+          const payload = await generateTasks();
+          const scheduled = Number((payload.counts || {}).scheduled || 0);
+          setStatus(`Generated workflow tasks. Scheduled: ${scheduled}. Domains: ${payload.domains_count || 0}.`);
+          await loadDomains();
+        } catch (err) {
+          setStatus(err.message || err, true);
+        }
+      });
+      document.getElementById("clearTasksBtn").addEventListener("click", async () => {
+        try {
+          setStatus("Clearing workflow tasks...");
+          const payload = await clearCurrentTasks();
+          const affected = Number((payload.result || {}).affected_rows || 0);
+          const running = Number(payload.running_tasks_remaining || 0);
+          if (running > 0) {
+            const workers = Array.isArray(payload.running_workers) ? payload.running_workers.join(", ") : "";
+            setStatus(`Cleared ${affected} task rows. ${running} running tasks remain. Stop workers: ${workers}`, true);
+          } else {
+            setStatus(`Cleared ${affected} task rows.`);
+          }
+          await loadDomains();
+        } catch (err) {
+          setStatus(err.message || err, true);
+        }
+      });
+
+      document.getElementById("saveConfigBtn").addEventListener("click", () => {
+        const plugin = state.editingPlugin;
+        if (!plugin) return;
+        const errorEl = document.getElementById("configError");
+        try {
+          const parsed = JSON.parse(String(document.getElementById("configTextarea").value || "{}"));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("Parameters must be a JSON object.");
+          }
+          state.pluginOverrides[plugin] = parsed;
+          errorEl.textContent = "Saved.";
+          closeConfigModal();
+        } catch (err) {
+          errorEl.textContent = String(err.message || err);
+        }
+      });
+      document.getElementById("cancelConfigBtn").addEventListener("click", closeConfigModal);
+      document.getElementById("configBackdrop").addEventListener("click", (event) => {
+        if (event.target === document.getElementById("configBackdrop")) closeConfigModal();
+      });
+
+      const cookieToken = document.cookie.split(";").map((x) => x.trim()).find((x) => x.startsWith("nightmare_coord_token="));
+      if (cookieToken) document.getElementById("token").value = decodeURIComponent(cookieToken.split("=", 2)[1] || "");
+      if (window.localStorage && !document.getElementById("token").value) {
+        const token = String(window.localStorage.getItem("nightmare_coord_token") || "").trim();
+        if (token) document.getElementById("token").value = token;
+      }
+      document.getElementById("token").addEventListener("change", () => {
+        const token = String(document.getElementById("token").value || "").trim();
+        try { window.localStorage.setItem("nightmare_coord_token", token); } catch (_) {}
+      });
+
+      (async () => {
+        try {
+          setStatus("Loading workflow interface...");
+          await Promise.all([loadWorkflow(), loadDomains()]);
+          setStatus("Ready.");
+        } catch (err) {
+          setStatus(err.message || err, true);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>
