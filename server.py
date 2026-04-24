@@ -6687,75 +6687,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             counts = {"scheduled": 0, "already_pending": 0, "already_running": 0, "already_completed": 0, "failed": 0, "other": 0}
             retry_counts = {"scheduled": 0, "already_pending": 0, "already_running": 0, "already_completed": 0, "failed": 0, "other": 0}
             requeue_attempted = False
-            for root_domain in root_domains:
-                for plugin in runnable_plugins:
-                    plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
-                    if not plugin_name:
-                        continue
-                    resume_mode = str(plugin.get("resume_mode") or "exact").strip().lower() or "exact"
-                    max_attempts = max(0, _safe_int(plugin.get("max_attempts", 0), 0))
-                    result = self.coordinator_store.schedule_stage(
-                        root_domain,
-                        plugin_name,
-                        workflow_id=workflow_id,
-                        reason=enqueue_reason,
-                        allow_retry_failed=allow_retry_failed,
-                        max_attempts=max_attempts,
-                        checkpoint={"schema_version": 1, "resume_mode": resume_mode, "state": "queued"},
-                        progress={"status": "queued", "plugin_name": plugin_name},
-                        progress_artifact_type=f"workflow_progress_{plugin_name}",
-                        resume_mode=resume_mode,
-                    )
-                    reason = str(result.get("reason") or "")
-                    if bool(result.get("scheduled")):
-                        counts["scheduled"] += 1
-                    elif reason == "already_pending":
-                        counts["already_pending"] += 1
-                    elif reason == "already_running":
-                        counts["already_running"] += 1
-                    elif reason == "already_completed":
-                        counts["already_completed"] += 1
-                    elif reason.startswith("unsupported_status_") or reason in {"retry_not_allowed", "max_attempts_reached"}:
-                        counts["failed"] += 1
-                    else:
-                        counts["other"] += 1
-                    rows.append(
-                        {
-                            "root_domain": root_domain,
-                            "plugin_name": plugin_name,
-                            "scheduled": bool(result.get("scheduled")),
-                            "reason": reason,
-                            "status": str(result.get("status") or ""),
-                        }
-                    )
-                self.coordinator_store.record_system_event(
-                "workflow.run.enqueued",
-                f"workflow:{workflow_id}",
-                {
-                    "source": "server.api.workflow_run",
-                    "workflow_id": workflow_id,
-                    "domains_count": len(root_domains),
-                    "starter_plugins": [
-                        str(item.get("name") or item.get("plugin_name") or item.get("stage") or "").strip().lower()
-                        for item in starter_plugins
-                    ],
-                    "counts": counts,
-                    "selected_plugins": sorted(selected_plugins),
-                    "saved_parameter_overrides": saved_parameter_overrides,
-                },
-            )
-            persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
-                workflow_id=workflow_id,
-                root_domains=root_domains,
-                plugins=runnable_plugin_names,
-            )
-            persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
-                workflow_id=workflow_id,
-                root_domains=root_domains,
-                plugins=[],
-            )
-            if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
-                requeue_attempted = True
+            with self.coordinator_store.workflow_stage_task_scope(workflow_id):
                 for root_domain in root_domains:
                     for plugin in runnable_plugins:
                         plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
@@ -6763,11 +6695,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             continue
                         resume_mode = str(plugin.get("resume_mode") or "exact").strip().lower() or "exact"
                         max_attempts = max(0, _safe_int(plugin.get("max_attempts", 0), 0))
-                        retry_result = self.coordinator_store.schedule_stage(
+                        result = self.coordinator_store.schedule_stage(
                             root_domain,
                             plugin_name,
                             workflow_id=workflow_id,
-                            reason=f"{enqueue_reason}:retry_after_zero_persist",
+                            reason=enqueue_reason,
                             allow_retry_failed=allow_retry_failed,
                             max_attempts=max_attempts,
                             checkpoint={"schema_version": 1, "resume_mode": resume_mode, "state": "queued"},
@@ -6775,19 +6707,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             progress_artifact_type=f"workflow_progress_{plugin_name}",
                             resume_mode=resume_mode,
                         )
-                        retry_reason = str(retry_result.get("reason") or "")
-                        if bool(retry_result.get("scheduled")):
-                            retry_counts["scheduled"] += 1
-                        elif retry_reason == "already_pending":
-                            retry_counts["already_pending"] += 1
-                        elif retry_reason == "already_running":
-                            retry_counts["already_running"] += 1
-                        elif retry_reason == "already_completed":
-                            retry_counts["already_completed"] += 1
-                        elif retry_reason.startswith("unsupported_status_") or retry_reason in {"retry_not_allowed", "max_attempts_reached"}:
-                            retry_counts["failed"] += 1
+                        reason = str(result.get("reason") or "")
+                        if bool(result.get("scheduled")):
+                            counts["scheduled"] += 1
+                        elif reason == "already_pending":
+                            counts["already_pending"] += 1
+                        elif reason == "already_running":
+                            counts["already_running"] += 1
+                        elif reason == "already_completed":
+                            counts["already_completed"] += 1
+                        elif reason.startswith("unsupported_status_") or reason in {"retry_not_allowed", "max_attempts_reached"}:
+                            counts["failed"] += 1
                         else:
-                            retry_counts["other"] += 1
+                            counts["other"] += 1
+                        rows.append(
+                            {
+                                "root_domain": root_domain,
+                                "plugin_name": plugin_name,
+                                "scheduled": bool(result.get("scheduled")),
+                                "reason": reason,
+                                "status": str(result.get("status") or ""),
+                            }
+                        )
+                    self.coordinator_store.record_system_event(
+                    "workflow.run.enqueued",
+                    f"workflow:{workflow_id}",
+                    {
+                        "source": "server.api.workflow_run",
+                        "workflow_id": workflow_id,
+                        "domains_count": len(root_domains),
+                        "starter_plugins": [
+                            str(item.get("name") or item.get("plugin_name") or item.get("stage") or "").strip().lower()
+                            for item in starter_plugins
+                        ],
+                        "counts": counts,
+                        "selected_plugins": sorted(selected_plugins),
+                        "saved_parameter_overrides": saved_parameter_overrides,
+                    },
+                )
                 persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
                     workflow_id=workflow_id,
                     root_domains=root_domains,
@@ -6798,6 +6755,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     root_domains=root_domains,
                     plugins=[],
                 )
+                if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
+                    requeue_attempted = True
+                    for root_domain in root_domains:
+                        for plugin in runnable_plugins:
+                            plugin_name = str(plugin.get("name") or plugin.get("plugin_name") or plugin.get("stage") or "").strip().lower()
+                            if not plugin_name:
+                                continue
+                            resume_mode = str(plugin.get("resume_mode") or "exact").strip().lower() or "exact"
+                            max_attempts = max(0, _safe_int(plugin.get("max_attempts", 0), 0))
+                            retry_result = self.coordinator_store.schedule_stage(
+                                root_domain,
+                                plugin_name,
+                                workflow_id=workflow_id,
+                                reason=f"{enqueue_reason}:retry_after_zero_persist",
+                                allow_retry_failed=allow_retry_failed,
+                                max_attempts=max_attempts,
+                                checkpoint={"schema_version": 1, "resume_mode": resume_mode, "state": "queued"},
+                                progress={"status": "queued", "plugin_name": plugin_name},
+                                progress_artifact_type=f"workflow_progress_{plugin_name}",
+                                resume_mode=resume_mode,
+                            )
+                            retry_reason = str(retry_result.get("reason") or "")
+                            if bool(retry_result.get("scheduled")):
+                                retry_counts["scheduled"] += 1
+                            elif retry_reason == "already_pending":
+                                retry_counts["already_pending"] += 1
+                            elif retry_reason == "already_running":
+                                retry_counts["already_running"] += 1
+                            elif retry_reason == "already_completed":
+                                retry_counts["already_completed"] += 1
+                            elif retry_reason.startswith("unsupported_status_") or retry_reason in {"retry_not_allowed", "max_attempts_reached"}:
+                                retry_counts["failed"] += 1
+                            else:
+                                retry_counts["other"] += 1
+                    persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
+                        workflow_id=workflow_id,
+                        root_domains=root_domains,
+                        plugins=runnable_plugin_names,
+                    )
+                    persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+                        workflow_id=workflow_id,
+                        root_domains=root_domains,
+                        plugins=[],
+                    )
             if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
                 self._write_json(
                     {
@@ -6809,6 +6810,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "requeue_counts": retry_counts,
                         "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),
                         "persisted_stage_task_rows_root_workflow": int(persisted_stage_task_rows),
+                        "recent_stage_task_events": self.coordinator_store.recent_stage_task_events(workflow_id=workflow_id, limit=20),
                     },
                     status=500,
                 )

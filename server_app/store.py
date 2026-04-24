@@ -11,6 +11,7 @@ import gzip
 import os
 import zipfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -365,6 +366,26 @@ class CoordinatorStore:
 
     def _connect(self):
         return self._pool.connection()
+
+    def _lock_stage_task_scope_cur(self, cur: Any, workflow_id: str) -> None:
+        widf = str(workflow_id or "").strip().lower() or "default"
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s));",
+            (f"coordinator_stage_tasks:{widf}",),
+        )
+
+    @contextmanager
+    def workflow_stage_task_scope(self, workflow_id: str):
+        """Hold the workflow stage-task advisory lock for a multi-call operation."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                self._lock_stage_task_scope_cur(cur, workflow_id)
+            try:
+                yield
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def close(self) -> None:
         try:
@@ -5315,6 +5336,46 @@ WHERE workflow_id = %s
             "updated_at_utc": _iso_now(),
         }
 
+    def recent_stage_task_events(
+        self,
+        *,
+        workflow_id: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        widf = str(workflow_id or "").strip().lower()
+        requested = max(1, min(100, int(limit or 20)))
+        filters = ["event_type IN ('workflow.task.enqueued', 'workflow.task.reset', 'workflow.task.control')"]
+        params: list[Any] = []
+        if widf:
+            filters.append("(aggregate_key LIKE %s OR LOWER(payload_json::text) LIKE %s)")
+            params.extend([f"%:{widf}:%", f"%{widf}%"])
+        sql = f"""
+SELECT event_id, created_at_utc, event_type, aggregate_key, source, message, payload_json
+FROM coordinator_recent_events
+WHERE {' AND '.join(filters)}
+ORDER BY created_at_utc DESC, event_id DESC
+LIMIT %s;
+"""
+        events: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, [*params, requested])
+                rows = cur.fetchall()
+            conn.commit()
+        for row in rows:
+            events.append(
+                {
+                    "event_id": str(row[0] or ""),
+                    "created_at": row[1].isoformat() if row[1] else None,
+                    "event_type": str(row[2] or ""),
+                    "aggregate_key": str(row[3] or ""),
+                    "source": str(row[4] or ""),
+                    "message": str(row[5] or ""),
+                    "payload": row[6] if isinstance(row[6], dict) else {},
+                }
+            )
+        return events
+
     def reset_stage_tasks(
         self,
         *,
@@ -5387,6 +5448,7 @@ WHERE {where_clause};
 """
         with self._connect() as conn:
             with conn.cursor() as cur:
+                self._lock_stage_task_scope_cur(cur, widf or "default")
                 cur.execute(sql, tuple(params))
                 affected = int(cur.rowcount or 0)
             conn.commit()
