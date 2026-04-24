@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -11,6 +12,11 @@ class _StoreRunOk:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
 
+    @contextmanager
+    def workflow_stage_task_scope(self, workflow_id: str):
+        _ = workflow_id
+        yield
+
     def schedule_stage(self, root_domain: str, plugin_name: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append((str(root_domain), str(plugin_name), str(kwargs.get("workflow_id") or "")))
         return {"ok": True, "scheduled": True, "reason": "inserted_ready", "status": "ready"}
@@ -21,6 +27,13 @@ class _StoreRunOk:
     def count_stage_tasks(self, *, workflow_id: str = "", root_domains: list[str] | None = None, plugins: list[str] | None = None) -> int:
         _ = (workflow_id, root_domains, plugins)
         return len(self.calls)
+
+    def record_system_event(self, event_type: str, event_key: str, payload: dict[str, Any]) -> None:
+        _ = (event_type, event_key, payload)
+
+    def recent_stage_task_events(self, *, workflow_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        _ = (workflow_id, limit)
+        return []
 
 
 class _StoreRunMismatch(_StoreRunOk):

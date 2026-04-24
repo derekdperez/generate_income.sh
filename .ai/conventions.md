@@ -17,6 +17,7 @@
 
 - Use normalized lowercase identifiers for:
   `workflow_id`, `root_domain`, `stage/plugin_name`.
+- DB-backed workflow runs require a non-empty `root_domain`; do not treat run creation as successful unless stage-task row persistence is verified.
 - Stage task statuses in queue logic:
   `pending`, `ready`, `running`, `paused`, `completed`, `failed`.
 - `pending` means blocked on prerequisites; `ready` is claimable.

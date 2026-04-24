@@ -19,3 +19,9 @@
 
 - `.ai` memory set refreshed:
   outdated conventions/architecture notes replaced with current architecture and workflow/runtime behavior.
+
+- Workflow task visibility/persistence hardening:
+  `workflows.html` now pulls workflow snapshot with `cache_mode=refresh` (not `prefer`), `/api/workflow-runs` now seeds built-ins before run creation, and `create_workflow_run` now requires `root_domain` and raises if stage-task row persistence is zero.
+
+- Workflow-run persistence guard tests added:
+  regression tests now cover missing `root_domain`, zero persisted-stage-row failure, and persisted row count returned in the run result payload.
