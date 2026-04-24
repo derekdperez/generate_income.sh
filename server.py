@@ -439,17 +439,21 @@ def _enrich_worker_snapshot_with_live_details(
             file_log_info = _latest_worker_log_line_from_links(worker.get("logs") if isinstance(worker.get("logs"), list) else [])
             last_log_message = str(file_log_info.get("message") or "").strip()
             last_log_message_at_utc = str(file_log_info.get("event_time_utc") or "").strip()
+        if not last_log_message:
+            last_log_message = str(worker.get("last_event_emitted") or "").strip()
+            last_log_message_at_utc = str(worker.get("last_event_emitted_at_utc") or "").strip()
         worker["last_log_message"] = last_log_message
         worker["last_log_message_at_utc"] = last_log_message_at_utc
         if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
             if last_log_message:
                 worker["last_action_performed"] = last_log_message
-        worker["last_run_time_at_utc"] = _max_iso_datetime(
-            worker.get("last_run_time_at_utc"),
+        worker["last_seen_time_at_utc"] = _max_iso_datetime(
+            worker.get("last_seen_time_at_utc"),
             worker.get("last_heartbeat_at_utc"),
             worker.get("last_event_emitted_at_utc"),
             worker.get("last_log_message_at_utc"),
         )
+        worker["last_run_time_at_utc"] = str(worker.get("last_seen_time_at_utc") or "")
     return snapshot
 
 

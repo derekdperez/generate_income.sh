@@ -88,6 +88,30 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _max_iso_datetime(*values: Any) -> str:
+    latest: datetime | None = None
+    for item in values:
+        parsed = _parse_iso_datetime(item)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest.isoformat() if latest is not None else ""
+
+
 def _stream_file_chunks(path: str | Path, *, chunk_size: int = 1024 * 1024):
     with Path(path).open("rb") as handle:
         while True:
@@ -3294,34 +3318,81 @@ ORDER BY w.worker_id ASC;
         for worker_id in normalized_ids:
             for alias in self._worker_id_aliases(worker_id):
                 alias_to_worker.setdefault(alias.lower(), worker_id)
-        stream = getattr(self, "_event_stream", None)
-        if stream is None:
-            return out
+        sql = """
+SELECT created_at_utc, event_type, aggregate_key, message, payload_json
+FROM coordinator_recent_events
+ORDER BY created_at_utc DESC, event_id DESC
+LIMIT %s;
+"""
+        rows: list[Any] = []
         try:
-            rows = stream.read(limit=max(1000, int(scan_limit or 5000)), reverse=True)
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (max(1000, int(scan_limit or 5000)),))
+                    rows = cur.fetchall()
+                conn.commit()
         except Exception:
-            return out
-        for item in rows:
+            rows = []
+
+        def _ingest_item(item: dict[str, Any]) -> None:
             candidate = self._worker_id_from_event_row(item)
             if not candidate:
-                continue
+                return
             worker_id = alias_to_worker.get(str(candidate).strip().lower(), "")
             if not worker_id:
-                continue
+                return
             payload = item.get("payload")
             payload_dict = payload if isinstance(payload, dict) else {}
-            message = str(payload_dict.get("message") or "").strip() or str(item.get("event_type") or "").strip()
+            message = (
+                str(payload_dict.get("message") or "").strip()
+                or str(item.get("message") or "").strip()
+                or str(item.get("event_type") or "").strip()
+            )
             current_time = str(item.get("created_at") or "").strip()
             existing = out.get(worker_id)
             if existing is not None and str(existing.get("last_event_emitted_at_utc") or "") >= current_time:
-                continue
+                return
             out[worker_id] = {
                 "last_event_emitted": message,
                 "last_event_type": str(item.get("event_type") or "").strip(),
                 "last_event_emitted_at_utc": current_time,
             }
+
+        for row in rows:
+            item = {
+                "created_at": row[0].isoformat() if row[0] else "",
+                "event_type": str(row[1] or "").strip(),
+                "aggregate_key": str(row[2] or "").strip(),
+                "message": str(row[3] or "").strip(),
+                "payload": row[4] if isinstance(row[4], dict) else {},
+            }
+            _ingest_item(item)
             if len(out) >= len(normalized_ids):
-                break
+                return out
+
+        # Backward-compatible fallback for tests and legacy in-memory event streams.
+        if len(out) < len(normalized_ids):
+            event_stream = getattr(self, "_event_stream", None)
+            if event_stream is not None and hasattr(event_stream, "read"):
+                try:
+                    legacy_rows = event_stream.read(limit=max(1000, int(scan_limit or 5000)), reverse=True)
+                except TypeError:
+                    legacy_rows = event_stream.read(limit=max(1000, int(scan_limit or 5000)))
+                except Exception:
+                    legacy_rows = []
+                for raw in legacy_rows if isinstance(legacy_rows, list) else []:
+                    if not isinstance(raw, dict):
+                        continue
+                    item = {
+                        "created_at": str(raw.get("created_at") or raw.get("created_at_utc") or "").strip(),
+                        "event_type": str(raw.get("event_type") or "").strip(),
+                        "aggregate_key": str(raw.get("aggregate_key") or "").strip(),
+                        "message": str(raw.get("message") or "").strip(),
+                        "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
+                    }
+                    _ingest_item(item)
+                    if len(out) >= len(normalized_ids):
+                        return out
         return out
 
     def worker_control_snapshot(
@@ -3348,7 +3419,7 @@ target_agg AS (
             OR t.heartbeat_at_utc >= (SELECT recent_cutoff FROM limits)
           )
       ) AS urls_scanned_session,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN t.status = 'running' THEN COALESCE(t.start_url, t.root_domain) ELSE NULL END), NULL) AS current_targets
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN t.status = 'running' THEN COALESCE(t.root_domain, t.start_url) ELSE NULL END), NULL) AS current_targets
     FROM coordinator_targets t
     CROSS JOIN limits l
     WHERE t.worker_id IS NOT NULL
@@ -3375,6 +3446,29 @@ stage_agg AS (
         OR (s.completed_at_utc IS NOT NULL AND s.completed_at_utc >= l.recent_cutoff)
       )
     GROUP BY s.worker_id
+),
+stage_current AS (
+    SELECT DISTINCT ON (s.worker_id)
+      s.worker_id,
+      s.workflow_id,
+      s.stage,
+      s.root_domain,
+      s.status,
+      COALESCE(s.heartbeat_at_utc, s.updated_at_utc, s.started_at_utc, s.completed_at_utc) AS current_stage_activity_at_utc
+    FROM coordinator_stage_tasks s
+    CROSS JOIN limits l
+    WHERE s.worker_id IS NOT NULL
+      AND s.worker_id <> ''
+      AND (
+        s.status = 'running'
+        OR (s.heartbeat_at_utc IS NOT NULL AND s.heartbeat_at_utc >= l.recent_cutoff)
+        OR (s.updated_at_utc IS NOT NULL AND s.updated_at_utc >= l.recent_cutoff)
+        OR (s.completed_at_utc IS NOT NULL AND s.completed_at_utc >= l.recent_cutoff)
+      )
+    ORDER BY
+      s.worker_id ASC,
+      CASE WHEN s.status = 'running' THEN 0 ELSE 1 END ASC,
+      COALESCE(s.heartbeat_at_utc, s.updated_at_utc, s.started_at_utc, s.completed_at_utc) DESC NULLS LAST
 ),
 commands AS (
     SELECT
@@ -3406,6 +3500,8 @@ worker_ids AS (
     UNION
     SELECT worker_id FROM stage_agg
     UNION
+    SELECT worker_id FROM stage_current
+    UNION
     SELECT worker_id FROM commands
     UNION
     SELECT worker_id FROM presence_recent
@@ -3426,10 +3522,16 @@ SELECT
   COALESCE(t.urls_scanned_session, 0) AS urls_scanned_session,
   COALESCE(t.current_targets, ARRAY[]::text[]) AS current_targets,
   COALESCE(c.queued_commands, 0) AS queued_commands,
-  COALESCE(p.last_activity, 'unknown') AS last_activity
+  COALESCE(p.last_activity, 'unknown') AS last_activity,
+  COALESCE(sc.workflow_id, '') AS current_workflow_id,
+  COALESCE(sc.stage, '') AS current_stage,
+  COALESCE(sc.root_domain, '') AS current_stage_root_domain,
+  COALESCE(sc.status, '') AS current_stage_status,
+  sc.current_stage_activity_at_utc AS current_stage_activity_at_utc
 FROM worker_ids w
 LEFT JOIN target_agg t ON t.worker_id = w.worker_id
 LEFT JOIN stage_agg s ON s.worker_id = w.worker_id
+LEFT JOIN stage_current sc ON sc.worker_id = w.worker_id
 LEFT JOIN commands c ON c.worker_id = w.worker_id
 LEFT JOIN presence_recent p ON p.worker_id = w.worker_id
 ORDER BY w.worker_id ASC;
@@ -3444,10 +3546,17 @@ ORDER BY w.worker_id ASC;
         online_count = 0
         status_counts = {"running": 0, "paused": 0, "stopped": 0, "errored": 0, "idle": 0}
         for row in rows:
-            worker_id = str(row[0] or "").strip()
+            row_values = row if isinstance(row, (list, tuple)) else ()
+
+            def _row_value(index: int, default: Any = None) -> Any:
+                if index < 0 or index >= len(row_values):
+                    return default
+                return row_values[index]
+
+            worker_id = str(_row_value(0, "") or "").strip()
             if not worker_id:
                 continue
-            last_heartbeat = row[1]
+            last_heartbeat = _row_value(1)
             seconds_since: Optional[int] = None
             last_heartbeat_iso: Optional[str] = None
             if last_heartbeat is not None:
@@ -3456,11 +3565,18 @@ ORDER BY w.worker_id ASC;
             is_online = seconds_since is not None and seconds_since <= stale_after
             if is_online:
                 online_count += 1
-            current_targets_raw = row[5] if isinstance(row[5], list) else []
-            last_activity = str(row[7] or "unknown")
+            current_targets_value = _row_value(5, [])
+            current_targets_raw = current_targets_value if isinstance(current_targets_value, list) else []
+            last_activity = str(_row_value(7, "unknown") or "unknown")
+            current_workflow_id = str(_row_value(8, "") or "").strip().lower()
+            current_stage = str(_row_value(9, "") or "").strip().lower()
+            current_stage_root_domain = str(_row_value(10, "") or "").strip().lower()
+            current_stage_status = str(_row_value(11, "") or "").strip().lower()
+            stage_activity_value = _row_value(12)
+            current_stage_activity_at_utc = stage_activity_value.isoformat() if stage_activity_value else ""
             status = self._derive_worker_status(
-                running_targets=int(row[2] or 0),
-                running_stage_tasks=int(row[3] or 0),
+                running_targets=int(_row_value(2, 0) or 0),
+                running_stage_tasks=int(_row_value(3, 0) or 0),
                 last_activity=last_activity,
                 is_online=is_online,
             )
@@ -3468,6 +3584,12 @@ ORDER BY w.worker_id ASC;
                 continue
             if status in status_counts:
                 status_counts[status] += 1
+            current_targets = [str(item) for item in current_targets_raw if str(item or "").strip()]
+            if current_stage_root_domain and current_stage_root_domain not in current_targets:
+                current_targets.insert(0, current_stage_root_domain)
+            current_action = ""
+            if current_workflow_id or current_stage:
+                current_action = f"Current Workflow: {current_workflow_id or 'default'}\nCurrent Plugin: {current_stage or 'unknown'}"
             workers.append(
                 {
                     "worker_id": worker_id,
@@ -3476,16 +3598,22 @@ ORDER BY w.worker_id ASC;
                     "last_action_performed": self._normalize_last_action_label(last_activity),
                     "last_heartbeat_at_utc": last_heartbeat_iso,
                     "seconds_since_heartbeat": seconds_since,
-                    "running_targets": int(row[2] or 0),
-                    "running_stage_tasks": int(row[3] or 0),
-                    "urls_scanned_session": int(row[4] or 0),
-                    "current_targets": [str(item) for item in current_targets_raw if str(item or "").strip()],
-                    "queued_commands": int(row[6] or 0),
+                    "running_targets": int(_row_value(2, 0) or 0),
+                    "running_stage_tasks": int(_row_value(3, 0) or 0),
+                    "urls_scanned_session": int(_row_value(4, 0) or 0),
+                    "current_targets": current_targets,
+                    "queued_commands": int(_row_value(6, 0) or 0),
+                    "current_workflow_id": current_workflow_id or "default",
+                    "current_plugin_name": current_stage,
+                    "current_stage_status": current_stage_status,
+                    "current_stage_activity_at_utc": current_stage_activity_at_utc,
+                    "current_action": current_action,
                     "last_event_emitted": "",
                     "last_event_type": "",
                     "last_event_emitted_at_utc": "",
                     "last_log_message": "",
                     "last_log_message_at_utc": "",
+                    "last_seen_time_at_utc": last_heartbeat_iso or "",
                     "last_run_time_at_utc": last_heartbeat_iso or "",
                 }
             )
@@ -3498,8 +3626,13 @@ ORDER BY w.worker_id ASC;
                 worker["last_event_emitted_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
                 if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
                     worker["last_action_performed"] = str(event_info.get("last_event_emitted") or "")
-                if str(event_info.get("last_event_emitted_at_utc") or "").strip():
-                    worker["last_run_time_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
+                worker["last_seen_time_at_utc"] = _max_iso_datetime(
+                    worker.get("last_seen_time_at_utc"),
+                    worker.get("last_heartbeat_at_utc"),
+                    worker.get("current_stage_activity_at_utc"),
+                    worker.get("last_event_emitted_at_utc"),
+                )
+                worker["last_run_time_at_utc"] = str(worker.get("last_seen_time_at_utc") or "")
                 continue
             fallback_activity = self._normalize_last_action_label(str(worker.get("last_activity") or "").strip())
             fallback_time = str(worker.get("last_heartbeat_at_utc") or "").strip()
@@ -3507,6 +3640,13 @@ ORDER BY w.worker_id ASC;
                 worker["last_event_emitted"] = fallback_activity
                 worker["last_event_type"] = "worker.presence"
                 worker["last_event_emitted_at_utc"] = fallback_time
+            worker["last_seen_time_at_utc"] = _max_iso_datetime(
+                worker.get("last_seen_time_at_utc"),
+                worker.get("last_heartbeat_at_utc"),
+                worker.get("current_stage_activity_at_utc"),
+                worker.get("last_event_emitted_at_utc"),
+            )
+            worker["last_run_time_at_utc"] = str(worker.get("last_seen_time_at_utc") or "")
         total = len(workers)
         return {
             "generated_at_utc": now_utc.isoformat(),

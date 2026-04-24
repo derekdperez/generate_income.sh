@@ -53,8 +53,8 @@
           <th class="sortable" data-sort="worker_id">Worker <span class="sort-ind" id="sort_worker_id"></span></th>
           <th class="sortable" data-sort="status">Status <span class="sort-ind" id="sort_status"></span></th>
           <th class="sortable" data-sort="current_targets">Current Targets <span class="sort-ind" id="sort_current_targets"></span></th>
-          <th class="sortable" data-sort="urls_scanned_session">URLs Scanned (session) <span class="sort-ind" id="sort_urls_scanned_session"></span></th>
-          <th class="sortable" data-sort="last_run_time_at_utc">Last Run Time (EST) <span class="sort-ind" id="sort_last_run_time_at_utc"></span></th>
+          <th class="sortable" data-sort="current_action">Current Action <span class="sort-ind" id="sort_current_action"></span></th>
+          <th class="sortable" data-sort="last_seen_time_at_utc">Last Seen Time (EST) <span class="sort-ind" id="sort_last_seen_time_at_utc"></span></th>
           <th class="sortable" data-sort="last_action_performed">Last Action Performed <span class="sort-ind" id="sort_last_action_performed"></span></th>
           <th class="sortable" data-sort="last_log_message">Last Log Message <span class="sort-ind" id="sort_last_log_message"></span></th>
           <th class="sortable" data-sort="last_event_emitted">Last Event Emitted <span class="sort-ind" id="sort_last_event_emitted"></span></th>
@@ -67,8 +67,8 @@
           <th><input id="filter_worker_id" class="col-filter" type="text" placeholder="Filter worker"></th>
           <th><input id="filter_status" class="col-filter" type="text" placeholder="Filter status"></th>
           <th><input id="filter_current_targets" class="col-filter" type="text" placeholder="Filter targets"></th>
-          <th><input id="filter_urls_scanned_session" class="col-filter" type="text" placeholder="Filter URLs"></th>
-          <th><input id="filter_last_run_time_at_utc" class="col-filter" type="text" placeholder="Filter time"></th>
+          <th><input id="filter_current_action" class="col-filter" type="text" placeholder="Filter action"></th>
+          <th><input id="filter_last_seen_time_at_utc" class="col-filter" type="text" placeholder="Filter time"></th>
           <th><input id="filter_last_action_performed" class="col-filter" type="text" placeholder="Filter action"></th>
           <th><input id="filter_last_log_message" class="col-filter" type="text" placeholder="Filter log"></th>
           <th><input id="filter_last_event_emitted" class="col-filter" type="text" placeholder="Filter event"></th>
@@ -224,8 +224,8 @@
       if (key === "worker_id") return _text(worker.worker_id).toLowerCase();
       if (key === "status") return `${_text(worker.status)} ${_text(worker.seconds_since_heartbeat)} ${_text(worker.last_activity)}`.toLowerCase();
       if (key === "current_targets") return _text(worker.current_targets || []).toLowerCase();
-      if (key === "urls_scanned_session") return _text(worker.urls_scanned_session).toLowerCase();
-      if (key === "last_run_time_at_utc") return `${_text(formatEstClock(worker.last_run_time_at_utc || ""))} ${_text(worker.last_run_time_at_utc || "")}`.toLowerCase();
+      if (key === "current_action") return `${_text(worker.current_workflow_id || "")} ${_text(worker.current_plugin_name || "")} ${_text(worker.current_action || "")}`.toLowerCase();
+      if (key === "last_seen_time_at_utc") return `${_text(formatEstClock(worker.last_seen_time_at_utc || ""))} ${_text(worker.last_seen_time_at_utc || "")}`.toLowerCase();
       if (key === "last_action_performed") return _text(worker.last_action_performed).toLowerCase();
       if (key === "last_log_message") return _text(worker.last_log_message).toLowerCase();
       if (key === "last_event_emitted") return _text(worker.last_event_emitted).toLowerCase();
@@ -238,8 +238,8 @@
         _workerFieldText(worker, "worker_id"),
         _workerFieldText(worker, "status"),
         _workerFieldText(worker, "current_targets"),
-        _workerFieldText(worker, "urls_scanned_session"),
-        _workerFieldText(worker, "last_run_time_at_utc"),
+        _workerFieldText(worker, "current_action"),
+        _workerFieldText(worker, "last_seen_time_at_utc"),
         _workerFieldText(worker, "last_action_performed"),
         _workerFieldText(worker, "last_log_message"),
         _workerFieldText(worker, "last_event_emitted"),
@@ -259,7 +259,7 @@
     }
     function _filterAndSortWorkers(rows) {
       const query = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
-      const filterKeys = ["worker_id", "status", "current_targets", "urls_scanned_session", "last_run_time_at_utc", "last_action_performed", "last_log_message", "last_event_emitted", "logs", "config"];
+      const filterKeys = ["worker_id", "status", "current_targets", "current_action", "last_seen_time_at_utc", "last_action_performed", "last_log_message", "last_event_emitted", "logs", "config"];
       const filters = {};
       for (const key of filterKeys) filters[key] = String((document.getElementById(`filter_${key}`)?.value || "")).trim().toLowerCase();
       let out = Array.isArray(rows) ? rows.slice() : [];
@@ -273,10 +273,8 @@
       });
       out.sort((left, right) => {
         let cmp = 0;
-        if (sortKey === "urls_scanned_session") {
-          cmp = _cmp(Number(left?.urls_scanned_session || 0), Number(right?.urls_scanned_session || 0));
-        } else if (sortKey === "last_run_time_at_utc") {
-          cmp = _cmp(Date.parse(String(left?.last_run_time_at_utc || "")) || 0, Date.parse(String(right?.last_run_time_at_utc || "")) || 0);
+        if (sortKey === "last_seen_time_at_utc") {
+          cmp = _cmp(Date.parse(String(left?.last_seen_time_at_utc || "")) || 0, Date.parse(String(right?.last_seen_time_at_utc || "")) || 0);
         } else if (sortKey === "status") {
           const rankCmp = _cmp(_statusSortRank(left?.status), _statusSortRank(right?.status));
           cmp = rankCmp !== 0 ? rankCmp : _cmp(_workerFieldText(left, "status"), _workerFieldText(right, "status"));
@@ -414,12 +412,17 @@
         const runningLike = new Set(["running", "idle"]);
         const statusClass = runningLike.has(String(w.status || "")) ? "online" : "stale";
         const targets = (w.current_targets || []).map(esc).join("<br>") || "<span class='muted'>none</span>";
+        const currentWorkflow = String(w.current_workflow_id || "").trim();
+        const currentPlugin = String(w.current_plugin_name || "").trim();
         const workerId = String(w.worker_id || "");
         const checked = selectedWorkerIds.has(workerId) ? " checked" : "";
-        const lastRunTime = formatEstClock(w.last_run_time_at_utc || "") || "<span class='muted'>—</span>";
+        const lastSeenTime = formatEstClock(w.last_seen_time_at_utc || "") || "<span class='muted'>-</span>";
         const lastAction = String(w.last_action_performed || "").trim();
         const lastLog = String(w.last_log_message || "").trim();
         const lastEvent = String(w.last_event_emitted || "").trim();
+        const currentActionCell = (currentWorkflow || currentPlugin)
+          ? `<span title="${esc(String(w.current_action || ""))}">Current Workflow: ${esc(currentWorkflow || "default")}<br>Current Plugin: ${esc(currentPlugin || "unknown")}</span>`
+          : "<span class='muted'>none</span>";
         const actionCell = lastAction ? `<span title="${esc(lastAction)}">${esc(clipText(lastAction, 96))}</span>` : "<span class='muted'>none</span>";
         const logCell = lastLog ? `<span title="${esc(lastLog)}">${esc(clipText(lastLog, 120))}</span>` : "<span class='muted'>none</span>";
         const eventCell = lastEvent ? `<span title="${esc(lastEvent)}">${esc(clipText(lastEvent, 120))}</span>` : "<span class='muted'>none</span>";
@@ -428,8 +431,8 @@
           <td>${esc(w.worker_id)}</td>
           <td><span class="${statusClass}">${esc(w.status)}</span><br><span class="muted">${esc(w.seconds_since_heartbeat)}s since heartbeat</span><br><span class="muted">${esc(w.last_activity || "")}</span></td>
           <td>${targets}</td>
-          <td>${esc(w.urls_scanned_session)}</td>
-          <td class="mono">${lastRunTime}</td>
+          <td>${currentActionCell}</td>
+          <td class="mono">${lastSeenTime}</td>
           <td>${actionCell}</td>
           <td>${logCell}</td>
           <td>${eventCell}</td>
@@ -511,7 +514,7 @@
         if (sortKey === nextKey) sortDir = sortDir === "asc" ? "desc" : "asc";
         else {
           sortKey = nextKey;
-          sortDir = nextKey === "urls_scanned_session" ? "desc" : "asc";
+          sortDir = nextKey === "last_seen_time_at_utc" ? "desc" : "asc";
         }
         render({ counts: (window.__lastCounts || {}), workers: allWorkers });
       });
@@ -527,3 +530,5 @@
   </script>
 </body>
 </html>
+
+

@@ -1545,3 +1545,40 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py server_app/fastapi_app.py server_app/store.py reset_tasks.py`
   - `pytest -q tests/test_refactor_modules.py -k "workflows_template_renders or worker_template_renders_database_link or database_template_renders or crawl_progress_template_renders or http_requests_template_renders"`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe"`
+
+## 2026-04-23
+
+- Fixed empty Events page behavior under token-protected coordinator APIs.
+  - `templates/events.html.j2` now includes coordinator token input, cookie hydration/persistence, and sends `Authorization: Bearer ...` on `/api/coord/events` fetches.
+  - Root cause: Events UI fetched without auth headers while server endpoint requires coordinator auth.
+
+- Fixed stale/empty worker event metadata in Worker Control.
+  - `CoordinatorStore._latest_worker_event_map(...)` now reads from Postgres `coordinator_recent_events` instead of the removed/unused in-memory event stream path.
+  - This restores `last_event_emitted` and `last_event_emitted_at_utc` updates per worker.
+
+- Improved worker snapshot live action fields for plugin workflow runtime.
+  - `CoordinatorStore.worker_control_snapshot(...)` now includes current running stage metadata per worker:
+    - `current_workflow_id`
+    - `current_plugin_name`
+    - `current_stage_status`
+    - `current_stage_activity_at_utc`
+    - `current_action` (workflow/plugin multiline text)
+  - `current_targets` now includes active stage root-domain context, so worker rows show the domain currently being processed even during stage-task execution.
+  - Added `last_seen_time_at_utc` rollup and kept backward-compatible `last_run_time_at_utc` alias.
+
+- Fixed Worker Control UI columns per operator request.
+  - Replaced `URLs Scanned (session)` with `Current Action`.
+  - Renamed `Last Run Time` to `Last Seen Time` and bound it to `last_seen_time_at_utc`.
+  - Kept `Current Targets`, `Last Event Emitted`, and `Last Log Message` wired to live backend values.
+
+- Added scheduler safety-net for domains already mid-workflow.
+  - `coordinator.py` workflow scheduler now performs startup + periodic idle full snapshot rescans (`get_workflow_snapshot`) and re-evaluates scheduling on each domain.
+  - Root cause addressed: queue-driven scheduler could miss domains that were already ready when scheduler started/restarted, leaving downstream spider tasks unscheduled.
+
+- Improved workflow config normalization compatibility.
+  - `_normalize_workflow_entry(...)` now accepts `preconditions` as equivalent to `prerequisites` and merges `inputs.artifacts_all/artifacts_any` into required artifact gates.
+
+- Validation:
+  - `python -m py_compile coordinator.py server.py server_app/store.py server_app/fastapi_app.py`
+  - `pytest -q tests/test_refactor_modules.py -k "worker_template_renders_database_link or workflows_template_renders or server_template_renders or crawl_progress_template_renders"`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe"`

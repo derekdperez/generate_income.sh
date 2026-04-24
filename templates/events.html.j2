@@ -45,6 +45,7 @@
   </div>
 
   <div class="toolbar">
+    <input id="token" type="password" placeholder="Coordinator token">
     <input id="searchInput" type="text" placeholder="Search type, worker, domain, payload, message">
     <input id="eventTypeInput" type="text" placeholder="event type prefix, e.g. worker.">
     <input id="sourceInput" type="text" placeholder="source, e.g. coordinator_store">
@@ -79,7 +80,37 @@
   </div>
 
   <script>
+    const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     const state = { paused: false, timer: null };
+
+    function readCookie(name) {
+      const needle = `${name}=`;
+      const cookies = String(document.cookie || "").split(";");
+      for (const part of cookies) {
+        const item = part.trim();
+        if (item.startsWith(needle)) return decodeURIComponent(item.slice(needle.length));
+      }
+      return "";
+    }
+    function writeCookie(name, value, days) {
+      const maxAge = Math.max(1, Number(days || 30)) * 24 * 60 * 60;
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; SameSite=Strict${secure}`;
+    }
+    function deleteCookie(name) {
+      const secure = location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    }
+    function authHeaders() {
+      const token = document.getElementById("token").value.trim();
+      if (token) writeCookie(TOKEN_COOKIE_NAME, token, 30);
+      else deleteCookie(TOKEN_COOKIE_NAME);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+    function hydrateTokenFromCookie() {
+      const token = readCookie(TOKEN_COOKIE_NAME);
+      if (token) document.getElementById("token").value = token;
+    }
 
     function setStatus(kind, text) {
       const pill = document.getElementById("statusPill");
@@ -165,7 +196,10 @@
       if (state.paused) return;
       setStatus("loading", "Refreshing…");
       try {
-        const response = await fetch(`/api/coord/events?${buildQuery()}`, { credentials: "same-origin" });
+        const response = await fetch(`/api/coord/events?${buildQuery()}`, {
+          credentials: "same-origin",
+          headers: authHeaders(),
+        });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         renderRows(payload.events || []);
@@ -195,7 +229,10 @@
       });
     });
     document.getElementById("limitSelect").addEventListener("change", loadEvents);
+    document.getElementById("token").addEventListener("change", loadEvents);
+    document.getElementById("token").addEventListener("blur", loadEvents);
 
+    hydrateTokenFromCookie();
     scheduleRefresh();
     loadEvents();
   </script>

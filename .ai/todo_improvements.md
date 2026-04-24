@@ -30,3 +30,6 @@
 - Move page-cache TTL/warm settings from hard-coded `server.py` constants into config (`server.json`) with sane defaults and guardrails.
 - Refactor HTTP request reporting away from artifact/session reconstruction-on-read into a normalized append-only table (or incremental projection) with indexed paging/count APIs; current on-demand reconstruction remains expensive at large domain counts.
 - Add explicit config switch for HTTP request cache warming (default off) and expose warm-queue metrics in `/api/coord/database-status` for easier production diagnostics.
+- Add focused integration tests that simulate scheduler restart with pre-existing domain readiness and verify downstream spider stages are enqueued without requiring new completion events.
+- Add worker-control API tests for `current_action`, `current_workflow_id`, `current_plugin_name`, `last_seen_time_at_utc`, and stage-domain-derived `current_targets`.
+- Add events page/UI tests for token-protected mode to catch unauthorized empty-table regressions.

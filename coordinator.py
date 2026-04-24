@@ -273,11 +273,20 @@ def _normalize_workflow_entry(raw: Any) -> dict[str, Any] | None:
     plugin_name = str(raw.get("plugin_name") or raw.get("stage") or raw.get("name") or name).strip().lower()
     if not plugin_name:
         return None
-    prereq = raw.get("prerequisites", {})
+    prereq = raw.get("prerequisites", raw.get("preconditions", {}))
     if not isinstance(prereq, dict):
         prereq = {}
-    artifacts_all = prereq.get("artifacts_all", raw.get("requires_artifacts_all", []))
-    artifacts_any = prereq.get("artifacts_any", raw.get("requires_artifacts_any", []))
+    inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
+    artifacts_all = (
+        list(prereq.get("artifacts_all", []) if isinstance(prereq.get("artifacts_all"), list) else [])
+        + list(raw.get("requires_artifacts_all", []) if isinstance(raw.get("requires_artifacts_all"), list) else [])
+        + list(inputs.get("artifacts_all", []) if isinstance(inputs.get("artifacts_all"), list) else [])
+    )
+    artifacts_any = (
+        list(prereq.get("artifacts_any", []) if isinstance(prereq.get("artifacts_any"), list) else [])
+        + list(raw.get("requires_artifacts_any", []) if isinstance(raw.get("requires_artifacts_any"), list) else [])
+        + list(inputs.get("artifacts_any", []) if isinstance(inputs.get("artifacts_any"), list) else [])
+    )
     requires_plugins_all = prereq.get("requires_plugins_all", prereq.get("plugins_all", []))
     requires_plugins_any = prereq.get("requires_plugins_any", prereq.get("plugins_any", []))
     target_statuses = prereq.get("target_statuses", raw.get("target_statuses", []))
@@ -869,9 +878,55 @@ class DistributedCoordinator:
                     )
         return scheduled_count
 
+    def _rescan_workflow_domains(self, *, worker_id: str, reason: str) -> int:
+        try:
+            snapshot = self.client.get_workflow_snapshot(limit=5000)
+        except Exception as exc:
+            self.logger.error(
+                "workflow_scheduler_snapshot_scan_failed",
+                worker_id=worker_id,
+                reason=reason,
+                error=str(exc),
+            )
+            self._record_worker_error(
+                worker_id=worker_id,
+                description="Workflow scheduler failed to scan workflow snapshot",
+                exception=exc,
+                metadata={"reason": reason, "source": "_rescan_workflow_domains"},
+                mark_errored=False,
+            )
+            return 0
+        domains = snapshot.get("domains") if isinstance(snapshot.get("domains"), list) else []
+        scheduled_total = 0
+        scanned_domains = 0
+        for domain_row in domains:
+            if not isinstance(domain_row, dict):
+                continue
+            scanned_domains += 1
+            try:
+                scheduled_total += int(self._schedule_domain_workflows(domain_row, worker_id=worker_id) or 0)
+            except Exception as exc:
+                self.logger.error(
+                    "workflow_scheduler_domain_scan_failed",
+                    worker_id=worker_id,
+                    reason=reason,
+                    root_domain=str(domain_row.get("root_domain") or "").strip().lower(),
+                    error=str(exc),
+                )
+        self.logger.info(
+            "workflow_scheduler_snapshot_scan_complete",
+            worker_id=worker_id,
+            reason=reason,
+            scanned_domains=scanned_domains,
+            tasks_scheduled=scheduled_total,
+        )
+        return scheduled_total
+
     def _workflow_scheduler_loop(self) -> None:
         worker_id = f"{self.worker_prefix}-scheduler-1"
         self._set_worker_state(worker_id, "running")
+        idle_rescan_interval_seconds = max(30.0, float(self.cfg.workflow_scheduler_interval_seconds))
+        last_idle_rescan_at = 0.0
         self.logger.info(
             "workflow_scheduler_loop_started",
             worker_id=worker_id,
@@ -881,6 +936,8 @@ class DistributedCoordinator:
             interval_seconds=float(self.cfg.workflow_scheduler_interval_seconds),
             mode="domain_event_queue",
         )
+        self._rescan_workflow_domains(worker_id=worker_id, reason="startup")
+        last_idle_rescan_at = time.time()
         while not self.stop_event.is_set():
             state = self._poll_worker_commands(worker_id)
             if state in {"paused", "stopped", "errored"}:
@@ -895,6 +952,10 @@ class DistributedCoordinator:
             try:
                 root_domain = self._workflow_reschedule_queue.get(timeout=float(self.cfg.workflow_scheduler_interval_seconds))
             except queue.Empty:
+                now_epoch = time.time()
+                if (now_epoch - last_idle_rescan_at) >= idle_rescan_interval_seconds:
+                    self._rescan_workflow_domains(worker_id=worker_id, reason="periodic_idle")
+                    last_idle_rescan_at = now_epoch
                 continue
             with self._workflow_reschedule_lock:
                 self._workflow_reschedule_pending.discard(root_domain)

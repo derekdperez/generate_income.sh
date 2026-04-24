@@ -426,3 +426,17 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - Large static master reports should be explicit routes (e.g., `/all-domains-report`) to avoid accidental heavy initial loads.
 - Reset API parity convention:
   - Both server runtimes (`server.py` and `server_app/fastapi_app.py`) should expose the same bulk-reset surface (`stage/reset`, `targets/reset`, `tasks/reset`) and accept status aliases (`errored` -> `failed`).
+
+- Events UI auth convention:
+  - Pages querying protected `/api/coord/*` endpoints must always include coordinator token header support (token input + cookie hydration/persistence) and not rely on anonymous fetch defaults.
+
+- Worker telemetry convention:
+  - Worker-control snapshots should derive `last_event_emitted` from `coordinator_recent_events` (database-backed event stream), not deprecated in-memory event readers.
+  - For plugin-runtime workers, expose active workflow/plugin fields separately from historical counters so operators can see current action in real time.
+
+- Scheduler robustness convention:
+  - Queue-driven workflow schedulers must include startup and periodic full-state rescans to recover from missed/older readiness transitions after restarts.
+
+- Workflow definition compatibility convention:
+  - Treat `preconditions` and `prerequisites` as equivalent keys in workflow JSON normalization.
+  - `inputs.artifacts_all/artifacts_any` should contribute to scheduling gates alongside `prerequisites.artifacts_*`.
