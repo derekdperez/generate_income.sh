@@ -1498,3 +1498,15 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server_app/store.py tests/test_reporting_and_store_helpers.py`
   - `pytest -q tests/test_runtime_unit.py -k "test_read_json_dict_handles_invalid_content"`
   - Note: full `tests/test_reporting_and_store_helpers.py` import currently fails in this workspace due unrelated `server` export mismatch (`_PageDataCache`), not from this schema patch.
+
+## 2026-04-23
+
+- Restored coordinator API endpoints required by deploy readiness and target bootstrap in `server_app/fastapi_app.py`.
+  - Added `GET /api/coord/database-status` (returns `CoordinatorStore.database_status()`).
+  - Added `POST /api/coord/register-targets` (accepts `targets` list and optional `replace_existing`, delegates to `CoordinatorStore.register_targets`).
+- Why:
+  - `deploy/full_deploy_command.sh` readiness loop probes `/api/coord/database-status` and `register_targets.py` posts to `/api/coord/register-targets`.
+  - Missing routes caused perpetual readiness `404` and blocked deployment progression.
+- Validation:
+  - `python -m py_compile server_app/fastapi_app.py server.py`
+  - `pytest -q tests/test_runtime_unit.py -k "test_read_json_dict_handles_invalid_content"`

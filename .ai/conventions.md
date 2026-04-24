@@ -408,3 +408,6 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
   - In `_ensure_schema`, bootstrap DDL must avoid creating indexes that depend on columns introduced by later migration statements.
   - For `coordinator_artifacts`, keep only domain-safe bootstrap index in DDL and create `retention`/`hot_fields` indexes in migration phase after summary/retention columns are ensured.
   - For `coordinator_stage_tasks`, keep bootstrap status index legacy-safe (`stage, status`) and create workflow-aware status index separately in migration phase.
+
+- Deploy-contract API convention:
+  - `server_app/fastapi_app.py` must expose `GET /api/coord/database-status` and `POST /api/coord/register-targets` because central bootstrap/deploy scripts depend on these exact paths.

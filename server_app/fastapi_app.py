@@ -48,6 +48,26 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
     def healthz() -> str:
         return "ok"
 
+    @app.get("/api/coord/database-status")
+    def database_status(
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return store.database_status()
+
+    @app.post("/api/coord/register-targets")
+    def register_targets(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        raw_targets = body.get("targets")
+        if not isinstance(raw_targets, list):
+            raise HTTPException(status_code=400, detail="targets list is required")
+        targets = [str(item or "").strip() for item in raw_targets if str(item or "").strip()]
+        result = store.register_targets(targets, replace_existing=bool(body.get("replace_existing")))
+        return {"ok": True, **result}
+
     @app.post("/api/coord/claim")
     def claim_target(
         body: dict[str, Any] = Body(default_factory=dict),
