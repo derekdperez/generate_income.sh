@@ -411,3 +411,7 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - Deploy-contract API convention:
   - `server_app/fastapi_app.py` must expose `GET /api/coord/database-status` and `POST /api/coord/register-targets` because central bootstrap/deploy scripts depend on these exact paths.
+
+- Server runtime convention (current stable path):
+  - `server.py` is the authoritative coordinator UI + API runtime in production and should serve both HTML pages and `/api/coord/*` endpoints from the same process.
+  - Route removals/refactors must preserve deploy-critical and UI-critical endpoints (at minimum: `/workers`, `/api/coord/database-status`, `/api/coord/register-targets`, `/api/coord/worker-control`, `/api/coord/crawl-progress`, `/api/coord/discovered-targets`, `/api/coord/discovered-files`, `/api/coord/http-requests`).

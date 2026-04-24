@@ -1510,3 +1510,16 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Validation:
   - `python -m py_compile server_app/fastapi_app.py server.py`
   - `pytest -q tests/test_runtime_unit.py -k "test_read_json_dict_handles_invalid_content"`
+
+## 2026-04-23
+
+- Restored full web UI server behavior by reverting `server.py` to the last pre-refactor implementation that serves the complete coordinator website + API surface via `DashboardHandler`/`ThreadingHTTPServer`.
+  - Root and page routes restored (`/workers`, `/workflows`, `/database`, `/crawl-progress`, `/discovered-targets`, `/discovered-files`, `/http-requests`, `/docker-status`, `/view-logs`, `/errors`, etc.).
+  - Coordinator API routes used by deploy/UI restored in same server process (`/api/coord/database-status`, `/api/coord/register-targets`, `/api/coord/worker-control`, `/api/coord/workers`, `/api/coord/http-requests`, `/api/coord/discovered-targets`, `/api/coord/discovered-files`, and related download endpoints).
+  - TLS listener/CLI contract retained (`--http-port`, `--https-port`, `--cert-file`, `--key-file`).
+- Why:
+  - Refactored FastAPI-only entrypoint exposed only a subset of routes and returned a minimal root page, breaking access to the previously functional coordinator website.
+- Validation:
+  - `python -m py_compile server.py`
+  - `pytest -q tests/test_refactor_modules.py -k "server_template_renders or worker_template_renders_database_link or workflows_template_renders or database_template_renders or crawl_progress_template_renders or http_requests_template_renders"`
+  - `pytest -q tests/test_server_auth_cookie.py`
