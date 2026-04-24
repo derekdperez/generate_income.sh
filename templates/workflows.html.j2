@@ -580,7 +580,11 @@
     }
     async function fetchWorkflowSnapshotData() {
       const limit = Number(document.getElementById("limitSelect").value || 1000);
-      const response = await fetch(`/api/coord/workflow-snapshot?limit=${encodeURIComponent(limit)}`, {
+      const qs = new URLSearchParams({
+        limit: String(Math.max(1, Math.min(5000, limit))),
+        cache_mode: "prefer",
+      });
+      const response = await fetch(`/api/coord/workflow-snapshot?${qs.toString()}`, {
         credentials: "same-origin",
         headers: authHeaders(),
       });

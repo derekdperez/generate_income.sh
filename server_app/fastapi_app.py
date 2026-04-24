@@ -21,6 +21,25 @@ def _bearer_token(header_value: str | None) -> str:
     return raw
 
 
+def _parse_status_filters(payload: dict[str, Any]) -> list[str]:
+    raw_statuses = payload.get("statuses", payload.get("status", []))
+    if isinstance(raw_statuses, str):
+        values = [item.strip().lower() for item in raw_statuses.split(",") if item.strip()]
+    elif isinstance(raw_statuses, list):
+        values = [str(item or "").strip().lower() for item in raw_statuses if str(item or "").strip()]
+    else:
+        values = []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        status = "failed" if value in {"errored", "error"} else value
+        if not status or status in seen:
+            continue
+        seen.add(status)
+        normalized.append(status)
+    return normalized
+
+
 def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator_api_token: str = "") -> FastAPI:
     app = FastAPI(title="Nightmare Coordinator", version="2.0.0")
     app.state.coordinator_store = coordinator_store
@@ -241,8 +260,82 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             workflow_id=str(body.get("workflow_id") or ""),
             root_domains=list(body.get("root_domains") or []),
             plugins=list(body.get("plugins") or []),
+            statuses=_parse_status_filters(body),
             hard_delete=bool(body.get("hard_delete")),
         )
+
+    @app.post("/api/coord/targets/reset")
+    def reset_targets(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return store.reset_targets(
+            root_domains=list(body.get("root_domains") or []),
+            statuses=_parse_status_filters(body),
+            hard_delete=bool(body.get("hard_delete")),
+        )
+
+    @app.post("/api/coord/tasks/reset")
+    def reset_tasks(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        raw_scopes = body.get("scopes", body.get("scope", []))
+        if isinstance(raw_scopes, str):
+            scope_values = [raw_scopes.strip().lower()] if raw_scopes.strip() else []
+        elif isinstance(raw_scopes, list):
+            scope_values = [str(item or "").strip().lower() for item in raw_scopes if str(item or "").strip()]
+        else:
+            scope_values = []
+        scopes: list[str] = []
+        for scope in scope_values:
+            if scope in {"all", "*"}:
+                scopes = ["stage_tasks", "targets"]
+                break
+            if scope in {"stage", "stages", "stage_task", "stage_tasks"} and "stage_tasks" not in scopes:
+                scopes.append("stage_tasks")
+            if scope in {"target", "targets", "target_queue", "coordinator_targets"} and "targets" not in scopes:
+                scopes.append("targets")
+        if not scopes:
+            scopes = ["stage_tasks"]
+
+        status_filters = _parse_status_filters(body)
+        workflow_id = str(body.get("workflow_id") or "")
+        root_domains = list(body.get("root_domains") or [])
+        plugins = list(body.get("plugins") or [])
+        hard_delete = bool(body.get("hard_delete"))
+
+        stage_result: dict[str, Any] | None = None
+        target_result: dict[str, Any] | None = None
+        if "stage_tasks" in scopes:
+            stage_result = store.reset_stage_tasks(
+                workflow_id=workflow_id,
+                root_domains=root_domains,
+                plugins=plugins,
+                statuses=status_filters,
+                hard_delete=hard_delete,
+            )
+        if "targets" in scopes:
+            target_result = store.reset_targets(
+                root_domains=root_domains,
+                statuses=status_filters,
+                hard_delete=hard_delete,
+            )
+        total_affected = int((stage_result or {}).get("affected_rows") or 0) + int((target_result or {}).get("affected_rows") or 0)
+        return {
+            "ok": True,
+            "scopes": scopes,
+            "workflow_id": workflow_id,
+            "root_domains": root_domains,
+            "plugins": plugins,
+            "statuses": status_filters,
+            "hard_delete": hard_delete,
+            "total_affected_rows": total_affected,
+            "stage_tasks": stage_result,
+            "targets": target_result,
+        }
 
     @app.post("/api/coord/artifact")
     def upload_artifact(

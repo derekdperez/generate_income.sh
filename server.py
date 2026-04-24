@@ -102,6 +102,7 @@ DISCOVERED_TARGETS_PAGE_CACHE_TTL_SECONDS = 30
 DISCOVERED_TARGET_SITEMAP_PAGE_CACHE_TTL_SECONDS = 45
 DISCOVERED_FILES_PAGE_CACHE_TTL_SECONDS = 45
 HTTP_REQUESTS_PAGE_CACHE_TTL_SECONDS = 30
+WORKFLOW_SNAPSHOT_PAGE_CACHE_TTL_SECONDS = 12
 EST_TZ = timezone(timedelta(hours=-5), name="EST")
 WORKFLOW_FILE_SUFFIX = ".workflow.json"
 WORKFLOW_FILE_GLOB = f"*{WORKFLOW_FILE_SUFFIX}"
@@ -3350,19 +3351,9 @@ def _start_default_page_cache_warmer(server: ThreadingHTTPServer, *, coordinator
             loader=lambda: _build_high_value_files_payload(coordinator_store, limit=5000, search_text=""),
         )
 
-        http_requests_defaults = {"limit": 500, "offset": 0, "q": "", "root_domain": ""}
-        http_requests_key = _build_page_cache_key("http_requests", http_requests_defaults)
-        _ensure_cached(
-            cache_key=http_requests_key,
-            ttl_seconds=HTTP_REQUESTS_PAGE_CACHE_TTL_SECONDS,
-            loader=lambda: _build_http_requests_payload(
-                coordinator_store,
-                limit=500,
-                offset=0,
-                search_text="",
-                root_domain="",
-            ),
-        )
+        # Intentionally skip HTTP request warming here.
+        # Building this cache requires reconstructing request traces across many
+        # domains and can overwhelm the DB under large fleets; keep it on-demand.
 
         warmed_domains = discovered_targets_payload.get("rows", []) if isinstance(discovered_targets_payload, dict) else []
         if isinstance(warmed_domains, list):
@@ -3870,11 +3861,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/":
+            self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
+            return
+        if path == "/all-domains-report":
             all_domains_html = _find_all_domains_report_html(self.output_root)
-            if all_domains_html is not None:
-                self._serve_static_file(all_domains_html)
-            else:
-                self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
+            if all_domains_html is None:
+                self._write_text("Not found", status=404)
+                return
+            self._serve_static_file(all_domains_html)
             return
         if path == "/dashboard":
             self._write_text("Dashboard page removed. Use /workers.", status=404)
@@ -5324,8 +5318,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json({"error": "unauthorized"}, status=401)
                 return
             limit = _safe_int((query.get("limit") or ["2000"])[0], 2000)
+            cache_mode = str((query.get("cache_mode") or ["prefer"])[0] or "prefer").strip().lower()
             try:
-                payload = self.coordinator_store.workflow_scheduler_snapshot(limit=limit)
+                payload = self._resolve_cached_page_payload(
+                    page_name="workflow_snapshot",
+                    key_parts={"limit": limit},
+                    ttl_seconds=WORKFLOW_SNAPSHOT_PAGE_CACHE_TTL_SECONDS,
+                    cache_mode=cache_mode,
+                    loader=lambda: self.coordinator_store.workflow_scheduler_snapshot(limit=limit),  # type: ignore[union-attr]
+                )
             except Exception as exc:
                 self.log_message("workflow_scheduler_snapshot failed: %r", exc)
                 self._write_json({"error": "workflow snapshot query failed", "detail": str(exc)}, status=500)

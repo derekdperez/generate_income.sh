@@ -1523,3 +1523,25 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py`
   - `pytest -q tests/test_refactor_modules.py -k "server_template_renders or worker_template_renders_database_link or workflows_template_renders or database_template_renders or crawl_progress_template_renders or http_requests_template_renders"`
   - `pytest -q tests/test_server_auth_cookie.py`
+
+## 2026-04-23
+
+- Fixed coordinator responsiveness regression caused by aggressive default page-cache warming.
+  - In `server.py`, `_start_default_page_cache_warmer(...)` no longer prewarms `/api/coord/http-requests` data.
+  - Why: HTTP-request aggregation reconstructs data across many domains/artifacts and was creating sustained DB load every warm cycle, which could starve other UI/API requests.
+- Added cache-backed workflow snapshot reads for Workflow Runs.
+  - `GET /api/coord/workflow-snapshot` now supports cache-aware reads via `_resolve_cached_page_payload(...)` with `cache_mode` and short TTL.
+  - `templates/workflows.html.j2` now requests snapshot data with `cache_mode=prefer`.
+- Improved default homepage behavior for large installations.
+  - `GET /` now serves the Workers UI directly (fast control surface).
+  - Added `GET /all-domains-report` to explicitly access the generated all-domains HTML report when needed.
+- Restored scale reset API parity in FastAPI server mode.
+  - `server_app/fastapi_app.py` now supports:
+    - status-filtered `POST /api/coord/stage/reset`
+    - `POST /api/coord/targets/reset`
+    - scoped `POST /api/coord/tasks/reset` (stage_tasks/targets/all)
+  - Includes `errored`/`error` => `failed` status normalization for compatibility with UI/operator wording.
+- Validation:
+  - `python -m py_compile server.py server_app/fastapi_app.py server_app/store.py reset_tasks.py`
+  - `pytest -q tests/test_refactor_modules.py -k "workflows_template_renders or worker_template_renders_database_link or database_template_renders or crawl_progress_template_renders or http_requests_template_renders"`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe"`

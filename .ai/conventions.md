@@ -415,3 +415,14 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Server runtime convention (current stable path):
   - `server.py` is the authoritative coordinator UI + API runtime in production and should serve both HTML pages and `/api/coord/*` endpoints from the same process.
   - Route removals/refactors must preserve deploy-critical and UI-critical endpoints (at minimum: `/workers`, `/api/coord/database-status`, `/api/coord/register-targets`, `/api/coord/worker-control`, `/api/coord/crawl-progress`, `/api/coord/discovered-targets`, `/api/coord/discovered-files`, `/api/coord/http-requests`).
+
+- Page-cache warming convention:
+  - Only warm low-cost list pages by default.
+  - Do not prewarm endpoints that reconstruct large cross-domain datasets (`/api/coord/http-requests`) unless explicitly enabled/configured for small fleets.
+- Workflow monitor data convention:
+  - `GET /api/coord/workflow-snapshot` should be served through short-TTL page cache and support `cache_mode` to reduce repeated heavy snapshot reads on 30s polling pages.
+- Root route convention:
+  - In coordinator UI mode, `/` should prioritize an operational control page (`/workers`) over potentially huge static reports.
+  - Large static master reports should be explicit routes (e.g., `/all-domains-report`) to avoid accidental heavy initial loads.
+- Reset API parity convention:
+  - Both server runtimes (`server.py` and `server_app/fastapi_app.py`) should expose the same bulk-reset surface (`stage/reset`, `targets/reset`, `tasks/reset`) and accept status aliases (`errored` -> `failed`).

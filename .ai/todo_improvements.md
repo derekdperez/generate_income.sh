@@ -28,3 +28,5 @@
 - Consider adding a small server-side LRU cache for `get_discovered_target_response` / sitemap row enrichment keyed by `(root_domain, url, evidence_path)` to further reduce repeated gzip evidence parsing on rapid UI refresh intervals.
 - Add API-level tests for `cache_mode` behavior on cache-enabled coordinator endpoints, including stale-cache fallback path and `page_cache` metadata assertions.
 - Move page-cache TTL/warm settings from hard-coded `server.py` constants into config (`server.json`) with sane defaults and guardrails.
+- Refactor HTTP request reporting away from artifact/session reconstruction-on-read into a normalized append-only table (or incremental projection) with indexed paging/count APIs; current on-demand reconstruction remains expensive at large domain counts.
+- Add explicit config switch for HTTP request cache warming (default off) and expose warm-queue metrics in `/api/coord/database-status` for easier production diagnostics.
