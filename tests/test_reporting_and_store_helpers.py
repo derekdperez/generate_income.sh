@@ -129,6 +129,16 @@ def test_ensure_schema_bootstrap_stage_index_is_legacy_safe():
     assert "CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(stage, status);" in source
 
 
+def test_ensure_schema_bootstrap_artifact_indexes_are_legacy_safe():
+    source = inspect.getsource(CoordinatorStore._ensure_schema)
+    match = re.search(r'ddl = """(.*?)"""', source, flags=re.DOTALL)
+    assert match is not None
+    ddl = match.group(1)
+    assert "CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);" in ddl
+    assert "idx_artifacts_retention" not in ddl
+    assert "idx_artifacts_hot_fields" not in ddl
+
+
 def test_claim_target_respects_running_stage_domain_lock():
     source = inspect.getsource(CoordinatorStore.claim_target)
     assert "FROM coordinator_stage_tasks s" in source

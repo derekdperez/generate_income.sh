@@ -403,3 +403,8 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Server deploy CLI compatibility convention:
   - `server.py` must retain compatibility with deploy compose flags `--http-port`, `--https-port`, `--cert-file`, and `--key-file` (not only `--port`).
   - In central/local docker deployment mode, server should bind TLS on `--https-port` when provided and validate cert/key paths before startup.
+
+- Coordinator schema bootstrap convention:
+  - In `_ensure_schema`, bootstrap DDL must avoid creating indexes that depend on columns introduced by later migration statements.
+  - For `coordinator_artifacts`, keep only domain-safe bootstrap index in DDL and create `retention`/`hot_fields` indexes in migration phase after summary/retention columns are ensured.
+  - For `coordinator_stage_tasks`, keep bootstrap status index legacy-safe (`stage, status`) and create workflow-aware status index separately in migration phase.

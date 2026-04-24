@@ -1473,3 +1473,28 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 - Validation:
   - `python -m py_compile server.py`
   - `pytest -q tests/test_runtime_unit.py -k "test_read_json_dict_handles_invalid_content"`
+
+## 2026-04-23
+
+- Fixed coordinator startup crash on central deploy against existing Postgres schema.
+  - Root cause: `_ensure_schema` bootstrap DDL created artifact/stage indexes that referenced columns only guaranteed by later `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations.
+  - On pre-existing `coordinator_artifacts` tables missing `summary_match_count`, bootstrap failed before migrations with `psycopg.errors.UndefinedColumn`.
+- Changes in `server_app/store.py`:
+  - Bootstrap DDL now keeps legacy-safe stage index shape:
+    - `idx_stage_tasks_status_stage` on `(stage, status)` only.
+  - Removed non-legacy-safe bootstrap indexes from DDL:
+    - `idx_stage_tasks_claim_partial`
+    - `idx_stage_tasks_running_domain_lease`
+    - `idx_stage_tasks_concurrency`
+    - `idx_artifacts_retention`
+    - `idx_artifacts_hot_fields`
+  - Added post-migration index creation statements (after `ADD COLUMN IF NOT EXISTS` paths):
+    - `idx_stage_tasks_workflow_stage_status` on `(workflow_id, stage, status)`
+    - `idx_artifacts_retention`
+    - `idx_artifacts_hot_fields`
+- Added regression guard in `tests/test_reporting_and_store_helpers.py`:
+  - `test_ensure_schema_bootstrap_artifact_indexes_are_legacy_safe`
+- Validation:
+  - `python -m py_compile server_app/store.py tests/test_reporting_and_store_helpers.py`
+  - `pytest -q tests/test_runtime_unit.py -k "test_read_json_dict_handles_invalid_content"`
+  - Note: full `tests/test_reporting_and_store_helpers.py` import currently fails in this workspace due unrelated `server` export mismatch (`_PageDataCache`), not from this schema patch.

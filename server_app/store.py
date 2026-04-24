@@ -590,12 +590,9 @@ CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
   updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY(workflow_id, root_domain, stage)
 );
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(workflow_id, stage, status);
+CREATE INDEX IF NOT EXISTS idx_stage_tasks_status_stage ON coordinator_stage_tasks(stage, status);
 CREATE INDEX IF NOT EXISTS idx_stage_tasks_lease ON coordinator_stage_tasks(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_stage_tasks_domain_status ON coordinator_stage_tasks(root_domain, status, lease_expires_at);
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_claim_partial ON coordinator_stage_tasks(workflow_id, created_at_utc) WHERE status IN ('pending','running');
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_running_domain_lease ON coordinator_stage_tasks(root_domain, lease_expires_at) WHERE status='running';
-CREATE INDEX IF NOT EXISTS idx_stage_tasks_concurrency ON coordinator_stage_tasks(root_domain, concurrency_group, status, lease_expires_at);
 
 CREATE TABLE IF NOT EXISTS coordinator_resource_leases (
   lease_id TEXT PRIMARY KEY,
@@ -641,8 +638,6 @@ CREATE TABLE IF NOT EXISTS coordinator_artifacts (
   PRIMARY KEY(root_domain, artifact_type)
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);
-CREATE INDEX IF NOT EXISTS idx_artifacts_retention ON coordinator_artifacts(retention_class);
-CREATE INDEX IF NOT EXISTS idx_artifacts_hot_fields ON coordinator_artifacts(root_domain, artifact_type, summary_match_count, summary_anomaly_count);
 
 CREATE TABLE IF NOT EXISTS coordinator_artifact_objects (
   content_sha256 TEXT PRIMARY KEY,
@@ -775,6 +770,8 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_claim_partial ON coordinator_stage_tasks(workflow_id, created_at_utc) WHERE status IN ('pending','running')",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_running_domain_lease ON coordinator_stage_tasks(root_domain, lease_expires_at) WHERE status='running'",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_concurrency ON coordinator_stage_tasks(root_domain, concurrency_group, status, lease_expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_workflow_stage_status ON coordinator_stage_tasks(workflow_id, stage, status)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_retention ON coordinator_artifacts(retention_class)",
             "CREATE INDEX IF NOT EXISTS idx_artifacts_hot_fields ON coordinator_artifacts(root_domain, artifact_type, summary_match_count, summary_anomaly_count)",
         ]
         with self._connect() as conn:
