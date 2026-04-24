@@ -3946,9 +3946,61 @@ RETURNING command;
         stg = str(stage or "").strip().lower()
         if not wid or not stg:
             return {}
-        # Prefer DB-backed workflow-builder definitions. Users can edit these in
-        # the builder, so relying only on shipped JSON files can leave workers
-        # evaluating stale preconditions and skipping the wrong task.
+        def _read_file_preconditions() -> tuple[bool, dict[str, Any]]:
+            candidates: list[Path] = []
+            workflow_dir = self._workflow_catalog_dir()
+            direct = workflow_dir / f"{wid}.workflow.json"
+            if direct.is_file():
+                candidates.append(direct)
+            if workflow_dir.is_dir():
+                candidates.extend(path for path in sorted(workflow_dir.glob("*.workflow.json")) if path not in candidates)
+            for path in candidates:
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                payload_id = self._normalize_workflow_token(payload.get("workflow_id"), default=path.name.replace(".workflow.json", ""))
+                if payload_id != wid:
+                    continue
+                plugins = payload.get("plugins")
+                if not isinstance(plugins, list):
+                    continue
+                for entry in plugins:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_stage = str(
+                        entry.get("plugin_name")
+                        or entry.get("stage")
+                        or entry.get("name")
+                        or entry.get("type")
+                        or ""
+                    ).strip().lower()
+                    if entry_stage != stg:
+                        continue
+                    prereq = entry.get("preconditions", entry.get("prerequisites", {}))
+                    prereq = dict(prereq or {}) if isinstance(prereq, dict) else {}
+                    inputs = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
+                    for key in ("artifacts_all", "artifacts_any"):
+                        values = inputs.get(key)
+                        if isinstance(values, list):
+                            merged = list(prereq.get(key) or [])
+                            for item in values:
+                                if item not in merged:
+                                    merged.append(item)
+                            prereq[key] = merged
+                    return True, prereq
+            return False, {}
+
+        file_found, file_prereq = _read_file_preconditions()
+        # For built-in recon workflows, treat the workflow file as source of
+        # truth so first-stage bootstrap rules are not stranded by stale DB
+        # definitions.
+        if wid in {"run-recon", "recon-workflow"} and file_found:
+            return file_prereq
+
+        # For builder-authored workflows, DB definitions remain authoritative.
         try:
             with self._connect() as conn:
                 with conn.cursor() as cur:
@@ -3970,50 +4022,8 @@ LIMIT 1;
         except Exception:
             pass
 
-        candidates: list[Path] = []
-        workflow_dir = self._workflow_catalog_dir()
-        direct = workflow_dir / f"{wid}.workflow.json"
-        if direct.is_file():
-            candidates.append(direct)
-        if workflow_dir.is_dir():
-            candidates.extend(path for path in sorted(workflow_dir.glob("*.workflow.json")) if path not in candidates)
-        for path in candidates:
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8-sig"))
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            payload_id = self._normalize_workflow_token(payload.get("workflow_id"), default=path.name.replace(".workflow.json", ""))
-            if payload_id != wid:
-                continue
-            plugins = payload.get("plugins")
-            if not isinstance(plugins, list):
-                continue
-            for entry in plugins:
-                if not isinstance(entry, dict):
-                    continue
-                entry_stage = str(
-                    entry.get("plugin_name")
-                    or entry.get("stage")
-                    or entry.get("name")
-                    or entry.get("type")
-                    or ""
-                ).strip().lower()
-                if entry_stage != stg:
-                    continue
-                prereq = entry.get("preconditions", entry.get("prerequisites", {}))
-                prereq = dict(prereq or {}) if isinstance(prereq, dict) else {}
-                inputs = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
-                for key in ("artifacts_all", "artifacts_any"):
-                    values = inputs.get(key)
-                    if isinstance(values, list):
-                        merged = list(prereq.get(key) or [])
-                        for item in values:
-                            if item not in merged:
-                                merged.append(item)
-                        prereq[key] = merged
-                return prereq
+        if file_found:
+            return file_prereq
         return {}
 
     def _stage_prerequisites_satisfied(

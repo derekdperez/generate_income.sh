@@ -25,3 +25,9 @@
 
 - Workflow-run persistence guard tests added:
   regression tests now cover missing `root_domain`, zero persisted-stage-row failure, and persisted row count returned in the run result payload.
+
+- Recon bootstrap readiness fix:
+  updated `run-recon` so `recon_subdomain_enumeration` has no preconditions, and changed stage-precondition resolution to treat workflow-file preconditions as authoritative for `run-recon`/`recon-workflow` to avoid stale DB rules leaving first-step tasks stuck in `pending`.
+
+- Added readiness-regression coverage:
+  tests now assert built-in recon import keeps empty preconditions for subdomain enumeration and that run-recon file preconditions override stale DB preconditions.

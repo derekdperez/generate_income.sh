@@ -20,6 +20,8 @@ def test_run_recon_workflow_imports_to_builder_definition():
     assert takeover["config_json"]["probe_timeout_seconds"] == 10
     assert "recon_subdomains_json" in takeover["preconditions_json"]["artifacts_all"]
     assert "recon_subdomain_enumeration_complete_flag" in takeover["preconditions_json"]["artifacts_all"]
+    enumeration = next(step for step in payload["steps"] if step["step_key"] == "recon_subdomain_enumeration")
+    assert enumeration["preconditions_json"] == {}
 
     extractor = payload["steps"][-1]
     assert extractor["plugin_key"] == "recon_extractor_high_value"

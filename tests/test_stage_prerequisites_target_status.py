@@ -1,3 +1,5 @@
+import json
+
 from coordinator import DistributedCoordinator
 from server_app.store import CoordinatorStore
 
@@ -98,3 +100,62 @@ def test_store_prerequisite_check_still_honors_require_completed_target():
     )
     assert not ready
     assert "waiting for completed target" in reason
+
+
+class _DbPrereqCursor:
+    def execute(self, _query: str, _params=None) -> None:
+        return None
+
+    def fetchone(self):
+        return ({"require_target_completed": True},)
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _DbPrereqConn:
+    def cursor(self):
+        return _DbPrereqCursor()
+
+    def commit(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_store_run_recon_file_preconditions_override_stale_db(tmp_path):
+    workflow_file = tmp_path / "run-recon.workflow.json"
+    workflow_file.write_text(
+        json.dumps(
+            {
+                "workflow_id": "run-recon",
+                "plugins": [
+                    {
+                        "plugin_name": "recon_subdomain_enumeration",
+                        "preconditions": {},
+                        "inputs": {},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._workflow_catalog_dir = lambda: tmp_path  # type: ignore[attr-defined]
+    store._connect = lambda: _DbPrereqConn()  # type: ignore[attr-defined]
+    prereq = CoordinatorStore._load_workflow_stage_preconditions(
+        store,
+        workflow_id="run-recon",
+        stage="recon_subdomain_enumeration",
+    )
+    assert prereq == {}

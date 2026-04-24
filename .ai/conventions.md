@@ -18,6 +18,7 @@
 - Use normalized lowercase identifiers for:
   `workflow_id`, `root_domain`, `stage/plugin_name`.
 - DB-backed workflow runs require a non-empty `root_domain`; do not treat run creation as successful unless stage-task row persistence is verified.
+- For built-in recon workflows (`run-recon`, `recon-workflow`), stage prerequisites should come from `workflows/*.workflow.json` so first-step bootstrap behavior is controlled by the workflow file even when workflow-builder rows are stale.
 - Stage task statuses in queue logic:
   `pending`, `ready`, `running`, `paused`, `completed`, `failed`.
 - `pending` means blocked on prerequisites; `ready` is claimable.
