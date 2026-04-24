@@ -22,6 +22,13 @@ class _FakeCursor:
         return None
 
 
+class _FailedTargetCursor(_FakeCursor):
+    def fetchone(self):
+        if "count(*) filter" in self._last_query and "from coordinator_targets" in self._last_query:
+            return (0, 0, 0, 1)
+        return None
+
+
 def test_scheduler_prerequisite_check_treats_missing_targets_as_pending():
     entry = {"prerequisites": {"target_statuses": ["pending", "running", "completed"]}}
     assert DistributedCoordinator._has_stage_prerequisites(
@@ -29,6 +36,19 @@ def test_scheduler_prerequisite_check_treats_missing_targets_as_pending():
         entry,
         workflow_tasks={},
         target_counts={},
+    )
+
+
+def test_scheduler_prerequisite_check_allows_failed_target_for_recon_subdomain_enumeration():
+    entry = {
+        "plugin_name": "recon_subdomain_enumeration",
+        "prerequisites": {"target_statuses": ["pending", "running", "completed"]},
+    }
+    assert DistributedCoordinator._has_stage_prerequisites(
+        set(),
+        entry,
+        workflow_tasks={},
+        target_counts={"failed": 1},
     )
 
 
@@ -40,6 +60,22 @@ def test_store_prerequisite_check_treats_missing_targets_as_pending():
     ready, reason = CoordinatorStore._stage_prerequisites_satisfied(
         store,
         _FakeCursor(),
+        workflow_id="run-recon",
+        root_domain="example.com",
+        stage="recon_subdomain_enumeration",
+    )
+    assert ready
+    assert reason == ""
+
+
+def test_store_prerequisite_check_allows_failed_target_for_recon_subdomain_enumeration():
+    store = CoordinatorStore.__new__(CoordinatorStore)
+    store._load_workflow_stage_preconditions = lambda *_args, **_kwargs: {  # type: ignore[attr-defined]
+        "target_statuses": ["pending", "running", "completed"]
+    }
+    ready, reason = CoordinatorStore._stage_prerequisites_satisfied(
+        store,
+        _FailedTargetCursor(),
         workflow_id="run-recon",
         root_domain="example.com",
         stage="recon_subdomain_enumeration",

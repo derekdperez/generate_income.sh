@@ -452,3 +452,9 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 - Workflow definition compatibility convention:
   - Treat `preconditions` and `prerequisites` as equivalent keys in workflow JSON normalization.
   - `inputs.artifacts_all/artifacts_any` should contribute to scheduling gates alongside `prerequisites.artifacts_*`.
+
+- Recon bootstrap scheduling convention:
+  - `recon_subdomain_enumeration` is a bootstrap stage and must remain claimable for domains even when:
+  - `coordinator_targets` currently has a running lease for that domain.
+  - Target aggregate status resolves to `failed`.
+  - Keep the target-running domain lock for non-bootstrap stages to avoid cross-lane request contention.

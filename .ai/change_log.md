@@ -1624,3 +1624,21 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server_app/store.py`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "worker_control_snapshot_includes_presence_only_worker or worker_control_snapshot_includes_latest_worker_event"`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe or worker_control_snapshot_includes_presence_only_worker or worker_control_snapshot_includes_latest_worker_event"`
+
+## 2026-04-24
+
+- Unblocked immediate recon bootstrap pickup for domains that have not yet run subdomain enumeration.
+  - `server_app/store.py::_stage_prerequisites_satisfied(...)` now treats `recon_subdomain_enumeration` target-status gates as including `failed` when a workflow specifies target statuses.
+  - `coordinator.py::DistributedCoordinator._has_stage_prerequisites(...)` mirrors the same rule so scheduler-side enqueue checks and store-side readiness checks stay aligned.
+  - `server_app/store.py::try_claim_stage_with_resources(...)` now allows `recon_subdomain_enumeration` claims even when a domain currently has a running `coordinator_targets` lease (other stages still keep the target-running lock).
+- Updated recon workflow defaults so first-stage intent is explicit in config:
+  - `workflows/run-recon.workflow.json`
+  - `workflows/coordinator.workflow.json`
+  - `workflows/run-recon.workflow_1.json`
+  - Added `"failed"` to `recon_subdomain_enumeration.preconditions.target_statuses`.
+- Added regression tests:
+  - `tests/test_stage_prerequisites_target_status.py` (failed target status accepted for recon subdomain enumeration in scheduler + store evaluators).
+  - `tests/test_reporting_and_store_helpers.py` (claim SQL explicitly preserves target-running lock but exempts `recon_subdomain_enumeration`).
+- Validation:
+  - `python -m py_compile server_app/store.py coordinator.py tests/test_stage_prerequisites_target_status.py tests/test_reporting_and_store_helpers.py`
+  - `pytest -q tests/test_stage_prerequisites_target_status.py tests/test_reporting_and_store_helpers.py -k "prerequisite_check or claim_next_stage_allows_recon_subdomain_enumeration_while_target_running or claim_next_stage_respects_running_target_domain_lock"`

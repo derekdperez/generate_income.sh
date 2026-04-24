@@ -163,6 +163,12 @@ def test_claim_next_stage_respects_running_target_domain_lock():
     assert "q.status = 'running'" in source
 
 
+def test_claim_next_stage_allows_recon_subdomain_enumeration_while_target_running():
+    source = inspect.getsource(CoordinatorStore.try_claim_stage_with_resources)
+    assert "stage = 'recon_subdomain_enumeration'" in source
+    assert "OR NOT EXISTS (" in source
+
+
 
 
 def test_claim_next_stage_ignores_workflow_scope_for_global_ready_queue():

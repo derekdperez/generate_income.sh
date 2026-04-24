@@ -16,7 +16,8 @@
         "target_statuses": [
           "pending",
           "running",
-          "completed"
+          "completed",
+          "failed"
         ]
       },
       "retry_failed": true,

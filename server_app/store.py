@@ -4017,6 +4017,10 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
         required_plugins_any = _names(prereq.get("requires_plugins_any") or prereq.get("plugins_any"))
         required_target_statuses = _names(prereq.get("target_statuses"))
         require_target_completed = bool(prereq.get("require_target_completed", False))
+        # Recon bootstrap should run even when legacy target rows are already
+        # failed so unprocessed domains can still enter recon workflow.
+        if stg == "recon_subdomain_enumeration" and required_target_statuses:
+            required_target_statuses.add("failed")
 
         cur.execute(
             "SELECT artifact_type FROM coordinator_artifacts WHERE root_domain = %s;",
@@ -4579,13 +4583,16 @@ WHERE (
     )
 )
   AND (%s::text[] IS NULL OR stage = ANY(%s))
-  AND NOT EXISTS (
-      SELECT 1
-      FROM coordinator_targets q
-      WHERE q.root_domain = coordinator_stage_tasks.root_domain
-        AND q.status = 'running'
-        AND q.lease_expires_at IS NOT NULL
-        AND q.lease_expires_at >= NOW()
+  AND (
+      stage = 'recon_subdomain_enumeration'
+      OR NOT EXISTS (
+          SELECT 1
+          FROM coordinator_targets q
+          WHERE q.root_domain = coordinator_stage_tasks.root_domain
+            AND q.status = 'running'
+            AND q.lease_expires_at IS NOT NULL
+            AND q.lease_expires_at >= NOW()
+      )
   )
 ORDER BY created_at_utc ASC
 FOR UPDATE SKIP LOCKED

@@ -774,6 +774,14 @@ class DistributedCoordinator:
             if str(item or "").strip()
         }
         require_target_completed = bool(prereq.get("require_target_completed", False))
+        stage_name = str(
+            entry.get("plugin_name")
+            or entry.get("stage")
+            or entry.get("name")
+            or ""
+        ).strip().lower()
+        if stage_name == "recon_subdomain_enumeration" and required_target_statuses:
+            required_target_statuses.add("failed")
 
         def _task_status(name: str) -> str:
             row = workflow_tasks.get(name) if isinstance(workflow_tasks.get(name), dict) else {}
