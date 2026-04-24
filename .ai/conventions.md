@@ -93,6 +93,9 @@
 - Dashboard/worker client URL encoding convention: use `encodeURIComponent(...).replace(/%2F/g, "/")` instead of `replaceAll` for broader JS runtime compatibility.
 - Dashboard refresh UX convention: never silently swallow summary-fetch failures; show explicit on-page load failure messaging so operators can distinguish empty data from failed API calls.
 
+- Worker snapshot compatibility convention: when adding optional columns to worker-control SQL projections, map row data defensively (index-safe defaults) so reduced tuples from tests/legacy callers do not crash snapshot rendering.
+- Worker event-source convention: keep `coordinator_recent_events` as primary source for latest worker events, but preserve `_event_stream.read(...)` fallback for legacy/runtime compatibility and deterministic test fakes.
+
 - Coordinator DB status endpoint convention: /api/coord/database-status must cap table row payloads (current cap: 20 rows/table), while still reporting true ow_count and explicit truncation metadata (ows_returned, ows_limited, max_rows_per_table).
 
 - Coordinator UI auth UX convention: pages that call /api/coord/* from browser templates should share token persistence via 

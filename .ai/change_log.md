@@ -1582,3 +1582,15 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile coordinator.py server.py server_app/store.py server_app/fastapi_app.py`
   - `pytest -q tests/test_refactor_modules.py -k "worker_template_renders_database_link or workflows_template_renders or server_template_renders or crawl_progress_template_renders"`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe"`
+
+## 2026-04-23
+
+- Restored worker-control backward compatibility after worker snapshot/event refactor in `server_app/store.py`.
+  - `worker_control_snapshot(...)` now tolerates shorter/legacy SQL row tuples when optional current-stage columns are absent (defensive index access with defaults).
+  - `_latest_worker_event_map(...)` now keeps DB-first event lookup but falls back to legacy in-memory `_event_stream.read(...)` when DB lookup is unavailable/empty.
+- Why:
+  - Unit tests and legacy execution paths can provide reduced worker snapshot row shapes and in-memory event streams; hard assumptions caused crashes or missing last-event metadata.
+- Validation:
+  - `python -m py_compile server_app/store.py`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "worker_control_snapshot_includes_presence_only_worker or worker_control_snapshot_includes_latest_worker_event"`
+  - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or ensure_schema_bootstrap_stage_index_is_legacy_safe or ensure_schema_bootstrap_artifact_indexes_are_legacy_safe or worker_control_snapshot_includes_presence_only_worker or worker_control_snapshot_includes_latest_worker_event"`
