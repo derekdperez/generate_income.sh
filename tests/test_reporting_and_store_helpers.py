@@ -171,6 +171,34 @@ def test_claim_next_stage_ignores_workflow_scope_for_global_ready_queue():
     assert "global ready queue" in source
 
 
+
+
+def test_stage_claims_only_ready_tasks_not_waiting_prerequisites():
+    source = inspect.getsource(CoordinatorStore.try_claim_stage_with_resources)
+    assert "status = 'ready'" in source
+    assert "status = 'pending'" not in source.split("candidates_sql", 1)[1].split("ORDER BY", 1)[0]
+
+
+def test_stage_claim_rechecks_preconditions_before_running():
+    source = inspect.getsource(CoordinatorStore.try_claim_stage_with_resources)
+    assert "_stage_prerequisites_satisfied" in source
+    assert "blocked_reason" in source
+    assert "SET status = 'pending'" in source
+
+
+def test_artifact_and_completion_refresh_stage_readiness():
+    upload_source = inspect.getsource(CoordinatorStore.upload_artifact)
+    complete_source = inspect.getsource(CoordinatorStore.complete_stage)
+    assert "refresh_stage_task_readiness(root_domain=rd" in upload_source
+    assert "refresh_stage_task_readiness(root_domain=rd, workflow_id=widf" in complete_source
+
+
+def test_waiting_for_prerequisites_label_is_user_facing():
+    template = (Path(__file__).resolve().parent.parent / "templates" / "workflows.html.j2").read_text(encoding="utf-8")
+    assert "Waiting for Prerequisites..." in template
+    assert "statusLabel" in template
+
+
 def test_worker_status_running_presence_without_task_is_idle():
     assert CoordinatorStore._derive_worker_status(
         running_targets=0,

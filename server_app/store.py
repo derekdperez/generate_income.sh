@@ -791,7 +791,7 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
             "CREATE INDEX IF NOT EXISTS idx_recent_events_lookup ON coordinator_recent_events(event_type, aggregate_key, source)",
             "CREATE INDEX IF NOT EXISTS idx_targets_claim_partial ON coordinator_targets(line_number, created_at_utc) WHERE status IN ('pending','running')",
             "CREATE INDEX IF NOT EXISTS idx_targets_running_domain_lease ON coordinator_targets(root_domain, lease_expires_at) WHERE status='running'",
-            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_claim_partial ON coordinator_stage_tasks(workflow_id, created_at_utc) WHERE status IN ('pending','running')",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_claim_partial ON coordinator_stage_tasks(workflow_id, created_at_utc) WHERE status IN ('ready','running')",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_running_domain_lease ON coordinator_stage_tasks(root_domain, lease_expires_at) WHERE status='running'",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_concurrency ON coordinator_stage_tasks(root_domain, concurrency_group, status, lease_expires_at)",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_workflow_stage_status ON coordinator_stage_tasks(workflow_id, stage, status)",
@@ -3846,6 +3846,338 @@ RETURNING command;
             return {"resource_class": "write_artifacts", "access_mode": "write", "concurrency_group": "auth0r", "max_parallelism": 1}
         return {"resource_class": "default", "access_mode": "write", "concurrency_group": stg, "max_parallelism": 1}
 
+
+    def _workflow_catalog_dir(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "workflows"
+
+    def _normalize_workflow_token(self, value: Any, *, default: str = "") -> str:
+        raw = str(value or "").strip().lower()
+        token = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in raw).strip("-")
+        if token:
+            return token
+        fallback = str(default or "").strip().lower()
+        return "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in fallback).strip("-")
+
+    def _load_workflow_stage_preconditions(self, workflow_id: str, stage: str) -> dict[str, Any]:
+        """Return prerequisite/precondition rules for a coordinator stage task.
+
+        The coordinator queue intentionally stores workflow_id as task metadata
+        only, but the stage's prerequisites still come from the workflow
+        definition.  Missing workflow files or stages are treated as no
+        prerequisites so ad-hoc/manual tasks remain runnable.
+        """
+        wid = self._normalize_workflow_token(workflow_id, default="default")
+        stg = str(stage or "").strip().lower()
+        if not wid or not stg:
+            return {}
+        candidates: list[Path] = []
+        workflow_dir = self._workflow_catalog_dir()
+        direct = workflow_dir / f"{wid}.workflow.json"
+        if direct.is_file():
+            candidates.append(direct)
+        if workflow_dir.is_dir():
+            candidates.extend(path for path in sorted(workflow_dir.glob("*.workflow.json")) if path not in candidates)
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            payload_id = self._normalize_workflow_token(payload.get("workflow_id"), default=path.name.replace(".workflow.json", ""))
+            if payload_id != wid:
+                continue
+            plugins = payload.get("plugins")
+            if not isinstance(plugins, list):
+                continue
+            for entry in plugins:
+                if not isinstance(entry, dict):
+                    continue
+                entry_stage = str(
+                    entry.get("plugin_name")
+                    or entry.get("stage")
+                    or entry.get("name")
+                    or entry.get("type")
+                    or ""
+                ).strip().lower()
+                if entry_stage != stg:
+                    continue
+                prereq = entry.get("preconditions", entry.get("prerequisites", {}))
+                prereq = dict(prereq or {}) if isinstance(prereq, dict) else {}
+                inputs = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
+                for key in ("artifacts_all", "artifacts_any"):
+                    values = inputs.get(key)
+                    if isinstance(values, list):
+                        merged = list(prereq.get(key) or [])
+                        for item in values:
+                            if item not in merged:
+                                merged.append(item)
+                        prereq[key] = merged
+                return prereq
+        return {}
+
+    def _stage_prerequisites_satisfied(
+        self,
+        cur: Any,
+        *,
+        workflow_id: str,
+        root_domain: str,
+        stage: str,
+    ) -> tuple[bool, str]:
+        """Evaluate whether a stage task may move from waiting to ready.
+
+        Preconditions are evaluated against the current database state at claim
+        time and whenever artifacts/tasks complete, preventing workers from
+        leasing tasks whose required artifacts or predecessor plugins are not
+        available yet.
+        """
+        rd = str(root_domain or "").strip().lower()
+        wid = str(workflow_id or "").strip().lower() or "default"
+        stg = str(stage or "").strip().lower()
+        prereq = self._load_workflow_stage_preconditions(wid, stg)
+        if not prereq:
+            try:
+                cur.execute(
+                    """
+SELECT checkpoint_json
+FROM coordinator_stage_tasks
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                    (wid, rd, stg),
+                )
+                row = cur.fetchone()
+                checkpoint = row[0] if row and isinstance(row[0], dict) else {}
+                checkpoint_prereq = checkpoint.get("preconditions_json", checkpoint.get("preconditions", {})) if isinstance(checkpoint, dict) else {}
+                prereq = dict(checkpoint_prereq or {}) if isinstance(checkpoint_prereq, dict) else {}
+            except Exception:
+                prereq = {}
+        if not prereq:
+            return True, ""
+
+        # Compatibility with workflow_app.conditions-style checks.
+        explicit_checks = prereq.get("all") if isinstance(prereq.get("all"), list) else []
+        for check in explicit_checks:
+            if not isinstance(check, dict):
+                continue
+            check_type = str(check.get("type") or "").strip().lower()
+            if check_type == "file_exists":
+                file_path = Path(str(check.get("path") or "").strip()).expanduser()
+                if not str(file_path):
+                    continue
+                if not file_path.exists():
+                    return False, f"waiting for file {file_path}"
+            elif check_type in {"artifact_exists", "artifact"}:
+                artifact_name = str(check.get("artifact_type") or check.get("name") or "").strip().lower()
+                if artifact_name:
+                    cur.execute(
+                        "SELECT 1 FROM coordinator_artifacts WHERE root_domain = %s AND artifact_type = %s LIMIT 1;",
+                        (rd, artifact_name),
+                    )
+                    if cur.fetchone() is None:
+                        return False, f"waiting for artifact: {artifact_name}"
+
+        def _names(value: Any) -> set[str]:
+            if not isinstance(value, list):
+                return set()
+            return {str(item or "").strip().lower() for item in value if str(item or "").strip()}
+
+        required_all = _names(prereq.get("artifacts_all"))
+        required_any = _names(prereq.get("artifacts_any"))
+        required_plugins_all = _names(prereq.get("requires_plugins_all") or prereq.get("plugins_all"))
+        required_plugins_any = _names(prereq.get("requires_plugins_any") or prereq.get("plugins_any"))
+        required_target_statuses = _names(prereq.get("target_statuses"))
+        require_target_completed = bool(prereq.get("require_target_completed", False))
+
+        cur.execute(
+            "SELECT artifact_type FROM coordinator_artifacts WHERE root_domain = %s;",
+            (rd,),
+        )
+        artifacts = {str(row[0] or "").strip().lower() for row in cur.fetchall() if str(row[0] or "").strip()}
+        if required_all and not required_all.issubset(artifacts):
+            missing = ", ".join(sorted(required_all - artifacts))
+            return False, f"waiting for artifacts: {missing}"
+        if required_any and artifacts.isdisjoint(required_any):
+            return False, "waiting for one of artifacts: " + ", ".join(sorted(required_any))
+
+        cur.execute(
+            """
+SELECT stage, status
+FROM coordinator_stage_tasks
+WHERE workflow_id = %s AND root_domain = %s;
+""",
+            (wid, rd),
+        )
+        stage_status = {str(row[0] or "").strip().lower(): str(row[1] or "").strip().lower() for row in cur.fetchall()}
+        if required_plugins_all:
+            missing_plugins = sorted(name for name in required_plugins_all if stage_status.get(name) != "completed")
+            if missing_plugins:
+                return False, "waiting for completed plugins: " + ", ".join(missing_plugins)
+        if required_plugins_any and not any(stage_status.get(name) == "completed" for name in required_plugins_any):
+            return False, "waiting for one of completed plugins: " + ", ".join(sorted(required_plugins_any))
+
+        if required_target_statuses or require_target_completed:
+            cur.execute(
+                """
+SELECT
+  COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+  COUNT(*) FILTER (WHERE status = 'running') AS running,
+  COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+  COUNT(*) FILTER (WHERE status = 'failed') AS failed
+FROM coordinator_targets
+WHERE root_domain = %s;
+""",
+                (rd,),
+            )
+            row = cur.fetchone() or (0, 0, 0, 0)
+            pending_targets = int(row[0] or 0)
+            running_targets = int(row[1] or 0)
+            completed_targets = int(row[2] or 0)
+            failed_targets = int(row[3] or 0)
+            if running_targets > 0:
+                current_target_status = "running"
+            elif pending_targets > 0:
+                current_target_status = "pending"
+            elif failed_targets > 0 and completed_targets <= 0:
+                current_target_status = "failed"
+            elif completed_targets > 0:
+                current_target_status = "completed"
+            else:
+                current_target_status = "unknown"
+            if required_target_statuses and current_target_status not in required_target_statuses:
+                return False, "waiting for target status: " + ", ".join(sorted(required_target_statuses))
+            if require_target_completed and completed_targets <= 0:
+                return False, "waiting for completed target"
+
+        return True, ""
+
+    def _sync_workflow_step_runs_for_stage_cur(
+        self,
+        cur: Any,
+        *,
+        workflow_id: str,
+        root_domain: str,
+        stage: str,
+        status: str,
+        worker_id: str = "",
+        error: str = "",
+    ) -> None:
+        """Mirror coordinator-stage state into workflow_step_runs when linked."""
+        wid = str(workflow_id or "").strip().lower() or "default"
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        mapped_status = str(status or "").strip().lower()
+        if mapped_status == "pending":
+            blocked_reason = "Waiting for Prerequisites..."
+        else:
+            blocked_reason = ""
+        try:
+            cur.execute(
+                """
+UPDATE workflow_step_runs wr
+SET status = %s,
+    blocked_reason = %s,
+    worker_id = CASE WHEN %s <> '' THEN %s ELSE worker_id END,
+    error = CASE WHEN %s <> '' THEN %s ELSE error END,
+    started_at_utc = CASE WHEN %s = 'running' THEN COALESCE(started_at_utc, NOW()) ELSE started_at_utc END,
+    completed_at_utc = CASE WHEN %s IN ('completed','failed') THEN NOW() ELSE completed_at_utc END,
+    updated_at_utc = NOW()
+FROM coordinator_stage_tasks ct
+WHERE ct.workflow_id = %s
+  AND ct.root_domain = %s
+  AND ct.stage = %s
+  AND ct.checkpoint_json ? 'workflow_run_id'
+  AND ct.checkpoint_json ? 'step_key'
+  AND wr.workflow_run_id::text = ct.checkpoint_json->>'workflow_run_id'
+  AND wr.step_key = ct.checkpoint_json->>'step_key';
+""",
+                (
+                    mapped_status,
+                    blocked_reason,
+                    str(worker_id or ""),
+                    str(worker_id or ""),
+                    str(error or ""),
+                    str(error or "")[:2000],
+                    mapped_status,
+                    mapped_status,
+                    wid,
+                    rd,
+                    stg,
+                ),
+            )
+        except Exception:
+            # Older deployments may not have workflow_app tables. The coordinator
+            # queue must still function in those environments.
+            return
+
+    def refresh_stage_task_readiness(
+        self,
+        *,
+        root_domain: str = "",
+        workflow_id: str = "",
+        limit: int = 500,
+    ) -> int:
+        """Re-evaluate waiting/ready coordinator stage tasks.
+
+        Returns the number of rows whose claimability changed.  This method is
+        intentionally safe to call often: it only examines non-terminal,
+        non-running tasks and updates rows whose prerequisite result changed.
+        """
+        rd_filter = str(root_domain or "").strip().lower()
+        wid_filter = str(workflow_id or "").strip().lower()
+        max_rows = max(1, min(5000, int(limit or 500)))
+        changed = 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                where = ["status IN ('pending','ready')"]
+                params: list[Any] = []
+                if rd_filter:
+                    where.append("root_domain = %s")
+                    params.append(rd_filter)
+                if wid_filter:
+                    where.append("workflow_id = %s")
+                    params.append(wid_filter)
+                params.append(max_rows)
+                cur.execute(
+                    f"""
+SELECT workflow_id, root_domain, stage, status
+FROM coordinator_stage_tasks
+WHERE {' AND '.join(where)}
+ORDER BY created_at_utc ASC
+LIMIT %s
+FOR UPDATE SKIP LOCKED;
+""",
+                    params,
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    wid = str(row[0] or "default").strip().lower() or "default"
+                    rd = str(row[1] or "").strip().lower()
+                    stg = str(row[2] or "").strip().lower()
+                    current = str(row[3] or "").strip().lower()
+                    ready, reason = self._stage_prerequisites_satisfied(cur, workflow_id=wid, root_domain=rd, stage=stg)
+                    desired = "ready" if ready else "pending"
+                    if desired == current:
+                        if desired == "pending":
+                            self._sync_workflow_step_runs_for_stage_cur(cur, workflow_id=wid, root_domain=rd, stage=stg, status="pending")
+                        continue
+                    cur.execute(
+                        """
+UPDATE coordinator_stage_tasks
+SET status = %s,
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    error = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                        (desired, reason[:2000], wid, rd, stg),
+                    )
+                    self._sync_workflow_step_runs_for_stage_cur(cur, workflow_id=wid, root_domain=rd, stage=stg, status=desired, error=reason if desired == "pending" else "")
+                    changed += int(cur.rowcount or 0)
+            conn.commit()
+        return changed
+
     def schedule_stage(
         self,
         root_domain: str,
@@ -3903,6 +4235,13 @@ FOR UPDATE;
                     (widf, rd, stg),
                 )
                 row = cur.fetchone()
+                prereq_ready, prereq_reason = self._stage_prerequisites_satisfied(
+                    cur,
+                    workflow_id=widf,
+                    root_domain=rd,
+                    stage=stg,
+                )
+                initial_status = "ready" if prereq_ready else "pending"
                 if row is None:
                     cur.execute(
                         """
@@ -3910,12 +4249,13 @@ INSERT INTO coordinator_stage_tasks(
     workflow_id, root_domain, stage, status, checkpoint_json, progress_json, progress_artifact_type, resume_mode,
     resource_class, access_mode, concurrency_group, max_parallelism, updated_at_utc
 )
-VALUES (%s, %s, %s, 'pending', %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW());
+VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW());
 """,
                         (
                             widf,
                             rd,
                             stg,
+                            initial_status,
                             json.dumps(checkpoint_obj, ensure_ascii=False),
                             json.dumps(progress_obj, ensure_ascii=False),
                             progress_artifact_type_text,
@@ -3927,8 +4267,21 @@ VALUES (%s, %s, %s, 'pending', %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW
                         ),
                     )
                     scheduled = True
-                    status = "pending"
-                    decision_reason = "inserted"
+                    status = initial_status
+                    decision_reason = "inserted_ready" if initial_status == "ready" else "waiting_for_prerequisites"
+                    if initial_status == "pending":
+                        cur.execute(
+                            "UPDATE coordinator_stage_tasks SET error = %s WHERE workflow_id = %s AND root_domain = %s AND stage = %s;",
+                            (prereq_reason[:2000], widf, rd, stg),
+                        )
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status=initial_status,
+                        error=prereq_reason if initial_status == "pending" else "",
+                    )
                     attempt_count = 0
                 else:
                     current_status = str(row[0] or "").strip().lower()
@@ -3936,7 +4289,7 @@ VALUES (%s, %s, %s, 'pending', %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW
                     status = current_status
                     if current_status == "completed":
                         decision_reason = "already_completed"
-                    elif current_status in {"pending", "running"}:
+                    elif current_status in {"pending", "ready", "running"}:
                         decision_reason = f"already_{current_status}"
                     elif current_status == "failed":
                         can_retry = bool(allow_retry_failed)
@@ -3947,7 +4300,7 @@ VALUES (%s, %s, %s, 'pending', %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW
                             cur.execute(
                                 """
 UPDATE coordinator_stage_tasks
-SET status = 'pending',
+SET status = %s,
     worker_id = NULL,
     lease_expires_at = NULL,
     heartbeat_at_utc = NULL,
@@ -3967,6 +4320,7 @@ WHERE workflow_id = %s
   AND stage = %s;
 """,
                                 (
+                                    initial_status,
                                     json.dumps(checkpoint_obj, ensure_ascii=False),
                                     json.dumps(progress_obj, ensure_ascii=False),
                                     progress_artifact_type_text,
@@ -3981,8 +4335,8 @@ WHERE workflow_id = %s
                                 ),
                             )
                             scheduled = True
-                            status = "pending"
-                            decision_reason = "retry_enqueued"
+                            status = initial_status
+                            decision_reason = "retry_ready" if initial_status == "ready" else "waiting_for_prerequisites"
                         elif not decision_reason:
                             decision_reason = "retry_not_allowed"
                     else:
@@ -3999,7 +4353,7 @@ WHERE workflow_id = %s
                     "root_domain": rd,
                     "stage": stg,
                     "plugin_name": stg,
-                    "status": "pending",
+                    "status": status,
                     "worker_id": wid,
                     "reason": source_reason or decision_reason,
                     "allow_retry_failed": bool(allow_retry_failed),
@@ -4166,6 +4520,10 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND worker_id = %s;
             for item in (plugin_allowlist or [])
             if str(item or "").strip()
         ]
+        # Convert newly-unblocked tasks to ready before looking for work.
+        # This is intentionally global: workflow_id is task metadata, not a
+        # worker lane selector.
+        self.refresh_stage_task_readiness(limit=1000)
         candidates_sql = """
 SELECT workflow_id, root_domain, stage, status, worker_id, attempt_count, lease_expires_at,
        checkpoint_json, progress_json, progress_artifact_type, resume_mode,
@@ -4173,7 +4531,7 @@ SELECT workflow_id, root_domain, stage, status, worker_id, attempt_count, lease_
        COALESCE(concurrency_group, ''), GREATEST(COALESCE(max_parallelism, 1), 1)
 FROM coordinator_stage_tasks
 WHERE (
-    status = 'pending'
+    status = 'ready'
     OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
 )
   AND (%s::text[] IS NULL OR stage = ANY(%s))
@@ -4224,6 +4582,35 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                         "concurrency_group": str(row[13] or "").strip().lower(),
                         "max_parallelism": int(row[14] or 1),
                     }
+                    still_ready, blocked_reason = self._stage_prerequisites_satisfied(
+                        cur,
+                        workflow_id=row_map["workflow_id"],
+                        root_domain=row_map["root_domain"],
+                        stage=row_map["stage"],
+                    )
+                    if not still_ready:
+                        cur.execute(
+                            """
+UPDATE coordinator_stage_tasks
+SET status = 'pending',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    error = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                            (blocked_reason[:2000], row_map["workflow_id"], row_map["root_domain"], row_map["stage"]),
+                        )
+                        self._sync_workflow_step_runs_for_stage_cur(
+                            cur,
+                            workflow_id=row_map["workflow_id"],
+                            root_domain=row_map["root_domain"],
+                            stage=row_map["stage"],
+                            status="pending",
+                            error=blocked_reason,
+                        )
+                        continue
                     lease_key = self._stage_lease_key(row_map)
                     cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s));", (f"{row_map['root_domain']}:{lease_key}",))
                     if self._resource_conflict_exists(
@@ -4238,6 +4625,14 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                     updated = cur.fetchone()
                     if updated is None:
                         continue
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=row_map["workflow_id"],
+                        root_domain=row_map["root_domain"],
+                        stage=row_map["stage"],
+                        status="running",
+                        worker_id=wid,
+                    )
                     cur.execute(
                         """
 INSERT INTO coordinator_resource_leases(
@@ -4592,8 +4987,23 @@ WHERE workflow_id = %s
                         "DELETE FROM coordinator_resource_leases WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND worker_id = %s;",
                         (widf, rd, stg, wid),
                     )
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status=next_status,
+                        worker_id=wid,
+                        error=str(error or "")[:2000],
+                    )
             conn.commit()
         if updated > 0:
+            # A task completing can satisfy plugin prerequisites for other
+            # waiting tasks in the same domain/workflow.
+            try:
+                self.refresh_stage_task_readiness(root_domain=rd, workflow_id=widf, limit=1000)
+            except Exception:
+                pass
             self.record_system_event(
                 f"workflow.task.{next_status}",
                 f"workflow_task:{widf}:{rd}:{stg}",
@@ -4965,6 +5375,12 @@ SET content_sha256 = EXCLUDED.content_sha256,
                     (rd, f"artifact:{at}", summary_payload),
                 )
             conn.commit()
+        # New artifacts may unblock waiting stage tasks that require files/data
+        # produced by earlier plugins.
+        try:
+            self.refresh_stage_task_readiness(root_domain=rd, limit=1000)
+        except Exception:
+            pass
         self.record_system_event(
             "artifact.uploaded",
             f"artifact:{rd}:{at}",

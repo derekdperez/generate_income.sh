@@ -486,15 +486,27 @@ VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb);
                 ),
             )
             # Compatibility bridge: also enqueue the current coordinator stage task so existing workers can process it.
+            # "pending" means the task is waiting for prerequisites; only "ready" tasks are claimable.
             if root_domain:
+                bridge_status = status if status in {"ready", "pending"} else "pending"
+                checkpoint = {
+                    "workflow_run_id": run_id,
+                    "step_key": step["step_key"],
+                    "preconditions_json": step.get("preconditions_json") or {},
+                }
                 cur.execute(
                     """
 INSERT INTO coordinator_stage_tasks(workflow_id, root_domain, stage, status, checkpoint_json)
 VALUES(%s,%s,%s,%s,%s::jsonb)
 ON CONFLICT(workflow_id, root_domain, stage) DO UPDATE SET
-  status='pending', worker_id=NULL, lease_expires_at=NULL, error=NULL, updated_at_utc=NOW();
+  status=EXCLUDED.status,
+  checkpoint_json=EXCLUDED.checkpoint_json,
+  worker_id=NULL,
+  lease_expires_at=NULL,
+  error=CASE WHEN EXCLUDED.status='pending' THEN 'Waiting for Prerequisites...' ELSE NULL END,
+  updated_at_utc=NOW();
 """,
-                    (definition["workflow_key"], root_domain, step["plugin_key"], status if status in {"ready", "pending"} else "pending", json.dumps({"workflow_run_id": run_id, "step_key": step["step_key"]})),
+                    (definition["workflow_key"], root_domain, step["plugin_key"], bridge_status, json.dumps(checkpoint)),
                 )
         conn.commit()
     return {"id": run_id, "workflow_key": definition["workflow_key"], "root_domain": root_domain, "status": "queued"}

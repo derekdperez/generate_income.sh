@@ -73,7 +73,8 @@
     <input id="searchPlugin" type="text" placeholder="Filter plugin">
     <select id="statusFilter">
       <option value="">All statuses</option>
-      <option value="pending">pending</option>
+      <option value="pending">Waiting for Prerequisites...</option>
+      <option value="ready">ready</option>
       <option value="running">running</option>
       <option value="completed">completed</option>
       <option value="failed">failed</option>
@@ -311,11 +312,17 @@
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
     }
+    function statusLabel(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "pending") return "Waiting for Prerequisites...";
+      return value || "Waiting for Prerequisites...";
+    }
     function badgeClass(status) {
       const value = String(status || "").trim().toLowerCase();
       if (value === "running") return "badge b-running";
       if (value === "completed") return "badge b-completed";
       if (value === "failed") return "badge b-failed";
+      if (value === "ready") return "badge b-running";
       return "badge b-pending";
     }
     function parseCsv(value) {
@@ -460,14 +467,14 @@
       body.innerHTML = domains.map((domain) => {
         const root = String(domain.root_domain || "");
         const tasks = flattenTasks(domain).filter(taskFiltersMatch);
-        const statuses = { pending: 0, running: 0, completed: 0, failed: 0 };
+        const statuses = { pending: 0, ready: 0, running: 0, completed: 0, failed: 0 };
         for (const task of tasks) {
           const key = String(task.status || "").toLowerCase();
           if (Object.prototype.hasOwnProperty.call(statuses, key)) statuses[key] += 1;
         }
         const targetStats = domain.targets || {};
         const targetText = `p:${Number(targetStats.pending || 0)} r:${Number(targetStats.running || 0)} c:${Number(targetStats.completed || 0)} f:${Number(targetStats.failed || 0)}`;
-        const statusText = `p:${statuses.pending} r:${statuses.running} c:${statuses.completed} f:${statuses.failed}`;
+        const statusText = `waiting:${statuses.pending} ready:${statuses.ready} running:${statuses.running} completed:${statuses.completed} failed:${statuses.failed}`;
         const selectedClass = state.selectedDomain === root ? "selected" : "";
         return `
           <tr class="${selectedClass}" data-domain="${escapeHtml(root)}">
@@ -505,7 +512,7 @@
         <tr>
           <td class="mono">${escapeHtml(task.workflow_id || "default")}</td>
           <td class="mono">${escapeHtml(task.plugin_name)}</td>
-          <td><span class="${badgeClass(task.status)}">${escapeHtml(task.status || "pending")}</span></td>
+          <td><span class="${badgeClass(task.status)}">${escapeHtml(statusLabel(task.status))}</span></td>
           <td>${Number(task.attempt_count || 0)}</td>
           <td class="mono">${escapeHtml(task.worker_id || "")}</td>
           <td class="mono">${escapeHtml(formatStamp(task.updated_at_utc || task.completed_at_utc || ""))}</td>
