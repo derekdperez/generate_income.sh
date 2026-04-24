@@ -16,3 +16,7 @@
   - discovered files + high-value file tables,
   - extractor domain/match table + zip download.
 - Updated recon control domain API to include all discovered domains (not only snapshot domains) while retaining workflow task counters.
+- Hardened workflow enqueue persistence checks in both HTTP stacks:
+  - `POST /api/coord/workflow/run` now performs an immediate persistence re-check and one controlled re-enqueue retry if the first enqueue pass reports scheduled rows but the table still reads empty.
+  - Response payloads now include `requeue_attempted` and `requeue_counts` so transient post-enqueue wipes are visible.
+  - FastAPI error payload for zero-persist condition now returns structured diagnostics.

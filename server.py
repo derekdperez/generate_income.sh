@@ -6744,10 +6744,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "saved_parameter_overrides": saved_parameter_overrides,
                 },
             )
-            persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+            persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
                 workflow_id=workflow_id,
                 root_domains=root_domains,
                 plugins=runnable_plugin_names,
+            )
+            persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+                workflow_id=workflow_id,
+                root_domains=root_domains,
+                plugins=[],
             )
             if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
                 requeue_attempted = True
@@ -6783,10 +6788,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             retry_counts["failed"] += 1
                         else:
                             retry_counts["other"] += 1
-                persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+                persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
                     workflow_id=workflow_id,
                     root_domains=root_domains,
                     plugins=runnable_plugin_names,
+                )
+                persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+                    workflow_id=workflow_id,
+                    root_domains=root_domains,
+                    plugins=[],
                 )
             if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
                 self._write_json(
@@ -6797,6 +6807,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "selected_plugins": sorted(selected_plugins),
                         "requeue_attempted": requeue_attempted,
                         "requeue_counts": retry_counts,
+                        "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),
+                        "persisted_stage_task_rows_root_workflow": int(persisted_stage_task_rows),
                     },
                     status=500,
                 )
@@ -6829,6 +6841,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "reload_workers_queued": reload_workers_queued,
                     "counts": counts,
                     "persisted_stage_task_rows": int(persisted_stage_task_rows),
+                    "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),
                     "requeue_attempted": requeue_attempted,
                     "requeue_counts": retry_counts,
                     "results": rows[:1000],
