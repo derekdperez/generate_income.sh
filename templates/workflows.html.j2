@@ -41,6 +41,11 @@
     .b-paused { border-color: #fcd34d; color: #92400e; background: #fffbeb; }
     .b-pending { border-color: #cbd5e1; color: #334155; background: #f8fafc; }
     .task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .run-panel { display: grid; gap: 8px; grid-template-columns: 1.2fr 2fr auto auto; align-items: end; margin: 10px 0 14px; }
+    .run-panel label { display: grid; gap: 4px; font-size: 12px; color: #475569; }
+    .run-panel input[type="text"] { min-width: 220px; }
+    .run-panel .check { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; color: #334155; }
+    .notice { border: 1px solid #bae6fd; background: #f0f9ff; color: #075985; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; font-size: 13px; }
     @media (max-width: 1200px) {
       .layout { grid-template-columns: 1fr; }
       .table-wrap { max-height: 42vh; }
@@ -85,8 +90,27 @@
     <span id="statusPill" class="status-pill"><span class="status-dot"></span><span id="statusText">Idle</span></span>
   </div>
 
-  <div class="layout">
-    <section class="panel">
+
+
+  <div class="panel">
+    <h2>Run Workflow</h2>
+    <div class="notice">Launch a workflow for one or more root domains. Use “force ready” when you intentionally want workers to pick up tasks immediately, bypassing prerequisites.</div>
+    <div class="run-panel">
+      <label>Workflow ID
+        <input id="runWorkflowId" type="text" value="run-recon" placeholder="run-recon">
+      </label>
+      <label>Root domains
+        <input id="runRootDomains" type="text" placeholder="example.com, example.org">
+      </label>
+      <label class="check">
+        <input id="runForceReady" type="checkbox">
+        Force ready
+      </label>
+      <button class="primary" id="runWorkflowButton">Run Workflow</button>
+    </div>
+  </div>
+
+  <div class="layout">    <section class="panel">
       <h2>Domains</h2>
       <div class="table-wrap">
         <table>
@@ -413,7 +437,51 @@
       state.timer = setInterval(refreshAllData, 30000);
     }
 
+    async function runWorkflowNow() {
+      const workflowId = document.getElementById("runWorkflowId").value.trim() || "run-recon";
+      const rootDomains = document.getElementById("runRootDomains").value
+        .split(/[,\n]/)
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean);
+      if (!rootDomains.length) {
+        setStatus("error", "Enter at least one root domain to run.");
+        return;
+      }
+      const forceRun = document.getElementById("runForceReady").checked;
+      const payload = {
+        workflow_id: workflowId,
+        root_domains: rootDomains,
+        force_run: forceRun,
+        allow_retry_failed: forceRun,
+        reason: `ui_run:${workflowId}`,
+      };
+      const button = document.getElementById("runWorkflowButton");
+      button.disabled = true;
+      try {
+        setStatus("loading", `Scheduling ${workflowId}...`);
+        const rsp = await fetch("/api/coord/workflow/run", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify(payload),
+        });
+        const body = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) {
+          const detail = typeof body.detail === "object" ? JSON.stringify(body.detail) : String(body.detail || body.error || `HTTP ${rsp.status}`);
+          throw new Error(detail);
+        }
+        await refreshAllData();
+        const counts = body.counts || {};
+        setStatus("success", `Scheduled ${Number(counts.scheduled || 0)} task(s); ${Number(counts.already_running || 0)} already running.`);
+      } catch (error) {
+        setStatus("error", String(error && error.message ? error.message : error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     document.getElementById("refreshButton").addEventListener("click", refreshAllData);
+    document.getElementById("runWorkflowButton").addEventListener("click", runWorkflowNow);
     document.getElementById("pauseButton").addEventListener("click", () => {
       state.paused = !state.paused;
       document.getElementById("pauseButton").textContent = state.paused ? "Resume" : "Pause";

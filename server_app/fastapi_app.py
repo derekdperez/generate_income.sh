@@ -685,6 +685,7 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
 
         enqueue_reason = str(body.get("reason", "") or "").strip() or f"manual_run:{workflow_id}"
         allow_retry_failed = bool(body.get("allow_retry_failed", False))
+        force_run = bool(body.get("force_run", body.get("force_ready", False)))
         rows: list[dict[str, Any]] = []
         counts = {"scheduled": 0, "already_pending": 0, "already_running": 0, "already_completed": 0, "failed": 0, "other": 0}
         retry_counts = {"scheduled": 0, "already_pending": 0, "already_running": 0, "already_completed": 0, "failed": 0, "other": 0}
@@ -717,6 +718,27 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                         resume_mode=resume_mode,
                     )
                     reason = str(result.get("reason") or "")
+                    forced_status = ""
+                    forced_error = ""
+                    if force_run and reason not in {"already_running", "already_completed"}:
+                        try:
+                            force_result = store.control_stage_task(
+                                workflow_id=workflow_id,
+                                root_domain=root_domain,
+                                stage=plugin_name,
+                                action="run",
+                            )
+                            if bool(force_result.get("ok")):
+                                forced_status = str(force_result.get("status") or "ready")
+                                result["status"] = forced_status
+                                if not bool(result.get("scheduled")) and reason in {"already_pending", "already_ready", "waiting_for_prerequisites"}:
+                                    result["scheduled"] = True
+                                    result["reason"] = "forced_ready"
+                                    reason = "forced_ready"
+                            else:
+                                forced_error = str(force_result.get("error") or "force run failed")
+                        except Exception as exc:
+                            forced_error = str(exc)
                     if bool(result.get("scheduled")):
                         counts["scheduled"] += 1
                     elif reason == "already_pending":
@@ -736,6 +758,8 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                             "scheduled": bool(result.get("scheduled")),
                             "reason": reason,
                             "status": str(result.get("status") or ""),
+                            "forced": bool(forced_status),
+                            "force_error": forced_error,
                         }
                     )
 
@@ -817,6 +841,7 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             "selected_plugins": sorted(selected_plugins),
             "starter_plugins": plugin_names,
             "saved_parameter_overrides": saved_parameter_overrides,
+            "force_run": force_run,
             "counts": counts,
             "persisted_stage_task_rows": int(persisted_stage_task_rows),
             "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),

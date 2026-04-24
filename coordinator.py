@@ -2616,6 +2616,35 @@ class DistributedCoordinator:
             return
         checkpoint = dict(entry.get("checkpoint") or {}) if isinstance(entry.get("checkpoint"), dict) else {}
         progress = dict(entry.get("progress") or {}) if isinstance(entry.get("progress"), dict) else {}
+        log_dir = _domain_output_dir(root_domain, self.cfg.output_root) / "workflow-logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        task_log_path = log_dir / f"{workflow_id}.{plugin_name}.jsonl"
+
+        def _append_task_log(event: str, **fields: Any) -> None:
+            payload = {
+                "event": str(event or ""),
+                "timestamp_utc": _now_iso(),
+                "worker_id": worker_id,
+                "workflow_id": workflow_id,
+                "root_domain": root_domain,
+                "plugin_name": plugin_name,
+                **fields,
+            }
+            try:
+                with task_log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+            except Exception as log_exc:
+                self.logger.warning(
+                    "workflow_task_log_write_failed",
+                    worker_id=worker_id,
+                    workflow_id=workflow_id,
+                    root_domain=root_domain,
+                    stage=plugin_name,
+                    log_path=str(task_log_path),
+                    error=str(log_exc),
+                )
+
+        _append_task_log("claimed", entry={k: v for k, v in entry.items() if k not in {"checkpoint", "progress"}})
         checkpoint.update({"status": "running", "started_at_utc": _now_iso(), "plugin_name": plugin_name})
         progress.update({"status": "running", "plugin_name": plugin_name, "root_domain": root_domain})
         self._begin_job()
@@ -2671,6 +2700,7 @@ class DistributedCoordinator:
                 checkpoint=checkpoint,
                 progress=progress,
             )
+            _append_task_log("completed", exit_code=int(exit_code), error=str(err_text or ""))
             self.client.complete_stage(
                 worker_id,
                 root_domain,
@@ -2683,6 +2713,23 @@ class DistributedCoordinator:
                 progress_artifact_type=f"workflow_progress_{plugin_name}",
                 resume_mode="exact",
             )
+            try:
+                self._upload_file_artifact(
+                    root_domain,
+                    f"workflow_log_{plugin_name}",
+                    task_log_path,
+                    worker_id,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "workflow_task_log_upload_failed",
+                    worker_id=worker_id,
+                    workflow_id=workflow_id,
+                    root_domain=root_domain,
+                    stage=plugin_name,
+                    log_path=str(task_log_path),
+                    error=str(exc),
+                )
             self.logger.info(
                 "workflow_task_complete",
                 worker_id=worker_id,
@@ -2735,6 +2782,7 @@ class DistributedCoordinator:
                 metadata={"workflow_id": workflow_id, "root_domain": root_domain, "stage": plugin_name},
                 mark_errored=False,
             )
+            _append_task_log("failed", error=str(exc))
             try:
                 self.client.complete_stage(
                     worker_id,
@@ -2748,6 +2796,23 @@ class DistributedCoordinator:
                     progress_artifact_type=f"workflow_progress_{plugin_name}",
                     resume_mode="exact",
                 )
+                try:
+                    self._upload_file_artifact(
+                        root_domain,
+                        f"workflow_log_{plugin_name}",
+                        task_log_path,
+                        worker_id,
+                    )
+                except Exception as upload_exc:
+                    self.logger.warning(
+                        "workflow_task_log_upload_failed_after_exception",
+                        worker_id=worker_id,
+                        workflow_id=workflow_id,
+                        root_domain=root_domain,
+                        stage=plugin_name,
+                        log_path=str(task_log_path),
+                        error=str(upload_exc),
+                    )
             except Exception as complete_exc:
                 self.logger.error(
                     "workflow_task_complete_failed_after_exception",
