@@ -27,6 +27,14 @@ def test_workflow_interface_catalog_discovers_recon_interfaces() -> None:
     assert "/workflow-interfaces/run-recon/results" in routes
 
 
+def test_workflow_interface_catalog_routes_are_unique() -> None:
+    catalog = _workflow_interface_catalog_payload()
+    interfaces = catalog.get("interfaces")
+    assert isinstance(interfaces, list)
+    route_list = [str(item.get("route") or "") for item in interfaces if isinstance(item, dict) and str(item.get("route") or "")]
+    assert len(route_list) == len(set(route_list))
+
+
 def test_navbar_requests_dynamic_workflow_interface_links() -> None:
     template = Path("templates/_navbar.html.j2").read_text(encoding="utf-8")
     assert 'id="workflowInterfaceNav"' in template

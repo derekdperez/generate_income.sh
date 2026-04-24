@@ -258,3 +258,4 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Added API-side cleanup boundaries:
     - generated-task clearing (`/api/coord/workflow/clear-generated-tasks`),
     - workflow data clearing (`/api/coord/workflow/clear-data`) using new store deletion helpers.
+  - Interface catalog hydration now uses route-level deduplication to avoid duplicate nav links when multiple workflow files define the same interface route.

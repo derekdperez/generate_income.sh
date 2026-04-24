@@ -1689,3 +1689,11 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
   - `python -m py_compile server.py server_app/store.py server_app/fastapi_app.py tests/test_workflow_interface_config.py`
   - `pytest -q tests/test_workflow_interface_config.py tests/test_refactor_modules.py -k "workflow or navbar or http_requests_template_renders"`
   - `pytest -q tests/test_reporting_and_store_helpers.py -k "render_workflows_html_contains_expected_heading or claim_next_stage_respects_running_target_domain_lock"`
+
+- Workflow interface/nav hardening and running-task clear UX follow-up.
+  - `server.py::_workflow_interface_catalog_payload()` now de-duplicates interfaces by route (last writer wins) so legacy/alias workflow files do not produce duplicate nav entries.
+  - Recon control/results interfaces now offer a stop-workers confirmation path when running tasks block deletion, queueing worker stop commands via `stop_running_workers=true`.
+- Validation:
+  - `python -m py_compile server.py tests/test_workflow_interface_config.py`
+  - `pytest -q tests/test_workflow_interface_config.py`
+  - `pytest -q tests/test_refactor_modules.py -k "workflow or navbar or http_requests_template_renders"`
