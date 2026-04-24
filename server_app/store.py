@@ -4063,6 +4063,7 @@ WHERE root_domain = %s;
             running_targets = int(row[1] or 0)
             completed_targets = int(row[2] or 0)
             failed_targets = int(row[3] or 0)
+            total_targets = pending_targets + running_targets + completed_targets + failed_targets
             if running_targets > 0:
                 current_target_status = "running"
             elif pending_targets > 0:
@@ -4071,6 +4072,10 @@ WHERE root_domain = %s;
                 current_target_status = "failed"
             elif completed_targets > 0:
                 current_target_status = "completed"
+            elif total_targets <= 0:
+                # Domain-level workflow runs may not have explicit target rows yet.
+                # Treat this as pending so first-stage plugins are not blocked forever.
+                current_target_status = "pending"
             else:
                 current_target_status = "unknown"
             if required_target_statuses and current_target_status not in required_target_statuses:

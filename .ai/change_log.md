@@ -1585,6 +1585,18 @@ ightmare.py and ozzy.py to delegate to these modules via compatibility wrappers
 
 ## 2026-04-24
 
+- Fixed recon stage readiness deadlock when no `coordinator_targets` rows exist yet for a domain.
+  - Root cause: prerequisite evaluation mapped zero target counts to `unknown`, so stages requiring `target_statuses: [pending, running, completed]` stayed permanently blocked as "Waiting for Prerequisites...".
+  - Updated target-status fallback in both readiness evaluators:
+    - `server_app/store.py::_stage_prerequisites_satisfied(...)`
+    - `coordinator.py::DistributedCoordinator._has_stage_prerequisites(...)`
+  - New behavior: when a domain has zero target rows, current target status is treated as `pending` (domain-level workflow default), while `require_target_completed` checks remain strict.
+- Added regression tests:
+  - `tests/test_stage_prerequisites_target_status.py`
+    - scheduler prerequisite evaluator accepts missing-target domains for `pending/running/completed` target-status gates.
+    - store prerequisite evaluator mirrors the same behavior.
+    - `require_target_completed` still blocks when no completed target exists.
+
 - Fixed workflow definition save failures caused by FK references from `workflow_step_runs` to `workflow_steps`.
   - Root cause: `save_workflow_definition(...)` deleted all `workflow_steps` rows for a definition before re-inserting, which violates `workflow_step_runs_step_definition_id_fkey` when historical runs reference those step IDs.
   - `workflow_app/store.py` now:

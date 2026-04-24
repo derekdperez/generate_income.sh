@@ -444,6 +444,10 @@ ightmare_shared/value_types.py rather than duplicated in multiple executables.
 
 - Scheduler robustness convention:
   - Queue-driven workflow schedulers must include startup and periodic full-state rescans to recover from missed/older readiness transitions after restarts.
+- Target-status prerequisite convention:
+  - For domain-level workflows, absence of `coordinator_targets` rows should be treated as target status `pending` during prerequisite checks.
+  - This prevents first-stage workflow tasks from being stuck in `Waiting for Prerequisites...` when target rows are not materialized yet.
+  - `require_target_completed` remains a strict gate and must still require at least one completed target.
 
 - Workflow definition compatibility convention:
   - Treat `preconditions` and `prerequisites` as equivalent keys in workflow JSON normalization.

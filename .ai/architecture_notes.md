@@ -238,6 +238,10 @@ ightmare_app/spider_url_policy.py) and fuzz request/model core (ozzy_app/fuzz_c
   - Cache strategy for coordinator list pages is `cache_mode` driven (`prefer` for cache-first, `refresh` for source-first) and supports stale-cache fallback on source errors.
   - A background warmer thread preloads default query keys for crawl progress, discovered targets, discovered files, and high-value files, plus a small default sitemap sample for top domains.
 
+- Stage-readiness target-state model update (2026-04-24):
+  - Prerequisite evaluators now treat domains with zero `coordinator_targets` rows as `pending` instead of `unknown`.
+  - This aligns domain-level workflow execution with recon first-stage semantics and avoids deadlocked pending tasks when explicit target rows are absent.
+
 - Discovered-target data-shape boundary refinement (2026-04-23):
   - Coordinator session payloads may encode URL inventory and link graph with relative URLs while still representing valid crawl findings.
   - Sitemap APIs should normalize URL forms (absolute + relative) at read time to keep paging/filtering/export features stable across mixed crawler payload formats.

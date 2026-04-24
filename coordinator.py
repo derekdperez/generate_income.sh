@@ -783,6 +783,7 @@ class DistributedCoordinator:
         running_targets = _safe_int(target_counts.get("running"), 0)
         completed_targets = _safe_int(target_counts.get("completed"), 0)
         failed_targets = _safe_int(target_counts.get("failed"), 0)
+        total_targets = pending_targets + running_targets + completed_targets + failed_targets
         if running_targets > 0:
             current_target_status = "running"
         elif pending_targets > 0:
@@ -791,6 +792,9 @@ class DistributedCoordinator:
             current_target_status = "failed"
         elif completed_targets > 0:
             current_target_status = "completed"
+        elif total_targets <= 0:
+            # Domain-level workflows may run before per-target rows exist.
+            current_target_status = "pending"
         else:
             current_target_status = "unknown"
 
