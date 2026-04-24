@@ -6809,7 +6809,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 workflow_id=workflow_id,
                 root_domains=root_domains,
                 plugins=sorted(selected_plugins),
-                statuses=["pending", "ready", "completed", "failed"],
+                statuses=["pending", "ready", "paused", "completed", "failed"],
                 hard_delete=hard_delete,
             )
             stop_commands_queued: list[str] = []

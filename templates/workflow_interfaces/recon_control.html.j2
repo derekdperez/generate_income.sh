@@ -344,7 +344,19 @@
           setStatus("Generating workflow tasks...");
           const payload = await generateTasks();
           const scheduled = Number((payload.counts || {}).scheduled || 0);
-          setStatus(`Generated workflow tasks. Scheduled: ${scheduled}. Domains: ${payload.domains_count || 0}.`);
+          const alreadyPending = Number((payload.counts || {}).already_pending || 0);
+          const alreadyRunning = Number((payload.counts || {}).already_running || 0);
+          const alreadyCompleted = Number((payload.counts || {}).already_completed || 0);
+          if (scheduled <= 0) {
+            setStatus(
+              `No new tasks scheduled. already_pending=${alreadyPending}, already_running=${alreadyRunning}, already_completed=${alreadyCompleted}.`,
+              true
+            );
+          } else {
+            setStatus(
+              `Scheduled ${scheduled} tasks. already_pending=${alreadyPending}, already_running=${alreadyRunning}, already_completed=${alreadyCompleted}.`
+            );
+          }
           await loadDomains();
         } catch (err) {
           setStatus(err.message || err, true);

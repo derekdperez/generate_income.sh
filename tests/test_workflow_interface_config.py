@@ -39,3 +39,36 @@ def test_navbar_requests_dynamic_workflow_interface_links() -> None:
     template = Path("templates/_navbar.html.j2").read_text(encoding="utf-8")
     assert 'id="workflowInterfaceNav"' in template
     assert "/api/coord/workflow-interfaces" in template
+
+
+def test_navbar_primary_links_match_reduced_page_set() -> None:
+    template = Path("templates/_navbar.html.j2").read_text(encoding="utf-8")
+    assert 'href="/workers"' in template
+    assert 'href="/workflows"' in template
+    assert 'href="/workflow-definitions"' in template
+    assert 'href="/database"' in template
+    assert 'href="/docker-status"' in template
+    assert 'href="/view-logs"' in template
+
+    assert 'href="/operations"' not in template
+    assert 'href="/plugin-definitions"' not in template
+    assert 'href="/workflow-runs"' not in template
+    assert 'href="/fuzzing"' not in template
+    assert 'href="/events"' not in template
+    assert 'href="/auth0r"' not in template
+    assert 'href="/errors"' not in template
+    assert 'href="/crawl-progress"' not in template
+    assert 'href="/discovered-targets"' not in template
+    assert 'href="/discovered-files"' not in template
+    assert 'href="/extractor-matches"' not in template
+
+
+def test_workflows_page_removes_legacy_panels_and_uses_task_actions() -> None:
+    template = Path("templates/workflows.html.j2").read_text(encoding="utf-8")
+    assert "Enqueue Plugin Task" not in template
+    assert "Reset Plugin Tasks" not in template
+    assert ">Monitor<" not in template
+    assert ">Timeline<" not in template
+    assert 'data-action="delete"' in template
+    assert 'data-action="pause"' in template
+    assert 'data-action="run"' in template
