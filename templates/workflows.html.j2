@@ -154,8 +154,9 @@
           <label>Plugin name
             <input id="enqueuePlugin" type="text" placeholder="extractor">
           </label>
-          <label>Max attempts (failed retry gate)
-            <input id="enqueueMaxAttempts" type="text" value="0">
+          <label>Max attempts (total; 1 = no retry)
+            <input id="enqueueMaxAttempts" type="text" value="1">
+            <small class="muted">A value of 0 is normalized to 1, not infinite.</small>
           </label>
           <label class="full">Reason
             <input id="enqueueReason" type="text" placeholder="manual enqueue from workflow monitor">
@@ -659,7 +660,7 @@
           workflow_id: workflowId,
           reason,
           allow_retry_failed: allowRetryFailed,
-          max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 0,
+          max_attempts: Number.isFinite(maxAttempts) ? Math.max(1, maxAttempts) : 1,
           progress_artifact_type: progressArtifactType,
           resume_mode: resumeMode,
         });

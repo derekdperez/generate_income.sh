@@ -594,6 +594,7 @@ CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
   completed_at_utc TIMESTAMPTZ,
   heartbeat_at_utc TIMESTAMPTZ,
   attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
   exit_code INTEGER,
   error TEXT,
   checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -801,6 +802,11 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
+                cur.execute("""
+ALTER TABLE coordinator_stage_tasks
+  ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 1;
+UPDATE coordinator_stage_tasks SET max_attempts = 1 WHERE COALESCE(max_attempts, 0) < 1;
+""")
             conn.commit()
             for sql in migration_statements:
                 try:
@@ -3870,6 +3876,30 @@ RETURNING command;
         stg = str(stage or "").strip().lower()
         if not wid or not stg:
             return {}
+        # Prefer DB-backed workflow-builder definitions. Users can edit these in
+        # the builder, so relying only on shipped JSON files can leave workers
+        # evaluating stale preconditions and skipping the wrong task.
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+SELECT s.preconditions_json
+FROM workflow_definitions w
+JOIN workflow_steps s ON s.workflow_definition_id = w.id
+WHERE w.workflow_key = %s AND s.plugin_key = %s
+ORDER BY w.updated_at_utc DESC, s.ordinal ASC
+LIMIT 1;
+""",
+                        (wid, stg),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            if row and isinstance(row[0], dict):
+                return dict(row[0] or {})
+        except Exception:
+            pass
+
         candidates: list[Path] = []
         workflow_dir = self._workflow_catalog_dir()
         direct = workflow_dir / f"{wid}.workflow.json"
@@ -4198,7 +4228,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
         widf = str(workflow_id or "").strip().lower() or "default"
         wid = str(worker_id or "").strip()
         source_reason = str(reason or "").strip()
-        max_attempts_int = max(0, int(max_attempts or 0))
+        max_attempts_int = max(1, int(max_attempts or 1))
         if not rd or not stg:
             return {
                 "ok": False,
@@ -4247,9 +4277,9 @@ FOR UPDATE;
                         """
 INSERT INTO coordinator_stage_tasks(
     workflow_id, root_domain, stage, status, checkpoint_json, progress_json, progress_artifact_type, resume_mode,
-    resource_class, access_mode, concurrency_group, max_parallelism, updated_at_utc
+    resource_class, access_mode, concurrency_group, max_parallelism, max_attempts, updated_at_utc
 )
-VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW());
+VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, NOW());
 """,
                         (
                             widf,
@@ -4264,6 +4294,7 @@ VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW());
                             profile["access_mode"],
                             profile["concurrency_group"],
                             int(profile["max_parallelism"]),
+                            max_attempts_int,
                         ),
                     )
                     scheduled = True
@@ -4314,7 +4345,8 @@ SET status = %s,
     resource_class = %s,
     access_mode = %s,
     concurrency_group = %s,
-    max_parallelism = %s
+    max_parallelism = %s,
+    max_attempts = %s
 WHERE workflow_id = %s
   AND root_domain = %s
   AND stage = %s;
@@ -4329,6 +4361,7 @@ WHERE workflow_id = %s
                                     profile["access_mode"],
                                     profile["concurrency_group"],
                                     int(profile["max_parallelism"]),
+                                    max_attempts_int,
                                     widf,
                                     rd,
                                     stg,
@@ -4528,11 +4561,17 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND worker_id = %s;
 SELECT workflow_id, root_domain, stage, status, worker_id, attempt_count, lease_expires_at,
        checkpoint_json, progress_json, progress_artifact_type, resume_mode,
        COALESCE(resource_class, 'default'), COALESCE(access_mode, 'write'),
-       COALESCE(concurrency_group, ''), GREATEST(COALESCE(max_parallelism, 1), 1)
+       COALESCE(concurrency_group, ''), GREATEST(COALESCE(max_parallelism, 1), 1),
+       GREATEST(COALESCE(max_attempts, 1), 1)
 FROM coordinator_stage_tasks
 WHERE (
     status = 'ready'
-    OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+    OR (
+      status = 'running'
+      AND lease_expires_at IS NOT NULL
+      AND lease_expires_at < NOW()
+      AND attempt_count < GREATEST(COALESCE(max_attempts, 1), 1)
+    )
 )
   AND (%s::text[] IS NULL OR stage = ANY(%s))
   AND NOT EXISTS (
@@ -4563,7 +4602,7 @@ WHERE workflow_id = %s
   AND stage = %s
 RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lease_expires_at,
           checkpoint_json, progress_json, progress_artifact_type, resume_mode,
-          resource_class, access_mode, concurrency_group, max_parallelism;
+          resource_class, access_mode, concurrency_group, max_parallelism, max_attempts;
 """
         claimed = None
         with self._connect() as conn:
@@ -4581,6 +4620,7 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                         "access_mode": str(row[12] or "write").strip().lower() or "write",
                         "concurrency_group": str(row[13] or "").strip().lower(),
                         "max_parallelism": int(row[14] or 1),
+                        "max_attempts": int(row[15] or 1),
                     }
                     still_ready, blocked_reason = self._stage_prerequisites_satisfied(
                         cur,
@@ -4682,6 +4722,7 @@ SET lease_expires_at = EXCLUDED.lease_expires_at,
                 "access_mode": str(row[12] or "write"),
                 "concurrency_group": str(row[13] or ""),
                 "max_parallelism": int(row[14] or 1),
+                "max_attempts": int(row[15] or 1),
             },
         )
         return {
@@ -4701,6 +4742,7 @@ SET lease_expires_at = EXCLUDED.lease_expires_at,
             "access_mode": str(row[12] or "write"),
             "concurrency_group": str(row[13] or ""),
             "max_parallelism": int(row[14] or 1),
+            "max_attempts": int(row[15] or 1),
         }
 
     def claim_next_stage(
@@ -5051,7 +5093,7 @@ WHERE workflow_id = %s
                 continue
             if text in {"errored", "error"}:
                 text = "failed"
-            if text not in {"pending", "running", "completed", "failed"}:
+            if text not in {"pending", "ready", "running", "completed", "failed"}:
                 continue
             if text not in normalized_statuses:
                 normalized_statuses.append(text)
@@ -5142,7 +5184,7 @@ WHERE {where_clause};
                 continue
             if text in {"errored", "error"}:
                 text = "failed"
-            if text not in {"pending", "running", "completed", "failed"}:
+            if text not in {"pending", "ready", "running", "completed", "failed"}:
                 continue
             if text not in normalized_statuses:
                 normalized_statuses.append(text)

@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   continue_on_error BOOLEAN NOT NULL DEFAULT FALSE,
   retry_failed BOOLEAN NOT NULL DEFAULT FALSE,
-  max_attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
   timeout_seconds INTEGER NOT NULL DEFAULT 0,
   input_bindings JSONB NOT NULL DEFAULT '{}'::jsonb,
   config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS workflow_step_runs (
   blocked_reason TEXT NOT NULL DEFAULT '',
   worker_id TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
   input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   resolved_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -177,6 +177,68 @@ CREATE TABLE IF NOT EXISTS workflow_definition_audit (
     with store._connect() as conn:
         with conn.cursor() as cur:
             cur.execute(ddl)
+            # Idempotent migrations for databases created by older versions of
+            # the workflow builder. CREATE TABLE IF NOT EXISTS does not add
+            # columns to existing tables, which caused saves to fail with the
+            # generic "workflow API request failed" error after the builder grew
+            # retry/config/status fields.
+            cur.execute("""
+ALTER TABLE plugin_definitions
+  ADD COLUMN IF NOT EXISTS python_module TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS python_class TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general',
+  ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS contract_version TEXT NOT NULL DEFAULT '1.0.0',
+  ADD COLUMN IF NOT EXISTS config_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS input_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS output_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS ui_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS examples_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS source_path TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE workflow_definitions
+  ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft',
+  ADD COLUMN IF NOT EXISTS trigger_mode TEXT NOT NULL DEFAULT 'manual',
+  ADD COLUMN IF NOT EXISTS input_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS ui_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE workflow_steps
+  ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS continue_on_error BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS retry_failed BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS input_bindings JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS preconditions_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS outputs_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE workflow_step_runs
+  ADD COLUMN IF NOT EXISTS blocked_reason TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS worker_id TEXT,
+  ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS resolved_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS started_at_utc TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS completed_at_utc TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW();
+UPDATE workflow_steps SET max_attempts = 1 WHERE COALESCE(max_attempts, 0) < 1;
+UPDATE workflow_step_runs SET max_attempts = 1 WHERE COALESCE(max_attempts, 0) < 1;
+""")
         conn.commit()
 
 
@@ -496,7 +558,7 @@ FROM workflow_steps WHERE workflow_definition_id=%s ORDER BY ordinal ASC;
             {
                 "id": s[0], "step_key": s[1], "display_name": s[2], "plugin_key": s[3],
                 "ordinal": int(s[4]), "enabled": bool(s[5]), "continue_on_error": bool(s[6]),
-                "retry_failed": bool(s[7]), "max_attempts": int(s[8] or 0), "timeout_seconds": int(s[9] or 0),
+                "retry_failed": bool(s[7]), "max_attempts": max(1, int(s[8] or 1)), "timeout_seconds": int(s[9] or 0),
                 "input_bindings": s[10] or {}, "config_json": s[11] or {},
                 "preconditions_json": s[12] or {}, "outputs_json": s[13] or {},
             }
@@ -554,7 +616,7 @@ VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)
                 (
                     str(uuid.uuid4()), wf_id, step_key, str(step.get("display_name") or step_key), plugin_key, int(step.get("ordinal") or idx),
                     bool(step.get("enabled", True)), bool(step.get("continue_on_error", False)), bool(step.get("retry_failed", False)),
-                    int(step.get("max_attempts") or 0), int(step.get("timeout_seconds") or 0),
+                    max(1, int(step.get("max_attempts") or 1)), int(step.get("timeout_seconds") or 0),
                     json.dumps(_json(step.get("input_bindings"), {})), json.dumps(_json(step.get("config_json", step.get("config")), {})),
                     json.dumps(_json(step.get("preconditions_json", step.get("preconditions")), {})),
                     json.dumps(_json(step.get("outputs_json", step.get("outputs")), {})),
@@ -598,6 +660,9 @@ def create_workflow_run(store: Any, payload: dict[str, Any], *, actor: str = "")
     run_id = str(uuid.uuid4())
     root_domain = str(payload.get("root_domain") or payload.get("input", {}).get("root_domain") or "").strip().lower()
     input_json = _json(payload.get("input_json", payload.get("input")), {})
+    # max_attempts is a total-attempt cap. 1 means "run once, do not retry".
+    # Older workflow JSON often used 0 to mean "not configured"; normalize it to
+    # 1 so 0 never becomes an accidental infinite retry setting.
     with store._connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -607,43 +672,57 @@ VALUES(%s,%s,%s,%s,%s,'queued',%s,%s::jsonb,%s);
             (run_id, definition["id"], definition["workflow_key"], int(definition.get("version") or 1), root_domain, str(payload.get("trigger_source") or "manual"), json.dumps(input_json), actor),
         )
         for step in definition["steps"]:
-            status = "ready" if int(step.get("ordinal") or 1) == 1 else "pending"
-            blocked = "" if status == "ready" else "waiting for previous step to complete"
+            step_max_attempts = max(1, int(step.get("max_attempts") or 1))
+            # The coordinator is the source of truth for readiness. Insert every
+            # step as waiting, then refresh readiness after the whole run is
+            # present so prerequisite checks can see every sibling task.
             cur.execute(
                 """
 INSERT INTO workflow_step_runs(id, workflow_run_id, workflow_definition_id, step_definition_id, step_key, plugin_key, ordinal, status, blocked_reason, max_attempts, input_json, resolved_config_json)
-VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb);
+VALUES(%s,%s,%s,%s,%s,%s,%s,'pending','Waiting for Prerequisites...',%s,%s::jsonb,%s::jsonb);
 """,
                 (
                     str(uuid.uuid4()), run_id, definition["id"], step["id"], step["step_key"], step["plugin_key"],
-                    int(step["ordinal"]), status, blocked, int(step.get("max_attempts") or 0),
-                    json.dumps(input_json), json.dumps(step.get("config_json") or {}),
+                    int(step["ordinal"]), step_max_attempts, json.dumps(input_json), json.dumps(step.get("config_json") or {}),
                 ),
             )
-            # Compatibility bridge: also enqueue the current coordinator stage task so existing workers can process it.
-            # "pending" means the task is waiting for prerequisites; only "ready" tasks are claimable.
+            # Compatibility bridge: enqueue coordinator stage tasks so existing
+            # workers can process DB-backed workflow runs. "pending" means
+            # waiting for prerequisites; only "ready" tasks are claimable.
             if root_domain:
-                bridge_status = status if status in {"ready", "pending"} else "pending"
                 checkpoint = {
                     "workflow_run_id": run_id,
                     "step_key": step["step_key"],
                     "preconditions_json": step.get("preconditions_json") or {},
+                    "max_attempts": step_max_attempts,
+                    "retry_failed": bool(step.get("retry_failed", False)),
                 }
                 cur.execute(
                     """
-INSERT INTO coordinator_stage_tasks(workflow_id, root_domain, stage, status, checkpoint_json)
-VALUES(%s,%s,%s,%s,%s::jsonb)
+INSERT INTO coordinator_stage_tasks(workflow_id, root_domain, stage, status, checkpoint_json, error, max_attempts)
+VALUES(%s,%s,%s,'pending',%s::jsonb,'Waiting for Prerequisites...',%s)
 ON CONFLICT(workflow_id, root_domain, stage) DO UPDATE SET
-  status=EXCLUDED.status,
+  status='pending',
   checkpoint_json=EXCLUDED.checkpoint_json,
   worker_id=NULL,
   lease_expires_at=NULL,
-  error=CASE WHEN EXCLUDED.status='pending' THEN 'Waiting for Prerequisites...' ELSE NULL END,
+  heartbeat_at_utc=NULL,
+  completed_at_utc=NULL,
+  error='Waiting for Prerequisites...',
+  max_attempts=EXCLUDED.max_attempts,
   updated_at_utc=NOW();
 """,
-                    (definition["workflow_key"], root_domain, step["plugin_key"], bridge_status, json.dumps(checkpoint)),
+                    (definition["workflow_key"], root_domain, step["plugin_key"], json.dumps(checkpoint), step_max_attempts),
                 )
         conn.commit()
+    if root_domain:
+        # File/artifact and plugin prerequisite evaluation happens here and on
+        # every worker poll/completion. This makes newly-created runs immediately
+        # claimable when their first ready step has no unmet prerequisite.
+        try:
+            store.refresh_stage_task_readiness(root_domain=root_domain, workflow_id=definition["workflow_key"], limit=5000)
+        except Exception:
+            pass
     return {"id": run_id, "workflow_key": definition["workflow_key"], "root_domain": root_domain, "status": "queued"}
 
 
@@ -696,7 +775,7 @@ FROM workflow_step_runs WHERE workflow_run_id=%s ORDER BY ordinal ASC;
             {
                 "id": s[0], "step_key": s[1], "plugin_key": s[2], "ordinal": int(s[3]),
                 "status": s[4], "blocked_reason": s[5], "worker_id": s[6],
-                "attempt_count": int(s[7] or 0), "max_attempts": int(s[8] or 0),
+                "attempt_count": int(s[7] or 0), "max_attempts": max(1, int(s[8] or 1)),
                 "input_json": s[9] or {}, "resolved_config_json": s[10] or {}, "output_json": s[11] or {},
                 "error": s[12], "started_at_utc": s[13].isoformat() if s[13] else None,
                 "completed_at_utc": s[14].isoformat() if s[14] else None,
