@@ -4182,7 +4182,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_text("Dashboard page removed. Use /workers.", status=404)
             return
         if path == "/operations":
-            self._write_text(render_operations_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Operations page removed.", status=404)
             return
         if path == "/workers":
             self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
@@ -4194,7 +4194,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_text(render_database_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/events":
-            self._write_text(render_events_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Events page removed.", status=404)
             return
         if path == "/workflows":
             self._write_text(render_workflows_html(), content_type="text/html; charset=utf-8")
@@ -4203,19 +4203,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_text(render_workflow_definitions_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/workflow-runs":
-            self._write_text(render_workflow_runs_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Workflow Runs page removed.", status=404)
             return
         if path == "/plugin-definitions":
-            self._write_text(render_plugin_definitions_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Plugins page removed.", status=404)
             return
         if path == "/crawl-progress":
-            self._write_text(render_crawl_progress_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Crawl Progress moved to Recon Results.", status=404)
             return
         if path == "/extractor-matches":
-            self._write_text(render_extractor_matches_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Extractor Matches moved to Recon Results.", status=404)
             return
         if path == "/fuzzing":
-            self._write_text(render_fuzzing_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Fuzzing page removed.", status=404)
             return
         if path == "/docker-status":
             self._write_text(render_docker_status_html(), content_type="text/html; charset=utf-8")
@@ -4224,19 +4224,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._write_text(render_view_logs_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/errors":
-            self._write_text(render_errors_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Errors page removed.", status=404)
             return
         if path == "/discovered-targets":
-            self._write_text(render_discovered_targets_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Discovered Targets moved to Recon Results.", status=404)
             return
         if path == "/discovered-target-response":
             self._write_text(render_discovered_target_response_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/discovered-files":
-            self._write_text(render_discovered_files_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Discovered Files moved to Recon Results.", status=404)
             return
         if path == "/auth0r":
-            self._write_text(render_auth0r_html(), content_type="text/html; charset=utf-8")
+            self._write_text("Auth0r page removed.", status=404)
             return
         interface_catalog = self._get_workflow_interface_catalog()
         interface_route_map = interface_catalog.get("routes") if isinstance(interface_catalog.get("routes"), dict) else {}
@@ -6073,7 +6073,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 expanded.extend([part.strip().lower() for part in item.split(",") if part.strip()])
             for item in expanded:
                 mapped = "failed" if item in {"errored", "error"} else item
-                if mapped not in {"pending", "ready", "running", "completed", "failed"}:
+                if mapped not in {"pending", "ready", "running", "completed", "failed", "paused"}:
                     continue
                 if mapped not in out:
                     out.append(mapped)
@@ -6377,6 +6377,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 hard_delete=hard_delete,
             )
             self._write_json(result)
+            return
+
+        if path == "/api/coord/stage/control":
+            workflow_id = str(body.get("workflow_id", "default") or "default").strip().lower() or "default"
+            root_domain = str(body.get("root_domain", "") or "").strip().lower()
+            stage = str(body.get("stage", body.get("plugin", "")) or "").strip().lower()
+            action = str(body.get("action", "") or "").strip().lower()
+            if not root_domain:
+                self._write_json({"error": "root_domain is required"}, status=400)
+                return
+            if not stage:
+                self._write_json({"error": "stage/plugin is required"}, status=400)
+                return
+            if action not in {"delete", "pause", "run"}:
+                self._write_json({"error": "action must be one of: delete, pause, run"}, status=400)
+                return
+            result = self.coordinator_store.control_stage_task(
+                workflow_id=workflow_id,
+                root_domain=root_domain,
+                stage=stage,
+                action=action,
+            )
+            status = 200 if bool(result.get("ok", False)) else 404
+            self._write_json(result, status=status)
             return
 
         if path == "/api/coord/targets/reset":

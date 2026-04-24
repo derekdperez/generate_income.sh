@@ -99,27 +99,15 @@
 </style>
 <nav class="app-nav" aria-label="Primary">
   <div class="app-nav-inner">
-    <a class="app-nav-brand" href="/operations">Nightmare</a>
+    <a class="app-nav-brand" href="/workers">Nightmare</a>
     <div class="app-nav-links">
-      <a class="app-nav-link" href="/operations" data-nav-path="/operations">Operations</a>
       <a class="app-nav-link" href="/workers" data-nav-path="/workers">Workers</a>
       <a class="app-nav-link" href="/workflows" data-nav-path="/workflows">Workflows</a>
       <span id="workflowInterfaceNav"></span>
       <a class="app-nav-link" href="/workflow-definitions" data-nav-path="/workflow-definitions">Workflow Builder</a>
-      <a class="app-nav-link" href="/plugin-definitions" data-nav-path="/plugin-definitions">Plugins</a>
-      <a class="app-nav-link" href="/workflow-runs" data-nav-path="/workflow-runs">Workflow Runs</a>
-      <a class="app-nav-link" href="/http-requests" data-nav-path="/http-requests">HTTP Requests</a>
       <a class="app-nav-link" href="/database" data-nav-path="/database">Database</a>
-      <a class="app-nav-link" href="/crawl-progress" data-nav-path="/crawl-progress">Crawl Progress</a>
-      <a class="app-nav-link" href="/discovered-targets" data-nav-path="/discovered-targets">Discovered Targets</a>
-      <a class="app-nav-link" href="/discovered-files" data-nav-path="/discovered-files">Discovered Files</a>
-      <a class="app-nav-link" href="/extractor-matches" data-nav-path="/extractor-matches">Extractor Matches</a>
-      <a class="app-nav-link" href="/fuzzing" data-nav-path="/fuzzing">Fuzzing</a>
       <a class="app-nav-link" href="/docker-status" data-nav-path="/docker-status">Docker Status</a>
       <a class="app-nav-link" href="/view-logs" data-nav-path="/view-logs">View Logs</a>
-      <a class="app-nav-link" href="/events" data-nav-path="/events">Events</a>
-      <a class="app-nav-link" href="/auth0r" data-nav-path="/auth0r">Auth0r</a>
-      <a class="app-nav-link" href="/errors" data-nav-path="/errors">Errors</a>
     </div>
   </div>
 </nav>
@@ -244,18 +232,20 @@
       try {
         const payload = await window.NightmareAuth.fetchJson("/api/coord/workflow-interfaces", { method: "GET", cache: "no-store" });
         const items = Array.isArray(payload.interfaces) ? payload.interfaces : [];
-        const links = items
-          .map((item) => {
-            if (!item || typeof item !== "object") return "";
-            const route = String(item.route || "").trim();
-            const label = String(item.nav_label || item.title || "").trim();
-            if (!route || !label) return "";
-            const navPath = `${route}${String(item.hash || "")}`;
-            return `<a class="app-nav-link" href="${route}" data-nav-path="${navPath}">${label}</a>`;
-          })
-          .filter(Boolean)
-          .join("");
-        host.innerHTML = links;
+        const seenRoutes = new Set();
+        const fragments = [];
+        for (const item of items) {
+          if (!item || typeof item !== "object") continue;
+          const rawRoute = String(item.route || "").trim();
+          const route = rawRoute.endsWith("/") && rawRoute !== "/" ? rawRoute.slice(0, -1) : rawRoute;
+          const label = String(item.nav_label || item.title || "").trim();
+          if (!route || !label) continue;
+          if (seenRoutes.has(route)) continue;
+          seenRoutes.add(route);
+          const navPath = `${route}${String(item.hash || "")}`;
+          fragments.push(`<a class="app-nav-link" href="${route}" data-nav-path="${navPath}">${label}</a>`);
+        }
+        host.innerHTML = fragments.join("");
         markActiveNav();
       } catch (_) {
         host.innerHTML = "";

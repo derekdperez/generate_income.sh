@@ -33,7 +33,7 @@ def _parse_status_filters(payload: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     for value in values:
         status = "failed" if value in {"errored", "error"} else value
-        if status not in {"pending", "ready", "running", "completed", "failed"}:
+        if status not in {"pending", "ready", "running", "completed", "failed", "paused"}:
             continue
         if not status or status in seen:
             continue
@@ -265,6 +265,22 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             statuses=_parse_status_filters(body),
             hard_delete=bool(body.get("hard_delete")),
         )
+
+    @app.post("/api/coord/stage/control")
+    def control_stage_task(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        result = store.control_stage_task(
+            workflow_id=str(body.get("workflow_id") or "default"),
+            root_domain=str(body.get("root_domain") or ""),
+            stage=str(body.get("stage", body.get("plugin", "")) or ""),
+            action=str(body.get("action") or ""),
+        )
+        if not bool(result.get("ok")):
+            raise HTTPException(status_code=404, detail=str(result.get("error") or "task control failed"))
+        return result
 
     @app.post("/api/coord/targets/reset")
     def reset_targets(

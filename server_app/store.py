@@ -4607,6 +4607,11 @@ SET status = 'running',
     completed_at_utc = NULL,
     heartbeat_at_utc = NOW(),
     attempt_count = attempt_count + 1,
+    checkpoint_json = CASE
+        WHEN COALESCE(checkpoint_json, '{}'::jsonb) ? 'force_run_override'
+            THEN (COALESCE(checkpoint_json, '{}'::jsonb) - 'force_run_override' - 'force_run_requested_at_utc')
+        ELSE checkpoint_json
+    END,
     updated_at_utc = NOW(),
     error = NULL
 WHERE workflow_id = %s
@@ -4624,22 +4629,28 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                 cur.execute(candidates_sql, (allowlist or None, allowlist or None))
                 rows = cur.fetchall()
                 for row in rows:
+                    checkpoint_json = row[7] if isinstance(row[7], dict) else {}
                     row_map = {
                         "workflow_id": str(row[0] or "default"),
                         "root_domain": str(row[1] or "").strip().lower(),
                         "stage": str(row[2] or "").strip().lower(),
+                        "checkpoint_json": checkpoint_json,
+                        "force_run_override": bool(checkpoint_json.get("force_run_override")) if isinstance(checkpoint_json, dict) else False,
                         "resource_class": str(row[11] or "default").strip().lower() or "default",
                         "access_mode": str(row[12] or "write").strip().lower() or "write",
                         "concurrency_group": str(row[13] or "").strip().lower(),
                         "max_parallelism": int(row[14] or 1),
                         "max_attempts": int(row[15] or 1),
                     }
-                    still_ready, blocked_reason = self._stage_prerequisites_satisfied(
-                        cur,
-                        workflow_id=row_map["workflow_id"],
-                        root_domain=row_map["root_domain"],
-                        stage=row_map["stage"],
-                    )
+                    if bool(row_map.get("force_run_override")):
+                        still_ready, blocked_reason = True, ""
+                    else:
+                        still_ready, blocked_reason = self._stage_prerequisites_satisfied(
+                            cur,
+                            workflow_id=row_map["workflow_id"],
+                            root_domain=row_map["root_domain"],
+                            stage=row_map["stage"],
+                        )
                     if not still_ready:
                         cur.execute(
                             """
@@ -5078,6 +5089,183 @@ WHERE workflow_id = %s
                 },
             )
         return updated > 0
+
+    def control_stage_task(
+        self,
+        *,
+        workflow_id: str,
+        root_domain: str,
+        stage: str,
+        action: str,
+    ) -> dict[str, Any]:
+        widf = str(workflow_id or "").strip().lower() or "default"
+        rd = str(root_domain or "").strip().lower()
+        stg = str(stage or "").strip().lower()
+        act = str(action or "").strip().lower()
+        if not rd or not stg:
+            return {"ok": False, "error": "root_domain and stage are required"}
+        if act not in {"delete", "pause", "run"}:
+            return {"ok": False, "error": "unsupported action"}
+
+        previous_status = ""
+        affected = 0
+        next_status = ""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+SELECT status
+FROM coordinator_stage_tasks
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s
+FOR UPDATE;
+""",
+                    (widf, rd, stg),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    conn.commit()
+                    return {
+                        "ok": False,
+                        "error": "task not found",
+                        "workflow_id": widf,
+                        "root_domain": rd,
+                        "stage": stg,
+                        "action": act,
+                    }
+                previous_status = str(row[0] or "").strip().lower()
+
+                if act == "delete":
+                    cur.execute(
+                        """
+DELETE FROM coordinator_stage_tasks
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    stage_affected = int(cur.rowcount or 0)
+                    cur.execute(
+                        """
+DELETE FROM coordinator_resource_leases
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    affected = stage_affected
+                    next_status = "deleted"
+                elif act == "pause":
+                    cur.execute(
+                        """
+UPDATE coordinator_stage_tasks
+SET status = 'paused',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    error = 'Paused by operator',
+    updated_at_utc = NOW()
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    stage_affected = int(cur.rowcount or 0)
+                    cur.execute(
+                        """
+DELETE FROM coordinator_resource_leases
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    affected = stage_affected
+                    next_status = "paused"
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status=next_status,
+                    )
+                else:
+                    force_payload = json.dumps(
+                        {
+                            "force_run_override": True,
+                            "force_run_requested_at_utc": _iso_now(),
+                        },
+                        ensure_ascii=False,
+                    )
+                    cur.execute(
+                        """
+UPDATE coordinator_stage_tasks
+SET status = 'ready',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    checkpoint_json = COALESCE(checkpoint_json, '{}'::jsonb) || %s::jsonb,
+    error = '',
+    updated_at_utc = NOW()
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (force_payload, widf, rd, stg),
+                    )
+                    stage_affected = int(cur.rowcount or 0)
+                    cur.execute(
+                        """
+DELETE FROM coordinator_resource_leases
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    affected = stage_affected
+                    next_status = "ready"
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status=next_status,
+                    )
+            conn.commit()
+
+        self.record_system_event(
+            "workflow.task.control",
+            f"workflow_task:{widf}:{rd}:{stg}",
+            {
+                "source": "coordinator_store.control_stage_task",
+                "workflow_id": widf,
+                "root_domain": rd,
+                "stage": stg,
+                "plugin_name": stg,
+                "action": act,
+                "previous_status": previous_status,
+                "status": next_status,
+                "affected_rows": affected,
+            },
+        )
+
+        return {
+            "ok": bool(affected > 0),
+            "workflow_id": widf,
+            "root_domain": rd,
+            "stage": stg,
+            "action": act,
+            "previous_status": previous_status,
+            "status": next_status,
+            "affected_rows": affected,
+            "updated_at_utc": _iso_now(),
+        }
+
     def reset_stage_tasks(
         self,
         *,
@@ -5105,7 +5293,7 @@ WHERE workflow_id = %s
                 continue
             if text in {"errored", "error"}:
                 text = "failed"
-            if text not in {"pending", "ready", "running", "completed", "failed"}:
+            if text not in {"pending", "ready", "running", "completed", "failed", "paused"}:
                 continue
             if text not in normalized_statuses:
                 normalized_statuses.append(text)
