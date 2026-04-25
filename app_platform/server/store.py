@@ -783,9 +783,6 @@ CREATE TABLE IF NOT EXISTS coordinator_artifacts (
   PRIMARY KEY(root_domain, artifact_type)
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);
-CREATE INDEX IF NOT EXISTS idx_artifacts_workflow_run ON coordinator_artifacts(workflow_run_id, updated_at_utc DESC);
-CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON coordinator_artifacts(task_id, updated_at_utc DESC);
-CREATE INDEX IF NOT EXISTS idx_artifacts_plugin_id ON coordinator_artifacts(plugin_id, updated_at_utc DESC);
 
 CREATE TABLE IF NOT EXISTS coordinator_artifact_objects (
   content_sha256 TEXT PRIMARY KEY,
