@@ -5,174 +5,187 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nightmare Dashboard</title>
   <style>
-    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f7fafc; color: #0f172a; }
-    h1 { margin: 0 0 10px; }
-    .meta { color: #475569; margin-bottom: 14px; font-size: 13px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
-    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
-    .k { font-size: 12px; color: #475569; }
-    .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
-    .table-wrap { max-height: 680px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 0; }
-    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; vertical-align: top; text-align: left; }
-    th { background: #e2e8f0; position: sticky; top: 0; z-index: 3; }
-    .log { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin: 0; background: #0b1220; color: #c8d3f5; padding: 8px; border-radius: 6px; }
-    .rowlinks a { margin-right: 8px; }
-    .muted { color: #64748b; }
-    code { background: #e2e8f0; padding: 1px 4px; border-radius: 4px; }
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin: 0 0 8px; }
+    h2 { margin: 18px 0 8px; }
+    .meta { color: #475569; font-size: 13px; margin-bottom: 12px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin: 10px 0 14px; }
+    .card { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:10px; }
+    .k { font-size:12px; color:#64748b; }
+    .v { font-size:20px; font-weight:700; margin-top:4px; }
+    .section { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:10px; margin-bottom:14px; }
+    .table-wrap { max-height: 460px; overflow: auto; border:1px solid #cbd5e1; border-radius:8px; background:#fff; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border:1px solid #cbd5e1; padding:6px 8px; font-size:12px; text-align:left; vertical-align:top; }
+    th { background:#e2e8f0; position: sticky; top: 0; z-index: 2; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    input { padding:6px 8px; border:1px solid #94a3b8; border-radius:6px; min-width: 300px; }
+    button { border:1px solid #94a3b8; background:#fff; border-radius:6px; padding:6px 10px; cursor:pointer; }
+    .muted { color:#64748b; }
+    code { background:#e2e8f0; border-radius:4px; padding:1px 4px; }
+    .pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11px; font-weight:600; border:1px solid #cbd5e1; }
   </style>
 </head>
 <body>
   {% include '_navbar.html.j2' %}
   <h1>Nightmare Live Dashboard</h1>
-  <div class="meta">Auto-refresh every 5s. Reports are served from this app via <code>/files/*</code>.</div>
-  <div class="meta">Workflow controls: <a href="/workflows">Workflow Monitor</a></div>
-  <div class="meta"><input id="domainSearch" type="text" placeholder="Search all domain table columns" style="padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;min-width:320px;"></div>
-  <div id="cards" class="cards"></div>
-  <h2>Master Reports</h2>
-  <div id="masters" class="muted">Loading...</div>
-  <h2>Domains</h2>
-  <div class="table-wrap">
-    <table id="dashboardDomainsTable">
-      <thead>
-        <tr>
-          <th>Domain</th>
-          <th>Status</th>
-          <th>URLs</th>
-          <th>Findings</th>
-          <th>Reports</th>
-          <th>Latest Log Tail</th>
-        </tr>
-      </thead>
-      <tbody id="rows"><tr><td colspan="6">Loading...</td></tr></tbody>
-    </table>
+  <div class="meta">System health dashboard. Auto-refresh every 10s. Legacy endpoint reference: <code>/api/summary</code>.</div>
+  <div class="toolbar">
+    <input id="globalSearch" type="text" placeholder="Search all dashboard tables">
+    <button onclick="refreshDashboard()">Refresh</button>
+    <span id="statusText" class="muted"></span>
   </div>
-  {% include '_grid_controls.html.j2' %}
+  <div id="cards" class="cards"></div>
+
+  <div class="section">
+    <h2>Virtual Machines</h2>
+    <div class="table-wrap"><table id="vmTable"><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th></tr></thead><tbody id="vmRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Docker Images / Containers</h2>
+    <div class="table-wrap"><table id="dockerTable"><thead><tr><th>Container</th><th>Host</th><th>Image</th><th>Status</th><th>Running For</th><th>Ports</th><th>Container ID</th></tr></thead><tbody id="dockerRows"><tr><td colspan="7">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>System Events</h2>
+    <div class="table-wrap"><table id="eventTable"><thead><tr><th>When</th><th>Type</th><th>Source</th><th>Aggregate</th><th>Message</th></tr></thead><tbody id="eventRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Database Inserts / Table Activity</h2>
+    <div class="table-wrap"><table id="dbTable"><thead><tr><th>Schema</th><th>Table</th><th>Rows</th><th>Preview Rows</th><th>Columns</th></tr></thead><tbody id="dbRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Recent Log Messages</h2>
+    <div class="table-wrap"><table id="logTable"><thead><tr><th>When</th><th>Severity</th><th>Machine</th><th>Source</th><th>Description</th></tr></thead><tbody id="logRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Plugin Worker Details</h2>
+    <div class="table-wrap"><table id="pluginWorkerTable"><thead><tr><th>Worker</th><th>Status</th><th>State</th><th>Current Domain</th><th>Current Stage</th><th>Running Targets</th><th>Running Stage Tasks</th><th>Last Heartbeat</th></tr></thead><tbody id="pluginWorkerRows"><tr><td colspan="8">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Running Workflow Details</h2>
+    <div class="table-wrap"><table id="workflowTable"><thead><tr><th>Domain</th><th>Running Tasks</th><th>Pending Tasks</th><th>Failed Tasks</th><th>Active Stages</th><th>Workflow IDs</th></tr></thead><tbody id="workflowRows"><tr><td colspan="6">Loading...</td></tr></tbody></table></div>
+  </div>
+  <div class="section">
+    <h2>Detailed Log Sources</h2>
+    <div class="table-wrap"><table id="logSourceTable"><thead><tr><th>Label</th><th>Type</th><th>Source ID</th><th>Details</th></tr></thead><tbody id="logSourceRows"><tr><td colspan="4">Loading...</td></tr></tbody></table></div>
+  </div>
+
   <script>
-    let dashboardGridCtrl = null;
-    const DASHBOARD_CACHE_KEY = "nightmare_dashboard_summary_cache_v1";
-    const DASHBOARD_CACHE_TTL_MS = 2 * 60 * 1000;
-    function esc(v) {
-      return String(v || "").replace(/[&<>\"']/g, (ch) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch]));
-    }
-    function readLocalJson(key) {
-      try {
-        const raw = localStorage.getItem(String(key || ""));
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === "object" ? parsed : null;
-      } catch (_e) {
-        return null;
-      }
-    }
-    function writeLocalJson(key, value) {
-      try {
-        localStorage.setItem(String(key || ""), JSON.stringify(value ?? {}));
-      } catch (_e) {
-        // Ignore cache write failures; live fetch is still authoritative.
-      }
-    }
-    function loadCachedDashboard() {
-      const row = readLocalJson(DASHBOARD_CACHE_KEY);
-      if (!row) return null;
-      const cachedAt = Number(row.cached_at_epoch_ms || 0);
-      if (!Number.isFinite(cachedAt) || cachedAt <= 0) return null;
-      if ((Date.now() - cachedAt) > DASHBOARD_CACHE_TTL_MS) return null;
-      const payload = row.payload;
-      return payload && typeof payload === "object" ? payload : null;
-    }
-    function saveCachedDashboard(payload) {
-      writeLocalJson(DASHBOARD_CACHE_KEY, {
-        cached_at_epoch_ms: Date.now(),
-        payload: payload || {},
+    function esc(v){return String(v ?? "").replace(/[&<>\"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));}
+    function showLoadError(message){ document.getElementById("statusText").textContent = `Load failed: ${String(message || "unknown error")}`; }
+    function applySearch() {
+      const needle = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
+      document.querySelectorAll("tbody tr").forEach((tr) => {
+        const text = String(tr.textContent || "").toLowerCase();
+        tr.style.display = (!needle || text.includes(needle)) ? "" : "none";
       });
     }
-    function fileLink(relPath, label) {
-      if (!relPath) return "";
-      const encoded = encodeURIComponent(relPath).replace(/%2F/g, "/");
-      return `<a href="/files/${encoded}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
-    }
-    function showLoadError(message) {
-      const msg = esc(message || "Unknown error");
-      document.getElementById("masters").innerHTML = `<span class='muted'>Failed to load: ${msg}</span>`;
-      document.getElementById("rows").innerHTML = `<tr><td colspan='6'>Failed to load dashboard summary: ${msg}</td></tr>`;
-    }
-    function buildCards(t) {
-      const cards = [
-        ["Domains", t.domains],
-        ["Running", t.running],
-        ["Pending", t.pending],
-        ["Completed", t.completed],
-        ["Failed", t.failed],
-        ["Discovered Only", t.discovered],
-      ];
-      return cards.map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
-    }
-    function render(data) {
-      document.getElementById("cards").innerHTML = buildCards(data.totals || {});
-      const masters = (data.master_reports || []).map((m) => fileLink(m.relative, m.name)).join(" | ");
-      document.getElementById("masters").innerHTML = masters || "<span class='muted'>No master reports found.</span>";
-
-      const rows = data.domains || [];
-      if (!rows.length) {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='6'>No domain output folders found.</td></tr>";
-        return;
+    async function authJson(url) {
+      if (window.NightmareAuth && typeof window.NightmareAuth.fetchJson === "function") {
+        return await window.NightmareAuth.fetchJson(url, { method: "GET", cache: "no-store" });
       }
-      document.getElementById("rows").innerHTML = rows.map((d) => {
-        const p = d.paths_rel || {};
-        const links = [
-          fileLink(p.nightmare_report_html, "Nightmare HTML"),
-          fileLink(p.fozzy_results_html, "Fozzy HTML"),
-          fileLink(p.url_inventory, "URL Inventory"),
-          fileLink(p.requests, "Requests JSON"),
-          fileLink(p.fozzy_summary_json, "Fozzy Summary")
-        ].filter(Boolean).join(" ");
-        return `<tr>
-          <td>${esc(d.domain)}</td>
-          <td>${esc(d.status)}</td>
-          <td>unique=${esc(d.unique_urls)}<br>requested=${esc(d.requested_urls)}</td>
-          <td>anomalies=${esc(d.anomalies)}<br>reflections=${esc(d.reflections)}</td>
-          <td class="rowlinks">${links || "<span class='muted'>none</span>"}</td>
-          <td><pre class="log">${esc(d.latest_log_tail || "")}</pre></td>
-        </tr>`;
-      }).join("");
-      if (!dashboardGridCtrl) {
-        dashboardGridCtrl = window.NightmareGridControls.enhance({
-          table: "dashboardDomainsTable",
-          page: "dashboard",
-          prefKey: "domains_table_v1",
-          mode: "full",
-          globalSearchInputId: "domainSearch",
-        });
-      } else {
-        dashboardGridCtrl.refresh();
-      }
+      const rsp = await fetch(url, { cache: "no-store" });
+      if (!rsp.ok) throw new Error(`HTTP ${rsp.status}`);
+      return await rsp.json();
     }
-    async function refresh(options) {
-      const useCacheFirst = Boolean(options && options.useCacheFirst);
-      let showedCached = false;
-      if (useCacheFirst) {
-        const cached = loadCachedDashboard();
-        if (cached) {
-          render(cached);
-          showedCached = true;
-        }
-      }
+    function setRows(id, html, cols) {
+      document.getElementById(id).innerHTML = html || `<tr><td colspan="${cols}">No rows.</td></tr>`;
+    }
+    async function refreshDashboard() {
+      const status = document.getElementById("statusText");
+      status.textContent = "Loading...";
       try {
-        const rsp = await fetch("/api/summary", { cache: "no-store" });
-        if (!rsp.ok) {
-          if (!showedCached) showLoadError(`HTTP ${rsp.status}`);
-          return;
+        const [docker, events, db, logs, workers, workflows, logSources] = await Promise.all([
+          authJson("/api/coord/docker-status?include_logs=0&log_lines=100"),
+          authJson("/api/coord/events?limit=100&offset=0&sort_dir=desc"),
+          authJson("/api/coord/database-status"),
+          authJson("/api/coord/log-events?source_id=__all__&limit=100&offset=0&sort_dir=desc"),
+          authJson("/api/coord/workers?stale_after_seconds=180"),
+          authJson("/api/coord/workflow-snapshot?limit=2000"),
+          authJson("/api/coord/log-sources"),
+        ]);
+
+        const vmRows = ((docker.ec2_instances && docker.ec2_instances.instances) || []).map((r) =>
+          `<tr><td>${esc(r.name || "")}</td><td>${esc(r.instance_id || "")}</td><td>${esc(r.state || "")}</td><td>${esc(r.private_ip || "")}</td><td>${esc(r.public_ip || "")}</td></tr>`
+        ).join("");
+        setRows("vmRows", vmRows, 5);
+
+        const dockerRows = (docker.all_containers || []).map((r) =>
+          `<tr><td>${esc(r.name || "")}</td><td>${esc(r.host_label || r.host_type || "")}</td><td>${esc(r.image || "")}</td><td>${esc(r.status || "")}</td><td>${esc(r.running_for || "")}</td><td>${esc(r.ports || "")}</td><td><code>${esc(r.id || "")}</code></td></tr>`
+        ).join("");
+        setRows("dockerRows", dockerRows, 7);
+
+        const eventRows = (events.items || []).map((e) =>
+          `<tr><td>${esc(e.created_at || "")}</td><td>${esc(e.event_type || "")}</td><td>${esc(e.source || "")}</td><td>${esc(e.aggregate_key || "")}</td><td>${esc(e.message || "")}</td></tr>`
+        ).join("");
+        setRows("eventRows", eventRows, 5);
+
+        const dbRows = (db.tables || []).map((t) =>
+          `<tr><td>${esc(t.schema || "")}</td><td>${esc(t.name || "")}</td><td>${esc(t.row_count || 0)}</td><td>${esc(t.rows_returned || 0)}</td><td>${esc((t.columns || []).length)}</td></tr>`
+        ).join("");
+        setRows("dbRows", dbRows, 5);
+
+        const logRows = (logs.items || []).map((l) =>
+          `<tr><td>${esc(l.event_time_utc || "")}</td><td>${esc(l.severity || "")}</td><td>${esc(l.machine || "")}</td><td>${esc(l.source_id || "")}</td><td>${esc(l.description || "")}</td></tr>`
+        ).join("");
+        setRows("logRows", logRows, 5);
+
+        const pluginWorkers = (workers.workers || []).filter((w) => String(w.worker_id || "").toLowerCase().includes("-plugin-"));
+        const pluginWorkerRows = pluginWorkers.map((w) =>
+          `<tr><td>${esc(w.worker_id || "")}</td><td>${esc(w.status || "")}</td><td>${esc(w.worker_state || "")}</td><td>${esc(w.current_root_domain || "")}</td><td>${esc(w.current_stage || "")}</td><td>${esc(w.running_targets || 0)}</td><td>${esc(w.running_stage_tasks || 0)}</td><td>${esc(w.last_heartbeat_at_utc || "")}</td></tr>`
+        ).join("");
+        setRows("pluginWorkerRows", pluginWorkerRows, 8);
+
+        const runningWorkflowRows = [];
+        for (const d of (workflows.domains || [])) {
+          const pluginTasks = d.plugin_tasks || {};
+          let running = 0, pending = 0, failed = 0;
+          const activeStages = [];
+          const workflowIds = Object.keys(pluginTasks);
+          for (const workflowId of workflowIds) {
+            const stageMap = pluginTasks[workflowId] || {};
+            for (const stageName of Object.keys(stageMap)) {
+              const statusValue = String((stageMap[stageName] || {}).status || "").toLowerCase();
+              if (statusValue === "running") { running += 1; activeStages.push(stageName); }
+              else if (statusValue === "pending" || statusValue === "ready") pending += 1;
+              else if (statusValue === "failed") failed += 1;
+            }
+          }
+          if (running <= 0 && pending <= 0 && failed <= 0) continue;
+          runningWorkflowRows.push(
+            `<tr><td>${esc(d.root_domain || "")}</td><td>${running}</td><td>${pending}</td><td>${failed}</td><td>${esc(activeStages.slice(0, 8).join(", "))}</td><td>${esc(workflowIds.join(", "))}</td></tr>`
+          );
         }
-        const data = await rsp.json();
-        render(data);
-        saveCachedDashboard(data);
-      } catch (e) {
-        if (!showedCached) showLoadError(e && e.message ? e.message : "request failed");
+        setRows("workflowRows", runningWorkflowRows.join(""), 6);
+
+        const logSourceRows = (logSources.sources || []).map((s) => {
+          const sourceId = String(s.source_id || "");
+          const detailsHref = `/view-logs#source=${encodeURIComponent(sourceId)}`;
+          const apiHref = `/api/coord/log-tail?source_id=${encodeURIComponent(sourceId)}&lines=200`;
+          return `<tr><td>${esc(s.label || "")}</td><td>${esc(s.source_type || "")}</td><td><code>${esc(sourceId)}</code></td><td><a href="${detailsHref}">View Logs</a> | <a href="${apiHref}" target="_blank" rel="noopener noreferrer">Tail API</a></td></tr>`;
+        }).join("");
+        setRows("logSourceRows", logSourceRows, 4);
+
+        const cards = [
+          ["VMs", ((docker.ec2_instances && docker.ec2_instances.instances) || []).length],
+          ["Containers", (docker.all_containers || []).length],
+          ["Events", (events.items || []).length],
+          ["DB Tables", (db.tables || []).length],
+          ["Log Messages", (logs.items || []).length],
+          ["Plugin Workers", pluginWorkers.length],
+          ["Workflow Domains", (workflows.domains || []).length],
+          ["Log Sources", (logSources.sources || []).length],
+        ];
+        document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+        status.textContent = `Updated ${new Date().toISOString()}`;
+        applySearch();
+      } catch (error) {
+        showLoadError(error && error.message ? error.message : String(error || "request failed"));
       }
     }
-    refresh({ useCacheFirst: true });
-    setInterval(() => refresh(), 5000);
+    document.getElementById("globalSearch").addEventListener("input", applySearch);
+    refreshDashboard();
+    setInterval(refreshDashboard, 10000);
   </script>
 </body>
 </html>

@@ -605,6 +605,40 @@ class CoordinatorClient:
         query = urlencode({"limit": max(1, int(limit or 1))})
         return self._request_json("GET", f"/api/coord/workflow-snapshot?{query}")
 
+    def cancel_workflow_run(self, *, workflow_run_id: str, actor: str = "runtime", reason: str = "") -> dict[str, Any]:
+        """Cancel all active tasks that belong to a workflow run."""
+        return self._request_json(
+            "POST",
+            "/api/coord/workflow/run/cancel",
+            {
+                "workflow_run_id": str(workflow_run_id or "").strip(),
+                "actor": str(actor or "runtime").strip(),
+                "reason": str(reason or "").strip(),
+            },
+        )
+
+    def retry_failed_workflow_tasks(
+        self,
+        *,
+        workflow_id: str = "",
+        workflow_run_id: str = "",
+        actor: str = "runtime",
+        reason: str = "",
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        """Request retries for failed workflow tasks."""
+        return self._request_json(
+            "POST",
+            "/api/coord/workflow/tasks/retry-failed",
+            {
+                "workflow_id": str(workflow_id or "").strip().lower(),
+                "workflow_run_id": str(workflow_run_id or "").strip(),
+                "actor": str(actor or "runtime").strip(),
+                "reason": str(reason or "").strip(),
+                "limit": max(1, int(limit or 5000)),
+            },
+        )
+
     def claim_worker_command(self, worker_id: str, *, worker_state: str = "idle") -> Optional[dict[str, Any]]:
         rsp = self._request_json(
             "POST",
