@@ -16,6 +16,8 @@ from plugins.recon.spider.source_tags_plugin import ReconSpiderSourceTagsPlugin
 from plugins.recon.spider.wordlist_plugin import ReconSpiderWordlistPlugin
 from plugins.recon.subdomain_enumeration_plugin import ReconSubdomainEnumerationPlugin
 from plugins.recon.subdomain_takeover_plugin import ReconSubdomainTakeoverPlugin
+from plugins.system.legacy_actions import LEGACY_ACTIONS
+from plugins.system.legacy_step_adapter_plugin import LegacyStepAdapterPlugin
 
 
 _PLUGIN_FACTORIES: dict[str, Callable[[], CoordinatorPlugin]] = {
@@ -85,6 +87,8 @@ def resolve_plugin(plugin_name: str) -> CoordinatorPlugin | None:
         return None
     if normalized.startswith("nightmare_"):
         return NightmareArtifactGatePlugin()
+    if normalized in LEGACY_ACTIONS:
+        return LegacyStepAdapterPlugin(normalized)
     factory = _PLUGIN_FACTORIES.get(normalized)
     if not factory:
         return None
@@ -93,7 +97,7 @@ def resolve_plugin(plugin_name: str) -> CoordinatorPlugin | None:
 
 def list_registered_plugins() -> list[str]:
     """Return plugin keys available to coordinator workers."""
-    return sorted(_PLUGIN_FACTORIES.keys())
+    return sorted({*list(_PLUGIN_FACTORIES.keys()), *list(LEGACY_ACTIONS.keys())})
 
 
 def list_plugin_contracts() -> list[dict[str, object]]:
@@ -147,6 +151,28 @@ def list_plugin_contracts() -> list[dict[str, object]]:
                 "source_path": (str(module).replace(".", "/") + ".py") if module else "",
                 "input_artifacts": list(getattr(stage_contract, "input_artifacts", ()) or ()),
                 "output_artifacts": list(getattr(stage_contract, "output_artifacts", ()) or ()),
+            }
+        )
+    for key in sorted(LEGACY_ACTIONS.keys()):
+        contracts.append(
+            {
+                "plugin_key": key,
+                "display_name": key.replace("_", " ").title(),
+                "description": f"System legacy action adapter for '{key}'.",
+                "category": "system",
+                "python_module": "plugins.system.legacy_step_adapter_plugin",
+                "python_class": "LegacyStepAdapterPlugin",
+                "contract_version": "1.0.0",
+                "input_schema": {"type": "object", "additionalProperties": True},
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "config_schema": {"type": "object", "additionalProperties": True},
+                "ui_schema": {},
+                "examples": [],
+                "tags": ["system", "legacy_action"],
+                "enabled": True,
+                "source_path": "plugins/system/legacy_step_adapter_plugin.py",
+                "input_artifacts": [],
+                "output_artifacts": [],
             }
         )
     return contracts
