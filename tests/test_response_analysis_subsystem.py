@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fozzy_app.response_analysis import ResponseAnalysisPipeline
+from plugins.fuzzing.fozzy_app.response_analysis import ResponseAnalysisPipeline
 
 
 def _resp(

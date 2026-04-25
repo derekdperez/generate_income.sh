@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from plugins.registry import list_registered_plugins
-from workflow_app.store import load_builtin_workflow_definition, workflow_payload_from_scheduler_file
+from app_platform.workflow.store import load_builtin_workflow_definition, workflow_payload_from_scheduler_file
 
 
 def test_run_recon_workflow_imports_to_builder_definition():

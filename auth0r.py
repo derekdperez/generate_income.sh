@@ -1,5 +1,5 @@
-from nightmare_shared.error_reporting import install_error_reporting, report_error
-from auth0r.cli import main
+from shared.runtime_common.error_reporting import install_error_reporting, report_error
+from plugins.authentication.auth0r.cli import main
 
 if __name__ == "__main__":
     install_error_reporting(program_name="auth0r", component_name="auth0r", source_type="worker_tool")

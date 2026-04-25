@@ -52,7 +52,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from output_cleanup import clear_output_root_children
-from nightmare_shared.templating import render_template
+from shared.runtime_common.templating import render_template
 from reporting.server_pages import (
     render_auth0r_html,
     render_crawl_progress_html,
@@ -75,11 +75,11 @@ from reporting.server_pages import (
     render_workflow_runs_html,
     render_plugin_definitions_html,
 )
-from server_app.store import CoordinatorStore
-from auth0r.profile_store import Auth0rProfileStore
-from logging_app.store import LogStore
+from app_platform.server.store import CoordinatorStore
+from plugins.authentication.auth0r.profile_store import Auth0rProfileStore
+from app_platform.logging.store import LogStore
 
-from workflow_app.store import (
+from app_platform.workflow.store import (
     create_workflow_run,
     get_workflow_definition,
     get_workflow_run,

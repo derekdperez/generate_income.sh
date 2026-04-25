@@ -39,7 +39,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nightmare_shared.error_reporting import install_error_reporting, report_error
+from shared.runtime_common.error_reporting import install_error_reporting, report_error
 from reporting.extractor_reports import build_javascript_extractor_matches_report_html as render_js_extractor_report_html
 from typing import Any, Optional
 

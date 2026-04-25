@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from server_app.fastapi_app import create_app
+from app_platform.server.fastapi_app import create_app
 
 
 class _StoreRunOk:

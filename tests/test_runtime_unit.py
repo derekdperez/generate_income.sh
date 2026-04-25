@@ -12,7 +12,7 @@ import threading
 import zipfile
 from pathlib import Path
 
-import coordinator_app.runtime as runtime
+import app_platform.coordinator_runtime.runtime as runtime
 
 
 def test_read_json_dict_handles_invalid_content(tmp_path: Path):
@@ -260,7 +260,7 @@ def test_event_stream_reads_recent_rows_in_reverse_order(tmp_path: Path):
 
 
 def test_worker_event_map_matches_worker_id_aliases():
-    from server_app.store import CoordinatorStore
+    from app_platform.server.store import CoordinatorStore
     from shared.models import EventRecord
 
     store = object.__new__(CoordinatorStore)

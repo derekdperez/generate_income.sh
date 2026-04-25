@@ -24,15 +24,15 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     psycopg = None
     ConnectionPool = None  # type: ignore[assignment]
 
-from nightmare_app.artifacts import FileSystemArtifactStore
+from plugins.spider.nightmare_app.artifacts import FileSystemArtifactStore
 from shared.events import DbEventBroker, build_projection
 from shared.schemas import ArtifactSchema, EventSchema, ExecutionResultSchema, TaskSchema
 from shared.models import EventRecord, RiskScorecard
 from shared.observability import get_telemetry
 from shared.versioning import registry
-from workflow_app.tailor_adapter import normalize_workflow_payload
+from app_platform.workflow.tailor_adapter import normalize_workflow_payload
 
-from nightmare_shared.page_classification import (
+from shared.runtime_common.page_classification import (
     PAGE_CLASS_API_ERROR,
     PAGE_CLASS_BLOCKED,
     PAGE_CLASS_EXISTS,

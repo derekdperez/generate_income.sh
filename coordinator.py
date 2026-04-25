@@ -36,10 +36,10 @@ from http_client import request_capped, request_json
 from output_cleanup import FLEET_GEN_APPLIED_FILENAME, clear_output_root_children
 from plugins.base import PluginExecutionContext
 from plugins.registry import resolve_plugin
-from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
-from nightmare_shared.error_reporting import install_error_reporting, report_error
-from nightmare_shared.logging_utils import configure_logging, get_logger
-from coordinator_app.runtime import CoordinatorClient, CoordinatorConfig, SessionUploader, LeaseHeartbeat, _zip_directory_bytes, _unzip_bytes_to_directory, run_subprocess, summarize_subprocess_failure, load_config
+from shared.runtime_common.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
+from shared.runtime_common.error_reporting import install_error_reporting, report_error
+from shared.runtime_common.logging_utils import configure_logging, get_logger
+from app_platform.coordinator_runtime.runtime import CoordinatorClient, CoordinatorConfig, SessionUploader, LeaseHeartbeat, _zip_directory_bytes, _unzip_bytes_to_directory, run_subprocess, summarize_subprocess_failure, load_config
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH_DEFAULT = BASE_DIR / "config" / "coordinator.json"

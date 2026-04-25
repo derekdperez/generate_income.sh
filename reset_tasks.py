@@ -9,8 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from nightmare_shared.config import load_env_file_into_os
-from server_app.store import CoordinatorStore
+from shared.runtime_common.config import load_env_file_into_os
+from app_platform.server.store import CoordinatorStore
 
 BASE_DIR = Path(__file__).resolve().parent
 

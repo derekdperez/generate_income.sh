@@ -1,12 +1,12 @@
 from nightmare_app import spider_url_policy
-from fozzy_app.fuzz_core import (
+from plugins.fuzzing.fozzy_app.fuzz_core import (
     ParameterMeta,
     RouteGroup,
     baseline_seed_value_for,
     build_fuzz_http_request,
     merge_data_type,
 )
-from nightmare_shared.value_types import infer_observed_value_type
+from shared.runtime_common.value_types import infer_observed_value_type
 
 
 def test_infer_observed_value_type_shared():

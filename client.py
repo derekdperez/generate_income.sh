@@ -16,8 +16,8 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from http_client import request_json
-from nightmare_shared.config import ClientSettings, load_env_file_into_os, normalize_server_base_url
-from nightmare_shared.logging_utils import configure_logging, get_logger
+from shared.runtime_common.config import ClientSettings, load_env_file_into_os, normalize_server_base_url
+from shared.runtime_common.logging_utils import configure_logging, get_logger
 
 BASE_DIR = Path(__file__).resolve().parent
 

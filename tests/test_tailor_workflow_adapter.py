@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from workflow_app.tailor_adapter import (
+from app_platform.workflow.tailor_adapter import (
     is_tailor_workflow_spec,
     normalize_workflow_payload,
     resolve_workflow_runtime_payload,

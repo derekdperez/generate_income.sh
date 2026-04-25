@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 from http_client import request_json
-from nightmare_shared.config import load_env_file_into_os, normalize_server_base_url
+from shared.runtime_common.config import load_env_file_into_os, normalize_server_base_url
 
 
 BASE_DIR = Path(__file__).resolve().parent

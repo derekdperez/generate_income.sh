@@ -7,15 +7,15 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-from auth0r.canonicalize import canonicalize_url, likely_state_changing
-from auth0r.differential_analyzer import compare_responses
-from auth0r.lifecycle_analyzer import assess_login_rotation, assess_logout_invalidation, assess_parallel_sessions
-from auth0r.login_orchestrator import establish_session
-from auth0r.policy import evaluate_action, should_verify_side_effects
-from auth0r.profile_store import Auth0rProfileStore
-from auth0r.replay_engine import DomainThrottle, replay_variants
-from auth0r.reporting import write_summary
-from auth0r.side_effect_verifier import verify_side_effect
+from plugins.authentication.auth0r.canonicalize import canonicalize_url, likely_state_changing
+from plugins.authentication.auth0r.differential_analyzer import compare_responses
+from plugins.authentication.auth0r.lifecycle_analyzer import assess_login_rotation, assess_logout_invalidation, assess_parallel_sessions
+from plugins.authentication.auth0r.login_orchestrator import establish_session
+from plugins.authentication.auth0r.policy import evaluate_action, should_verify_side_effects
+from plugins.authentication.auth0r.profile_store import Auth0rProfileStore
+from plugins.authentication.auth0r.replay_engine import DomainThrottle, replay_variants
+from plugins.authentication.auth0r.reporting import write_summary
+from plugins.authentication.auth0r.side_effect_verifier import verify_side_effect
 
 
 def _read_json_dict(path: Path) -> dict:

@@ -19,8 +19,8 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-from nightmare_app.spider_url_policy import normalize_url, normalize_url_for_sitemap
-from nightmare_shared.value_types import infer_observed_value_type
+from plugins.spider.nightmare_app.spider_url_policy import normalize_url, normalize_url_for_sitemap
+from shared.runtime_common.value_types import infer_observed_value_type
 
 SCHEMA_VERSION = 1
 DEFAULT_PARAM_SCAN_MAX_BYTES = 256 * 1024

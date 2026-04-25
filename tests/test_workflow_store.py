@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from workflow_app.store import get_workflow_definition, save_workflow_definition, workflow_payload_from_scheduler_file
+from app_platform.workflow.store import get_workflow_definition, save_workflow_definition, workflow_payload_from_scheduler_file
 
 
 def test_save_workflow_definition_archives_removed_steps_without_deleting():

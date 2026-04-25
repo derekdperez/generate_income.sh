@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from nightmare_shared.templating import render_template
+from shared.runtime_common.templating import render_template
 
 
 def build_javascript_extractor_matches_report_html(domain_label: str, rows: list[dict[str, object]]) -> str:

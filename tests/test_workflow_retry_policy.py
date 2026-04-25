@@ -1,4 +1,4 @@
-from workflow_app.store import workflow_retry_limit, workflow_total_attempts, _preconditions_require_wait
+from app_platform.workflow.store import workflow_retry_limit, workflow_total_attempts, _preconditions_require_wait
 
 
 def test_retry_policy_defaults_to_three_retries_four_total_attempts():

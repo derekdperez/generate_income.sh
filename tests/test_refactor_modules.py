@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nightmare_shared.config import ClientSettings, CoordinatorSettings, ServerSettings, normalize_server_base_url
+from shared.runtime_common.config import ClientSettings, CoordinatorSettings, ServerSettings, normalize_server_base_url
 from reporting.server_pages import (
     render_crawl_progress_html,
     render_dashboard_html,

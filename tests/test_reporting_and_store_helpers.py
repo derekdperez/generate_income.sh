@@ -38,7 +38,7 @@ from server import (
     _top_extractor_filters,
     collect_dashboard_data,
 )
-from server_app.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
+from app_platform.server.store import CoordinatorStore, _get_root_domain, _make_target_entry_id, _normalize_target_url
 
 
 def test_render_dashboard_html_contains_expected_heading():

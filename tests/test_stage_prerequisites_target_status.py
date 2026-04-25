@@ -1,7 +1,7 @@
 import json
 
 from coordinator import DistributedCoordinator
-from server_app.store import CoordinatorStore
+from app_platform.server.store import CoordinatorStore
 
 
 class _FakeCursor:

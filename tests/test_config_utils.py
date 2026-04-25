@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nightmare_shared.config import (
+from shared.runtime_common.config import (
     ClientSettings,
     CoordinatorSettings,
     ServerSettings,

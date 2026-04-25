@@ -13,8 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from workflow_app.tailor_adapter import normalize_workflow_payload
-from workflow_app.bindings import resolve_bindings
+from app_platform.workflow.tailor_adapter import normalize_workflow_payload
+from app_platform.workflow.bindings import resolve_bindings
 from shared.schemas import WorkflowDefinitionSchema
 
 _KEY_RE = re.compile(r"[^a-z0-9_\-]+")
@@ -865,7 +865,7 @@ def create_workflow_run(store: Any, payload: dict[str, Any], *, actor: str = "")
     definition = get_workflow_definition(store, workflow_key)
     if not definition:
         raise KeyError("workflow definition not found")
-    from workflow_app.validation import validate_workflow_definition
+    from app_platform.workflow.validation import validate_workflow_definition
 
     validation_errors = validate_workflow_definition(definition)
     if validation_errors:

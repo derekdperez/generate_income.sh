@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from workflow_app.tailor_adapter import is_tailor_workflow_spec, normalize_workflow_payload
+from app_platform.workflow.tailor_adapter import is_tailor_workflow_spec, normalize_workflow_payload
 
 
 def validate_workflow_definition(payload: dict[str, Any]) -> list[str]:

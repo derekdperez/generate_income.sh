@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from auth0r.policy import ReplayPolicy
+from plugins.authentication.auth0r.policy import ReplayPolicy
 
 
 @dataclass

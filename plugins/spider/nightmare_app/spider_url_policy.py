@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from nightmare_shared.value_types import infer_observed_value_type
+from shared.runtime_common.value_types import infer_observed_value_type
 
 
 def normalize_url(url: str) -> str:

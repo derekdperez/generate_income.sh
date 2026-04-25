@@ -9,7 +9,7 @@ import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from nightmare_shared.value_types import infer_observed_value_type
+from shared.runtime_common.value_types import infer_observed_value_type
 
 
 @dataclass

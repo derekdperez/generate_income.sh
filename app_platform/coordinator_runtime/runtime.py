@@ -20,8 +20,8 @@ from urllib.parse import urlencode
 
 import httpx
 from http_client import request_json
-from nightmare_shared.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
-from nightmare_shared.error_reporting import report_error
+from shared.runtime_common.config import CoordinatorSettings, atomic_write_json, load_env_file_into_os, merged_value, read_json_dict, safe_float, safe_int
+from shared.runtime_common.error_reporting import report_error
 
 
 def _read_log_tail(log_path: Path, *, lines: int = 120, max_chars: int = 16000) -> str:
@@ -59,7 +59,7 @@ def summarize_subprocess_failure(program_name: str, exit_code: int | Path, log_p
         if interesting:
             return f"{program_name} exit code {int(actual_exit_code)}; {interesting}"
     return f"{program_name} exit code {int(actual_exit_code)}"
-from nightmare_shared.logging_utils import get_logger
+from shared.runtime_common.logging_utils import get_logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH_DEFAULT = BASE_DIR / "config" / "coordinator.json"

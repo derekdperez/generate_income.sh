@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from server_app.store import CoordinatorStore
+from app_platform.server.store import CoordinatorStore
 
 
 class _PendingStageCursor:
@@ -71,7 +71,7 @@ def test_schedule_stage_promotes_pending_task_to_ready_when_prerequisites_are_me
     assert conn.committed is True
 
 def test_bootstrap_subdomain_stage_is_ready_even_with_stale_checkpoint_prerequisites(monkeypatch):
-    from server_app.store import CoordinatorStore
+    from app_platform.server.store import CoordinatorStore
 
     store = object.__new__(CoordinatorStore)
 
@@ -98,7 +98,7 @@ def test_bootstrap_subdomain_stage_is_ready_even_with_stale_checkpoint_prerequis
 
 
 def test_bootstrap_stage_name_alias_is_ready(monkeypatch):
-    from server_app.store import CoordinatorStore
+    from app_platform.server.store import CoordinatorStore
 
     store = object.__new__(CoordinatorStore)
     monkeypatch.setattr(store, "_load_workflow_stage_preconditions", lambda workflow_id, stage: {"artifacts_all": ["missing"]})

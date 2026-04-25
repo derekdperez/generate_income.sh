@@ -45,16 +45,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nightmare_shared.error_reporting import install_error_reporting, report_error
+from shared.runtime_common.error_reporting import install_error_reporting, report_error
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
 
 from http_client import request_capped
 from http_request_queue import HttpRequestQueue
-from nightmare_app import spider_url_policy
-from nightmare_app.normalized_exports import write_normalized_exports
-from nightmare_shared.value_types import infer_observed_value_type
-from nightmare_shared.page_classification import build_page_fingerprint, classify_page, PageFingerprint
+from plugins.spider.nightmare_app import spider_url_policy
+from plugins.spider.nightmare_app.normalized_exports import write_normalized_exports
+from shared.runtime_common.value_types import infer_observed_value_type
+from shared.runtime_common.page_classification import build_page_fingerprint, classify_page, PageFingerprint
 
 import scrapy
 from openai import APIError, APITimeoutError, BadRequestError, OpenAI, RateLimitError

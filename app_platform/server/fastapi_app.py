@@ -12,8 +12,8 @@ from typing import Any, Optional
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
-from server_app.store import CoordinatorStore, DEFAULT_COORDINATOR_LEASE_SECONDS, _stream_file_chunks
-from workflow_app.tailor_adapter import normalize_workflow_payload, resolve_workflow_runtime_payload
+from app_platform.server.store import CoordinatorStore, DEFAULT_COORDINATOR_LEASE_SECONDS, _stream_file_chunks
+from app_platform.workflow.tailor_adapter import normalize_workflow_payload, resolve_workflow_runtime_payload
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]

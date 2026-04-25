@@ -45,10 +45,10 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 
-from nightmare_shared.error_reporting import install_error_reporting, report_error
+from shared.runtime_common.error_reporting import install_error_reporting, report_error
 from typing import Any, Callable
 
-from fozzy_app.fuzz_core import (
+from plugins.fuzzing.fozzy_app.fuzz_core import (
     ParameterMeta,
     RouteGroup,
     baseline_seed_value_for as _core_baseline_seed_value_for,
@@ -64,10 +64,10 @@ from fozzy_app.fuzz_core import (
     route_group_all_param_names as _core_route_group_all_param_names,
     route_group_param_meta as _core_route_group_param_meta,
 )
-from fozzy_app.response_analysis import ResponseAnalysisPipeline
+from plugins.fuzzing.fozzy_app.response_analysis import ResponseAnalysisPipeline
 from http_client import request_capped
 from http_request_queue import HttpRequestQueue
-from nightmare_shared.value_types import infer_observed_value_type
+from shared.runtime_common.value_types import infer_observed_value_type
 
 # Semaphore / RLock misuse or runtime issues should warn, not abort a long fuzz run.
 _FOZZY_LOCK_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, ValueError, AttributeError)

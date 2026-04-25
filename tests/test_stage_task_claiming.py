@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from server_app.store import CoordinatorStore
+from app_platform.server.store import CoordinatorStore
 
 
 class _CleanupCursor:

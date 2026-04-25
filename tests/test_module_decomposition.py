@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from coordinator_app.runtime import load_config
-from server_app.store import CoordinatorStore
+from app_platform.coordinator_runtime.runtime import load_config
+from app_platform.server.store import CoordinatorStore
 
 
 def test_new_module_files_exist():
@@ -16,7 +16,7 @@ def test_coordinator_runtime_exports():
 
 def test_server_uses_external_coordinator_store():
     server_source = Path("server.py").read_text(encoding="utf-8")
-    assert "from server_app.store import CoordinatorStore" in server_source
+    assert "from app_platform.server.store import CoordinatorStore" in server_source
     assert "class CoordinatorStore" not in server_source
     assert "from reporting.server_pages import" in server_source
     assert "render_dashboard_html" in server_source

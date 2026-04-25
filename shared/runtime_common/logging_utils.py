@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover - optional runtime dependency
     structlog = None
 
-from nightmare_shared.error_reporting import install_error_reporting
+from shared.runtime_common.error_reporting import install_error_reporting
 
 
 class _FallbackBoundLogger:

@@ -11,9 +11,9 @@ try:
 except Exception:  # pragma: no cover
     psycopg = None
 
-from auth0r.crypto import decrypt_text, encrypt_text
-from auth0r.policy import ReplayPolicy
-from auth0r.types import AuthIdentity, AuthVerificationMarker
+from plugins.authentication.auth0r.crypto import decrypt_text, encrypt_text
+from plugins.authentication.auth0r.policy import ReplayPolicy
+from plugins.authentication.auth0r.types import AuthIdentity, AuthVerificationMarker
 
 
 def _json_load(value: Any, default: Any):

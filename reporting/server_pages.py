@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from nightmare_shared.templating import render_template
+from shared.runtime_common.templating import render_template
 
 
 def render_dashboard_html() -> str:

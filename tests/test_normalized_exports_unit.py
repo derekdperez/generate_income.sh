@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from nightmare_app.normalized_exports import write_normalized_exports
+from plugins.spider.nightmare_app.normalized_exports import write_normalized_exports
 
 
 def _write_json(path, payload):

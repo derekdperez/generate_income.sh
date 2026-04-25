@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import httpx
 
-from auth0r.types import AuthIdentity
+from plugins.authentication.auth0r.types import AuthIdentity
 
 
 def _marker_matches(text: str, marker_kind: str, marker_value: str) -> bool:
