@@ -1,0 +1,43 @@
+{"pack_schema_version":1,"generated_at_utc":"2026-04-25T08:15:00.000000+00:00","root":".","excluded_directories":[".git","output"],"directory_count":75,"file_count":425,"directories":["src","src/core","src/core/schemas","src/services","src/worker","src/workflows","plugins","plugins/recon"],"files":[{"path":"src/core/schemas/task.py","size_bytes":450,"mode":438,"encoding":"base64","content":"from uuid import UUID, uuid4
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field
+import datetime
+
+class Task(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    run_id: UUID
+    plugin: str
+    target: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "pending"
+    worker_id: Optional[str] = None
+    lease_expires: Optional[datetime.datetime] = None"},{"path":"src/services/http_service.py","size_bytes":680,"mode":438,"encoding":"base64","content":"import httpx
+import logging
+
+class HttpService:
+    def __init__(self, user_agent="BugBountyBot/1.0"):
+        self.client = httpx.AsyncClient(headers={"User-Agent": user_agent}, verify=False)
+        self.logger = logging.getLogger("HttpService")
+
+    async def get(self, url, **Kwargs):
+        self.logger.info(f"GET {url}")
+        return await self.client.get(url, **kwargs)"},{"path":"src/worker/lease_manager.py","size_bytes":590,"mode":438,"encoding":"base64","content":"from uuid import UUID
+from datetime import datetime, timedelta
+
+class TaskLeaseManager:
+    def __init__(self, worker_id: str):
+        self.worker_id = worker_id
+
+    async def acquire_lease(self, task_id: UUID, duration_sec=60) - bool:
+        # Atomic datebase update logic goes here
+        return True"},{"path":"src/workflows/recon_workflow.py","size_bytes":780,"mode":438,"encoding":"base64","content":"from temporalio import workflow
+from datetime import timedelta
+
+@workflow.def_workflow
+class ReconWorkflow:
+    @workflow.run
+    async def run(self, target: str):
+        result = await workflow.execute_activity(
+            "enumerate_subdomains", target, start_to_close_timeout=timedelta(minutes=10)
+        )
+        return result"}]}

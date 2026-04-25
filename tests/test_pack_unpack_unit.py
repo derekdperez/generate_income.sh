@@ -64,6 +64,19 @@ def test_read_pack_supports_transport_envelope(tmp_path: Path):
     assert loaded == payload
 
 
+def test_read_pack_recovers_from_raw_control_chars_in_envelope_payload(tmp_path: Path):
+    inner = '{"directories":[],"files":[{"path":"a.txt","encoding":"base64","content":"line1\nline2"}]}'
+    envelope = {
+        "transport_encoding": "base64-json",
+        "payload_base64": base64.b64encode(inner.encode("utf-8")).decode("ascii"),
+    }
+    packed_path = tmp_path / "packed.json"
+    packed_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    loaded = unpack._read_pack(packed_path)
+    assert loaded["files"][0]["content"] == "line1\nline2"
+
+
 def test_unpack_main_writes_files_from_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     packed_path = tmp_path / "packed.json"
     payload = {
@@ -84,4 +97,26 @@ def test_unpack_main_writes_files_from_payload(tmp_path: Path, monkeypatch: pyte
     rc = unpack.main()
     assert rc == 0
     assert (target / "nested" / "example.txt").read_bytes() == b"hello"
+
+
+def test_unpack_main_accepts_plain_text_content_in_legacy_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    packed_path = tmp_path / "packed.json"
+    payload = {
+        "directories": ["nested"],
+        "files": [
+            {
+                "path": "nested/example.txt",
+                "encoding": "base64",
+                "mode": 0o644,
+                "content": "hello\nworld",
+            }
+        ],
+    }
+    packed_path.write_text(json.dumps(payload), encoding="utf-8")
+    target = tmp_path / "out"
+
+    monkeypatch.setattr(unpack, "parse_args", lambda: argparse.Namespace(input=str(packed_path), target=str(target)))
+    rc = unpack.main()
+    assert rc == 0
+    assert (target / "nested" / "example.txt").read_text(encoding="utf-8") == "hello\nworld"
 
