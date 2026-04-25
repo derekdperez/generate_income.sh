@@ -6,6 +6,9 @@ from workflow_app import store as workflow_store
 
 
 class _FakeCursor:
+    def __init__(self):
+        self.executed: list[tuple[str, tuple[object, ...] | None]] = []
+
     def __enter__(self):
         return self
 
@@ -13,10 +16,13 @@ class _FakeCursor:
         return False
 
     def execute(self, sql, params=None):
-        _ = (sql, params)
+        self.executed.append((" ".join(str(sql).split()), tuple(params) if params is not None else None))
 
 
 class _FakeConnection:
+    def __init__(self):
+        self.cursor_instance = _FakeCursor()
+
     def __enter__(self):
         return self
 
@@ -24,7 +30,7 @@ class _FakeConnection:
         return False
 
     def cursor(self):
-        return _FakeCursor()
+        return self.cursor_instance
 
     def commit(self):
         return None
@@ -33,9 +39,10 @@ class _FakeConnection:
 class _FakeStore:
     def __init__(self, *, persisted_rows: int):
         self.persisted_rows = int(persisted_rows)
+        self.connection = _FakeConnection()
 
     def _connect(self):
-        return _FakeConnection()
+        return self.connection
 
     def refresh_stage_task_readiness(self, *, root_domain: str, workflow_id: str, limit: int = 5000):
         _ = (root_domain, workflow_id, limit)
@@ -104,3 +111,34 @@ def test_create_workflow_run_returns_persisted_stage_task_count(monkeypatch):
     assert result["workflow_key"] == "run-recon"
     assert result["root_domain"] == "example.com"
     assert int(result["persisted_stage_task_rows"]) == 3
+
+
+def test_create_workflow_run_inserts_no_prerequisite_steps_as_ready(monkeypatch):
+    monkeypatch.setattr(workflow_store, "ensure_workflow_schema", lambda store: None)
+    monkeypatch.setattr(workflow_store, "get_workflow_definition", lambda store, workflow_key: _workflow_definition())
+
+    store = _FakeStore(persisted_rows=1)
+    workflow_store.create_workflow_run(
+        store,
+        {"workflow_key": "run-recon", "root_domain": "example.com"},
+        actor="test",
+    )
+
+    workflow_step_params = [
+        params
+        for sql, params in store.connection.cursor_instance.executed
+        if sql.startswith("INSERT INTO workflow_step_runs(")
+    ]
+    coordinator_stage_params = [
+        params
+        for sql, params in store.connection.cursor_instance.executed
+        if sql.startswith("INSERT INTO coordinator_stage_tasks(")
+    ]
+
+    assert workflow_step_params
+    assert workflow_step_params[0][7] == "ready"
+    assert workflow_step_params[0][8] == ""
+
+    assert coordinator_stage_params
+    assert coordinator_stage_params[0][3] == "ready"
+    assert coordinator_stage_params[0][5] == ""

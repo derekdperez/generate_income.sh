@@ -249,6 +249,22 @@ UPDATE workflow_step_runs SET max_attempts = 1 WHERE COALESCE(max_attempts, 0) <
 _BUILTIN_WORKFLOW_DIR = Path(__file__).resolve().parents[1] / "workflows"
 
 
+def _preconditions_require_wait(preconditions: Any) -> bool:
+    """Return True only when a precondition object contains an actual requirement."""
+    if not isinstance(preconditions, dict) or not preconditions:
+        return False
+    for value in preconditions.values():
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            return True
+        if isinstance(value, (list, tuple, set)) and len(value) > 0:
+            return True
+        if isinstance(value, dict) and _preconditions_require_wait(value):
+            return True
+    return False
+
+
 def _merge_requirement_lists(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     """Merge workflow-file preconditions and input artifact requirements.
 
@@ -787,17 +803,22 @@ VALUES(%s,%s,%s,%s,%s,'queued',%s,%s::jsonb,%s);
         )
         for step in definition["steps"]:
             step_max_attempts = max(1, int(step.get("max_attempts") or 1))
-            # The coordinator is the source of truth for readiness. Insert every
-            # step as waiting, then refresh readiness after the whole run is
-            # present so prerequisite checks can see every sibling task.
+            preconditions = step.get("preconditions_json") or {}
+            has_prerequisites = _preconditions_require_wait(preconditions)
+            initial_status = "pending" if has_prerequisites else "ready"
+            initial_blocked_reason = "Waiting for Prerequisites..." if has_prerequisites else ""
             cur.execute(
                 """
-INSERT INTO workflow_step_runs(id, workflow_run_id, workflow_definition_id, step_definition_id, step_key, plugin_key, ordinal, status, blocked_reason, max_attempts, input_json, resolved_config_json)
-VALUES(%s,%s,%s,%s,%s,%s,%s,'pending','Waiting for Prerequisites...',%s,%s::jsonb,%s::jsonb);
+INSERT INTO workflow_step_runs(
+  id, workflow_run_id, workflow_definition_id, step_definition_id, step_key, plugin_key,
+  ordinal, status, blocked_reason, max_attempts, input_json, resolved_config_json
+)
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb);
 """,
                 (
                     str(uuid.uuid4()), run_id, definition["id"], step["id"], step["step_key"], step["plugin_key"],
-                    int(step["ordinal"]), step_max_attempts, json.dumps(input_json), json.dumps(step.get("config_json") or {}),
+                    int(step["ordinal"]), initial_status, initial_blocked_reason, step_max_attempts,
+                    json.dumps(input_json), json.dumps(step.get("config_json") or {}),
                 ),
             )
             # Compatibility bridge: enqueue coordinator stage tasks so existing
@@ -807,26 +828,34 @@ VALUES(%s,%s,%s,%s,%s,%s,%s,'pending','Waiting for Prerequisites...',%s,%s::json
                 checkpoint = {
                     "workflow_run_id": run_id,
                     "step_key": step["step_key"],
-                    "preconditions_json": step.get("preconditions_json") or {},
+                    "preconditions_json": preconditions if isinstance(preconditions, dict) else {},
                     "max_attempts": step_max_attempts,
                     "retry_failed": bool(step.get("retry_failed", False)),
                 }
                 cur.execute(
                     """
 INSERT INTO coordinator_stage_tasks(workflow_id, root_domain, stage, status, checkpoint_json, error, max_attempts)
-VALUES(%s,%s,%s,'pending',%s::jsonb,'Waiting for Prerequisites...',%s)
+VALUES(%s,%s,%s,%s,%s::jsonb,%s,%s)
 ON CONFLICT(workflow_id, root_domain, stage) DO UPDATE SET
-  status='pending',
+  status=EXCLUDED.status,
   checkpoint_json=EXCLUDED.checkpoint_json,
   worker_id=NULL,
   lease_expires_at=NULL,
   heartbeat_at_utc=NULL,
   completed_at_utc=NULL,
-  error='Waiting for Prerequisites...',
+  error=EXCLUDED.error,
   max_attempts=EXCLUDED.max_attempts,
   updated_at_utc=NOW();
 """,
-                    (definition["workflow_key"], root_domain, step["plugin_key"], json.dumps(checkpoint), step_max_attempts),
+                    (
+                        definition["workflow_key"],
+                        root_domain,
+                        step["plugin_key"],
+                        initial_status,
+                        json.dumps(checkpoint),
+                        initial_blocked_reason,
+                        step_max_attempts,
+                    ),
                 )
         conn.commit()
     # File/artifact and plugin prerequisite evaluation happens here and on
