@@ -758,6 +758,10 @@ CREATE INDEX IF NOT EXISTS idx_resource_leases_expiry
 CREATE TABLE IF NOT EXISTS coordinator_artifacts (
   root_domain TEXT NOT NULL,
   artifact_type TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL DEFAULT '',
+  step_id TEXT NOT NULL DEFAULT '',
+  plugin_id TEXT NOT NULL DEFAULT '',
   source_worker TEXT,
   content BYTEA,
   content_encoding TEXT NOT NULL DEFAULT 'identity',
@@ -777,6 +781,9 @@ CREATE TABLE IF NOT EXISTS coordinator_artifacts (
   PRIMARY KEY(root_domain, artifact_type)
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_domain ON coordinator_artifacts(root_domain);
+CREATE INDEX IF NOT EXISTS idx_artifacts_workflow_run ON coordinator_artifacts(workflow_run_id, updated_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON coordinator_artifacts(task_id, updated_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_plugin_id ON coordinator_artifacts(plugin_id, updated_at_utc DESC);
 
 CREATE TABLE IF NOT EXISTS coordinator_artifact_objects (
   content_sha256 TEXT PRIMARY KEY,
@@ -923,6 +930,10 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS summary_match_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS summary_anomaly_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS summary_request_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS workflow_run_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS task_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS step_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE coordinator_artifacts ADD COLUMN IF NOT EXISTS plugin_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT 'default'",
             "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE coordinator_stage_tasks ADD COLUMN IF NOT EXISTS progress_json JSONB NOT NULL DEFAULT '{}'::jsonb",
@@ -960,6 +971,12 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
             "CREATE INDEX IF NOT EXISTS idx_task_attempts_status ON coordinator_task_attempts(status, started_at_utc DESC)",
             "CREATE INDEX IF NOT EXISTS idx_artifacts_retention ON coordinator_artifacts(retention_class)",
             "CREATE INDEX IF NOT EXISTS idx_artifacts_hot_fields ON coordinator_artifacts(root_domain, artifact_type, summary_match_count, summary_anomaly_count)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_workflow_run ON coordinator_artifacts(workflow_run_id, updated_at_utc DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON coordinator_artifacts(task_id, updated_at_utc DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_plugin_id ON coordinator_artifacts(plugin_id, updated_at_utc DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_ready_lookup ON coordinator_stage_tasks(status, lease_expires_at, created_at_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_stage_tasks_heartbeat ON coordinator_stage_tasks(heartbeat_at_utc DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_targets_heartbeat ON coordinator_targets(heartbeat_at_utc DESC)",
         ]
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -4858,6 +4875,10 @@ WHERE workflow_id = %s
             conn.commit()
 
         if scheduled:
+            self._telemetry.incr(
+                "coordinator.workflow.tasks.scheduled",
+                tags={"workflow_id": widf, "stage": stg, "status": status or "unknown"},
+            )
             self.record_system_event(
                 "workflow.task.created",
                 f"workflow_task:{widf}:{rd}:{stg}",
@@ -5308,8 +5329,13 @@ ON CONFLICT (task_id, attempt_number) DO NOTHING;
                     break
             conn.commit()
         if claimed is None:
+            self._telemetry.incr("coordinator.workflow.claim.empty", tags={"worker_id": wid})
             return None
         row = claimed
+        self._telemetry.incr(
+            "coordinator.workflow.tasks.claimed",
+            tags={"workflow_id": str(row[0] or "default"), "stage": str(row[2] or ""), "worker_id": wid},
+        )
         self.record_system_event(
             "workflow.task.claimed",
             f"workflow_task:{row[0]}:{row[1]}:{row[2]}",
@@ -5464,6 +5490,11 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND worker_id = %s;
                         (lease, widf, rd, stg, wid),
                     )
             conn.commit()
+        if updated > 0:
+            self._telemetry.incr(
+                "coordinator.workflow.tasks.heartbeat",
+                tags={"workflow_id": widf, "stage": stg, "worker_id": wid},
+            )
         return updated > 0
 
     def update_stage_progress(
@@ -5659,6 +5690,22 @@ WHERE workflow_id = %s
                 updated = int(cur.rowcount or 0)
                 if updated > 0:
                     cur.execute(
+                        """
+UPDATE coordinator_task_attempts
+SET status = %s,
+    error = %s,
+    completed_at_utc = NOW(),
+    duration_ms = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at_utc)) * 1000)::BIGINT
+WHERE task_id = %s
+  AND attempt_number = (
+      SELECT COALESCE(MAX(attempt_number), 0)
+      FROM coordinator_task_attempts
+      WHERE task_id = %s
+  );
+""",
+                        (next_status, str(error or "")[:2000], f"{widf}:{rd}:{stg}", f"{widf}:{rd}:{stg}"),
+                    )
+                    cur.execute(
                         "DELETE FROM coordinator_resource_leases WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND worker_id = %s;",
                         (widf, rd, stg, wid),
                     )
@@ -5673,6 +5720,10 @@ WHERE workflow_id = %s
                     )
             conn.commit()
         if updated > 0:
+            self._telemetry.incr(
+                "coordinator.workflow.tasks.completed",
+                tags={"workflow_id": widf, "stage": stg, "status": next_status, "worker_id": wid},
+            )
             # A task completing can satisfy plugin prerequisites for other
             # waiting tasks in the same domain/workflow.
             try:
@@ -5916,6 +5967,225 @@ WHERE workflow_id = %s
             "previous_status": previous_status,
             "status": next_status,
             "affected_rows": affected,
+            "updated_at_utc": _iso_now(),
+        }
+
+    def cancel_workflow_run(self, *, workflow_run_id: str, actor: str = "", reason: str = "") -> dict[str, Any]:
+        """Cancel all active tasks that belong to a workflow run."""
+        run_id = str(workflow_run_id or "").strip()
+        if not run_id:
+            return {"ok": False, "error": "workflow_run_id is required"}
+        actor_text = str(actor or "").strip()[:200]
+        reason_text = str(reason or "").strip()[:1000]
+        affected = 0
+        canceled_rows: list[tuple[str, str, str]] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+SELECT workflow_id, root_domain, stage
+FROM coordinator_stage_tasks
+WHERE COALESCE(checkpoint_json->>'workflow_run_id','') = %s
+  AND status IN ('pending', 'ready', 'running', 'paused')
+FOR UPDATE;
+""",
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    widf = str(row[0] or "default").strip().lower() or "default"
+                    rd = str(row[1] or "").strip().lower()
+                    stg = str(row[2] or "").strip().lower()
+                    if not rd or not stg:
+                        continue
+                    cur.execute(
+                        """
+UPDATE coordinator_stage_tasks
+SET status = 'canceled',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    completed_at_utc = NOW(),
+    error = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                        (reason_text or "Canceled by operator", widf, rd, stg),
+                    )
+                    changed = int(cur.rowcount or 0)
+                    if changed <= 0:
+                        continue
+                    affected += changed
+                    canceled_rows.append((widf, rd, stg))
+                    cur.execute(
+                        """
+DELETE FROM coordinator_resource_leases
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                        (widf, rd, stg),
+                    )
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status="canceled",
+                        error=reason_text or "Canceled by operator",
+                    )
+            conn.commit()
+
+        for widf, rd, stg in canceled_rows[:5000]:
+            self.record_system_event(
+                "workflow.task.canceled",
+                f"workflow_task:{widf}:{rd}:{stg}",
+                {
+                    "source": "coordinator_store.cancel_workflow_run",
+                    "workflow_id": widf,
+                    "workflow_run_id": run_id,
+                    "root_domain": rd,
+                    "stage": stg,
+                    "plugin_id": stg,
+                    "status": "canceled",
+                    "actor": actor_text,
+                    "reason": reason_text,
+                },
+            )
+        self.record_system_event(
+            "workflow.run.canceled",
+            f"workflow_run:{run_id}",
+            {
+                "source": "coordinator_store.cancel_workflow_run",
+                "workflow_run_id": run_id,
+                "status": "canceled",
+                "actor": actor_text,
+                "reason": reason_text,
+                "affected_rows": affected,
+            },
+        )
+        self._telemetry.incr("coordinator.workflow.runs.canceled")
+        self._telemetry.gauge("coordinator.workflow.run.cancel_affected", float(affected))
+        return {
+            "ok": True,
+            "workflow_run_id": run_id,
+            "affected_rows": affected,
+            "actor": actor_text,
+            "reason": reason_text,
+            "updated_at_utc": _iso_now(),
+        }
+
+    def retry_failed_workflow_tasks(
+        self,
+        *,
+        workflow_id: str = "",
+        workflow_run_id: str = "",
+        actor: str = "",
+        reason: str = "",
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        """Requeue failed tasks for retry with audit events."""
+        wid_filter = str(workflow_id or "").strip().lower()
+        run_filter = str(workflow_run_id or "").strip()
+        if not wid_filter and not run_filter:
+            return {"ok": False, "error": "workflow_id or workflow_run_id is required"}
+        actor_text = str(actor or "").strip()[:200]
+        reason_text = str(reason or "").strip()[:1000]
+        max_rows = max(1, min(5000, int(limit or 5000)))
+        retried = 0
+        skipped_max_attempts = 0
+        skipped_not_failed = 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                where_sql = ["status = 'failed'"]
+                params: list[Any] = []
+                if wid_filter:
+                    where_sql.append("workflow_id = %s")
+                    params.append(wid_filter)
+                if run_filter:
+                    where_sql.append("COALESCE(checkpoint_json->>'workflow_run_id','') = %s")
+                    params.append(run_filter)
+                params.append(max_rows)
+                cur.execute(
+                    f"""
+SELECT workflow_id, root_domain, stage, attempt_count, max_attempts
+FROM coordinator_stage_tasks
+WHERE {' AND '.join(where_sql)}
+ORDER BY updated_at_utc DESC
+LIMIT %s
+FOR UPDATE;
+""",
+                    params,
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    widf = str(row[0] or "default").strip().lower() or "default"
+                    rd = str(row[1] or "").strip().lower()
+                    stg = str(row[2] or "").strip().lower()
+                    attempts = int(row[3] or 0)
+                    max_attempts = max(1, int(row[4] or 1))
+                    if attempts >= max_attempts:
+                        skipped_max_attempts += 1
+                        continue
+                    ready, prereq_reason = self._stage_prerequisites_satisfied(cur, workflow_id=widf, root_domain=rd, stage=stg)
+                    next_status = "ready" if ready else "pending"
+                    cur.execute(
+                        """
+UPDATE coordinator_stage_tasks
+SET status = %s,
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    completed_at_utc = NULL,
+    error = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s AND status = 'failed';
+""",
+                        (
+                            next_status,
+                            "" if next_status == "ready" else prereq_reason[:2000],
+                            widf,
+                            rd,
+                            stg,
+                        ),
+                    )
+                    changed = int(cur.rowcount or 0)
+                    if changed <= 0:
+                        skipped_not_failed += 1
+                        continue
+                    retried += changed
+                    self._sync_workflow_step_runs_for_stage_cur(
+                        cur,
+                        workflow_id=widf,
+                        root_domain=rd,
+                        stage=stg,
+                        status=next_status,
+                        error="" if next_status == "ready" else prereq_reason[:2000],
+                    )
+            conn.commit()
+        self.record_system_event(
+            "workflow.task.retry_bulk",
+            f"workflow:{wid_filter or 'all'}",
+            {
+                "source": "coordinator_store.retry_failed_workflow_tasks",
+                "workflow_id": wid_filter,
+                "workflow_run_id": run_filter,
+                "actor": actor_text,
+                "reason": reason_text,
+                "retried": retried,
+                "skipped_max_attempts": skipped_max_attempts,
+                "skipped_not_failed": skipped_not_failed,
+            },
+        )
+        self._telemetry.incr("coordinator.workflow.tasks.retry_requested")
+        self._telemetry.gauge("coordinator.workflow.tasks.retried", float(retried))
+        return {
+            "ok": True,
+            "workflow_id": wid_filter,
+            "workflow_run_id": run_filter,
+            "retried": retried,
+            "skipped_max_attempts": skipped_max_attempts,
+            "skipped_not_failed": skipped_not_failed,
+            "actor": actor_text,
+            "reason": reason_text,
             "updated_at_utc": _iso_now(),
         }
 
@@ -6221,6 +6491,10 @@ WHERE {where_clause};
         manifest: Optional[dict[str, Any]] = None,
         retention_class: str = "derived_rebuildable",
         media_type: str = "application/octet-stream",
+        workflow_run_id: str = "",
+        task_id: str = "",
+        step_id: str = "",
+        plugin_id: str = "",
     ) -> bool:
         rd = str(root_domain or "").strip().lower()
         at = str(artifact_type or "").strip().lower()
@@ -6273,13 +6547,17 @@ WHERE {where_clause};
         summary_request_count = int(manifest_dict.get("request_count") or manifest_dict.get("summary_request_count") or 0)
         sql = """
 INSERT INTO coordinator_artifacts(
-    root_domain, artifact_type, source_worker, content, content_encoding, content_sha256, content_size_bytes,
+    root_domain, artifact_type, workflow_run_id, task_id, step_id, plugin_id, source_worker, content, content_encoding, content_sha256, content_size_bytes,
     storage_backend, storage_uri, media_type, compression, schema_version, manifest_json, retention_class,
     summary_match_count, summary_anomaly_count, summary_request_count, updated_at_utc
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW())
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW())
 ON CONFLICT (root_domain, artifact_type) DO UPDATE
-SET source_worker = EXCLUDED.source_worker,
+SET workflow_run_id = EXCLUDED.workflow_run_id,
+    task_id = EXCLUDED.task_id,
+    step_id = EXCLUDED.step_id,
+    plugin_id = EXCLUDED.plugin_id,
+    source_worker = EXCLUDED.source_worker,
     content = EXCLUDED.content,
     content_encoding = EXCLUDED.content_encoding,
     content_sha256 = EXCLUDED.content_sha256,
@@ -6303,6 +6581,10 @@ SET source_worker = EXCLUDED.source_worker,
                     (
                         rd,
                         at,
+                        str(workflow_run_id or "")[:120],
+                        str(task_id or "")[:200],
+                        str(step_id or "")[:200],
+                        str(plugin_id or "")[:200],
                         str(source_worker or "")[:200],
                         inline_content,
                         str(content_encoding or "identity")[:120],

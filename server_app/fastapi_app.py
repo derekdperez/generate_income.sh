@@ -909,6 +909,41 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             "results_truncated": max(0, len(rows) - 1000),
         }
 
+    @app.post("/api/coord/workflow/run/cancel")
+    def cancel_workflow_run(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        workflow_run_id = str(body.get("workflow_run_id") or "").strip()
+        if not workflow_run_id:
+            raise HTTPException(status_code=400, detail="workflow_run_id is required")
+        result = store.cancel_workflow_run(
+            workflow_run_id=workflow_run_id,
+            actor=str(body.get("actor") or "api"),
+            reason=str(body.get("reason") or "Canceled by API request"),
+        )
+        if not bool(result.get("ok")):
+            raise HTTPException(status_code=400, detail=result.get("error") or "cancel failed")
+        return result
+
+    @app.post("/api/coord/workflow/tasks/retry-failed")
+    def retry_failed_workflow_tasks(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        result = store.retry_failed_workflow_tasks(
+            workflow_id=str(body.get("workflow_id") or ""),
+            workflow_run_id=str(body.get("workflow_run_id") or ""),
+            actor=str(body.get("actor") or "api"),
+            reason=str(body.get("reason") or "Manual retry request"),
+            limit=int(body.get("limit") or 5000),
+        )
+        if not bool(result.get("ok")):
+            raise HTTPException(status_code=400, detail=result.get("error") or "retry failed")
+        return result
+
 
     @app.get("/api/coord/workflow-domains")
     def workflow_domains(

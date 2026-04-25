@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .artifact_service import ArtifactService
+from .budget_service import BudgetService
 from .event_service import EventService
 from .file_service import FileService
 from .http_service import HttpService
+from .rate_limit_service import RateLimitService
 from .subprocess_service import SubprocessService
 
 
@@ -22,3 +24,5 @@ class PluginServiceContainer:
         self.subprocesses = SubprocessService()
         self.events = EventService(store, source=source)
         self.artifacts = ArtifactService(store, root_domain)
+        self.rate_limits = RateLimitService()
+        self.budgets = BudgetService()
