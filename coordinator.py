@@ -79,6 +79,28 @@ def _safe_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def _workflow_retry_limit(value: Any = None) -> int:
+    raw = value
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("WORKFLOW_RETRY_LIMIT") or os.environ.get("WORKFLOW_MAX_RETRIES") or DEFAULT_WORKFLOW_RETRY_LIMIT
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return DEFAULT_WORKFLOW_RETRY_LIMIT
+
+
+def _workflow_total_attempts(value: Any = None) -> int:
+    return _workflow_retry_limit(value) + 1
+
+
+def _normal_stage_name(stage: str) -> str:
+    return str(stage or "").strip().lower().replace("-", "_")
+
+
+def _is_bootstrap_ready_stage(stage: str) -> bool:
+    return _normal_stage_name(stage) in BOOTSTRAP_READY_STAGES
+
+
 def _safe_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -92,24 +114,6 @@ def _domain_output_dir(root_domain: str, output_root: Path) -> Path:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-DEFAULT_WORKFLOW_RETRY_LIMIT = 3
-
-
-def _default_workflow_retry_limit() -> int:
-    try:
-        return max(1, int(os.getenv("WORKFLOW_RETRY_LIMIT") or os.getenv("WORKFLOW_MAX_RETRIES") or DEFAULT_WORKFLOW_RETRY_LIMIT))
-    except (TypeError, ValueError):
-        return DEFAULT_WORKFLOW_RETRY_LIMIT
-
-
-def _workflow_total_attempts_from_entry(entry: dict[str, Any]) -> int:
-    try:
-        retry_limit = int(entry.get("retry_limit", _default_workflow_retry_limit()) or _default_workflow_retry_limit())
-    except (TypeError, ValueError):
-        retry_limit = _default_workflow_retry_limit()
-    return max(1, retry_limit) + 1
 
 
 def _normalize_subdomain_start_url(value: str) -> str:
@@ -325,7 +329,8 @@ def _normalize_workflow_entry(raw: Any) -> dict[str, Any] | None:
             "require_target_completed": bool(require_target_completed),
         },
         "retry_failed": bool(raw.get("retry_failed", False)),
-        "retry_limit": max(1, _safe_int(raw.get("retry_limit", _default_workflow_retry_limit()), _default_workflow_retry_limit())),
+        "retry_limit": _workflow_retry_limit(raw.get("retry_limit")),
+        "max_attempts": _workflow_total_attempts(raw.get("retry_limit")),
         "inputs": dict(raw.get("inputs") or {}) if isinstance(raw.get("inputs"), dict) else {},
         "outputs": dict(raw.get("outputs") or {}) if isinstance(raw.get("outputs"), dict) else {},
         "resume_mode": str(raw.get("resume_mode") or "exact").strip().lower() or "exact",
@@ -379,10 +384,7 @@ def _load_workflow_catalog(path: Path, logger: Any) -> tuple[str, dict[str, list
             continue
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
-        workflow_retry_limit = max(1, _safe_int(payload.get("retry_limit", _default_workflow_retry_limit()), _default_workflow_retry_limit()))
         for raw in candidates:
-            if isinstance(raw, dict) and "retry_limit" not in raw:
-                raw = {**raw, "retry_limit": workflow_retry_limit}
             normalized = _normalize_workflow_entry(raw)
             if not normalized:
                 continue
@@ -864,14 +866,16 @@ class DistributedCoordinator:
                 status = str(task_row.get("status", "") or "").strip().lower()
                 attempt_count = _safe_int(task_row.get("attempt_count", 0), 0)
                 retry_failed = bool(entry.get("retry_failed", False))
-                max_attempts = _workflow_total_attempts_from_entry(entry)
-                if status in {"pending", "running", "completed"}:
+                max_attempts = _workflow_total_attempts(entry.get("retry_limit"))
+                if status in {"running", "completed"}:
+                    continue
+                if status == "pending" and not _is_bootstrap_ready_stage(plugin_name):
                     continue
                 allow_retry_failed = False
                 if status == "failed":
                     if not retry_failed:
                         continue
-                    if attempt_count >= max_attempts:
+                    if max_attempts > 0 and attempt_count >= max_attempts:
                         continue
                     allow_retry_failed = True
                 resume_mode = str(entry.get("resume_mode") or "exact").strip().lower() or "exact"
@@ -898,7 +902,7 @@ class DistributedCoordinator:
                         stage=plugin_name,
                         prior_status=status or "none",
                         attempt_count=attempt_count,
-                        retry_limit=max(1, max_attempts - 1),
+                        max_attempts=max_attempts,
                         retry_failed=retry_failed,
                         artifacts_available=sorted(artifacts),
                     )

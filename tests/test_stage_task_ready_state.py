@@ -70,15 +70,45 @@ def test_schedule_stage_promotes_pending_task_to_ready_when_prerequisites_are_me
     assert conn.cursor_obj.updated_statuses == ["ready"]
     assert conn.committed is True
 
+def test_bootstrap_subdomain_stage_is_ready_even_with_stale_checkpoint_prerequisites(monkeypatch):
+    from server_app.store import CoordinatorStore
 
-def test_subdomain_enumeration_is_always_treated_as_bootstrap_ready() -> None:
-    store = CoordinatorStore.__new__(CoordinatorStore)
-    store._normalize_workflow_token = lambda value, default="": str(value or default).strip().lower()  # type: ignore[attr-defined]
+    store = object.__new__(CoordinatorStore)
 
-    prereq = CoordinatorStore._load_workflow_stage_preconditions(
-        store,
-        "run-recon",
-        "recon_subdomain_enumeration",
+    class Cursor:
+        def execute(self, *args, **kwargs):
+            pass
+
+        def fetchone(self):
+            return ({"preconditions": {"artifacts_all": ["stale_missing_artifact"]}},)
+
+        def fetchall(self):
+            return []
+
+    monkeypatch.setattr(store, "_load_workflow_stage_preconditions", lambda workflow_id, stage: {"artifacts_all": ["stale_missing_artifact"]})
+    ready, reason = store._stage_prerequisites_satisfied(
+        Cursor(),
+        workflow_id="run-recon",
+        root_domain="example.com",
+        stage="recon_subdomain_enumeration",
     )
 
-    assert prereq == {}
+    assert ready is True
+    assert reason == ""
+
+
+def test_bootstrap_stage_name_alias_is_ready(monkeypatch):
+    from server_app.store import CoordinatorStore
+
+    store = object.__new__(CoordinatorStore)
+    monkeypatch.setattr(store, "_load_workflow_stage_preconditions", lambda workflow_id, stage: {"artifacts_all": ["missing"]})
+
+    ready, reason = store._stage_prerequisites_satisfied(
+        object(),
+        workflow_id="run-recon",
+        root_domain="example.com",
+        stage="recon-subdomain-enumeration",
+    )
+
+    assert ready is True
+    assert reason == ""

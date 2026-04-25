@@ -145,7 +145,7 @@
             </tr>
           </thead>
           <tbody id="taskRows">
-            <tr><td colspan="7" class="muted">Select a domain to inspect plugin tasks.</td></tr>
+            <tr><td colspan="8" class="muted">Select a domain to inspect plugin tasks.</td></tr>
           </tbody>
         </table>
       </div>
@@ -329,14 +329,14 @@
       const selected = domains.find((domain) => String(domain.root_domain || "") === state.selectedDomain);
       if (!selected) {
         document.getElementById("taskPanelTitle").textContent = "Plugin Tasks";
-        body.innerHTML = '<tr><td colspan="7" class="muted">Select a domain to inspect plugin tasks.</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="muted">Select a domain to inspect plugin tasks.</td></tr>';
         return;
       }
       const root = String(selected.root_domain || "");
       document.getElementById("taskPanelTitle").textContent = `Plugin Tasks: ${root}`;
       const tasks = flattenTasks(selected).filter(taskFiltersMatch);
       if (!tasks.length) {
-        body.innerHTML = '<tr><td colspan="7" class="muted">No plugin tasks match filters for this domain.</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="muted">No plugin tasks match filters for this domain.</td></tr>';
         return;
       }
       body.innerHTML = tasks.map((task) => `

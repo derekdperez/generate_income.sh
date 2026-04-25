@@ -1,14 +1,18 @@
-from __future__ import annotations
-
-from server_app.store import _workflow_total_attempts
+from workflow_app.store import workflow_retry_limit, workflow_total_attempts, _preconditions_require_wait
 
 
-def test_workflow_retry_policy_defaults_to_three_retries(monkeypatch):
-    monkeypatch.delenv("WORKFLOW_RETRY_LIMIT", raising=False)
-    monkeypatch.delenv("WORKFLOW_MAX_RETRIES", raising=False)
-    assert _workflow_total_attempts() == 4
+def test_retry_policy_defaults_to_three_retries_four_total_attempts():
+    assert workflow_retry_limit(None) == 3
+    assert workflow_total_attempts(None) == 4
 
 
-def test_workflow_retry_policy_never_allows_zero_retries(monkeypatch):
-    monkeypatch.setenv("WORKFLOW_RETRY_LIMIT", "0")
-    assert _workflow_total_attempts() == 2
+def test_retry_policy_never_allows_zero_retries():
+    assert workflow_retry_limit(0) == 1
+    assert workflow_total_attempts(0) == 2
+
+
+def test_subdomain_enumeration_never_waits_for_prerequisites():
+    assert _preconditions_require_wait(
+        {"artifacts_all": ["stale_missing_artifact"]},
+        plugin_key="recon_subdomain_enumeration",
+    ) is False

@@ -43,23 +43,40 @@ from nightmare_shared.page_classification import (
 DEFAULT_COORDINATOR_LEASE_SECONDS = 120
 DEFAULT_WORKER_RETENTION_SECONDS = 3600
 MAX_AUDIT_TEXT_LEN = 4000
-
 DEFAULT_WORKFLOW_RETRY_LIMIT = 3
+BOOTSTRAP_READY_STAGES = {"recon_subdomain_enumeration", "recon-subdomain-enumeration"}
 
 
-def _coerce_workflow_retry_limit(value: Any = None) -> int:
-    """Return a positive retry count. Defaults to three retries and never allows zero."""
-    if value is None or value == "":
-        value = os.getenv("WORKFLOW_RETRY_LIMIT") or os.getenv("WORKFLOW_MAX_RETRIES") or DEFAULT_WORKFLOW_RETRY_LIMIT
+def _positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        parsed = DEFAULT_WORKFLOW_RETRY_LIMIT
+        return max(1, int(default))
     return max(1, parsed)
 
 
+def _workflow_retry_limit(value: Any = None) -> int:
+    """Return the configured retry count, never zero or negative."""
+    if value is not None and str(value).strip() != "":
+        return _positive_int(value, DEFAULT_WORKFLOW_RETRY_LIMIT)
+    for env_name in ("WORKFLOW_RETRY_LIMIT", "WORKFLOW_MAX_RETRIES"):
+        env_value = os.environ.get(env_name)
+        if env_value is not None and str(env_value).strip() != "":
+            return _positive_int(env_value, DEFAULT_WORKFLOW_RETRY_LIMIT)
+    return DEFAULT_WORKFLOW_RETRY_LIMIT
+
+
 def _workflow_total_attempts(value: Any = None) -> int:
-    return _coerce_workflow_retry_limit(value) + 1
+    """Coordinator DB stores total attempts, while config exposes retry count."""
+    return _workflow_retry_limit(value) + 1
+
+
+def _normal_stage_name(stage: str) -> str:
+    return str(stage or "").strip().lower().replace("-", "_")
+
+
+def _is_bootstrap_ready_stage(stage: str) -> bool:
+    return _normal_stage_name(stage) in BOOTSTRAP_READY_STAGES
 
 SUPPORTED_PAGE_CLASSIFICATIONS = {
     PAGE_CLASS_EXISTS,
@@ -632,7 +649,7 @@ CREATE TABLE IF NOT EXISTS coordinator_stage_tasks (
   completed_at_utc TIMESTAMPTZ,
   heartbeat_at_utc TIMESTAMPTZ,
   attempt_count INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 4,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
   exit_code INTEGER,
   error TEXT,
   checkpoint_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -842,8 +859,8 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
                 cur.execute(ddl)
                 cur.execute("""
 ALTER TABLE coordinator_stage_tasks
-  ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 4;
-UPDATE coordinator_stage_tasks SET max_attempts = 4 WHERE COALESCE(max_attempts, 0) < 1;
+  ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 1;
+UPDATE coordinator_stage_tasks SET max_attempts = 1 WHERE COALESCE(max_attempts, 0) < 1;
 """)
             conn.commit()
             for sql in migration_statements:
@@ -1664,6 +1681,10 @@ ORDER BY ordinal_position;
         workflow_domain_scheduler_state.
         """
         safe_limit = max(1, min(20000, int(limit or 2000)))
+        try:
+            self.refresh_stage_task_readiness(limit=min(5000, safe_limit * 10))
+        except Exception:
+            pass
         domains_sql = """
 SELECT root_domain
 FROM (
@@ -1705,10 +1726,8 @@ LIMIT %s;
     def workflow_scheduler_snapshot(self, *, limit: int = 2000) -> dict[str, Any]:
         safe_limit = max(1, min(20000, int(limit or 2000)))
         try:
-            self.refresh_stage_task_readiness(limit=safe_limit)
+            self.refresh_stage_task_readiness(limit=min(5000, safe_limit * 10))
         except Exception:
-            # Snapshot rendering must remain best-effort even if a partial
-            # deployment is missing newer workflow tables/columns.
             pass
         domains_sql = """
 SELECT root_domain
@@ -1792,7 +1811,7 @@ ORDER BY root_domain ASC;
                 "workflow_id": workflow_id,
                 "stage": stg,
                 "plugin_name": stg,
-                "status": str(row[3] or "").strip().lower(),
+                "status": ("ready" if _is_bootstrap_ready_stage(stg) and str(row[3] or "").strip().lower() == "pending" else str(row[3] or "").strip().lower()),
                 "attempt_count": int(row[4] or 0),
                 "exit_code": (int(row[5]) if row[5] is not None else None),
                 "error": str(row[6] or ""),
@@ -1860,7 +1879,7 @@ ORDER BY root_domain ASC;
         if not rd:
             return {"generated_at_utc": _iso_now(), "found": False, "root_domain": rd}
         try:
-            self.refresh_stage_task_readiness(root_domain=rd, limit=5000)
+            self.refresh_stage_task_readiness(root_domain=rd, limit=1000)
         except Exception:
             pass
         with self._connect() as conn:
@@ -1912,7 +1931,7 @@ WHERE root_domain = %s;
                 "workflow_id": wid,
                 "stage": stg,
                 "plugin_name": stg,
-                "status": str(row[3] or "").strip().lower(),
+                "status": ("ready" if _is_bootstrap_ready_stage(stg) and str(row[3] or "").strip().lower() == "pending" else str(row[3] or "").strip().lower()),
                 "attempt_count": int(row[4] or 0),
                 "exit_code": (int(row[5]) if row[5] is not None else None),
                 "error": str(row[6] or ""),
@@ -4020,11 +4039,6 @@ RETURNING command;
         stg = str(stage or "").strip().lower()
         if not wid or not stg:
             return {}
-        # This bootstrap stage intentionally has no prerequisites.  Treat the
-        # workflow JSON as authoritative here so stale DB-authored workflow
-        # definitions or old checkpoint metadata cannot strand it as pending.
-        if stg == "recon_subdomain_enumeration":
-            return {}
         def _read_file_preconditions() -> tuple[bool, dict[str, Any]]:
             candidates: list[Path] = []
             workflow_dir = self._workflow_catalog_dir()
@@ -4123,6 +4137,10 @@ LIMIT 1;
         rd = str(root_domain or "").strip().lower()
         wid = str(workflow_id or "").strip().lower() or "default"
         stg = str(stage or "").strip().lower()
+        if _is_bootstrap_ready_stage(stg):
+            # Bootstrap recon has no prerequisites. Trust this invariant over
+            # stale workflow definitions/checkpoints so it is always claimable.
+            return True, ""
         prereq = self._load_workflow_stage_preconditions(wid, stg)
         if not prereq:
             try:
@@ -4264,7 +4282,7 @@ WHERE root_domain = %s;
         rd = str(root_domain or "").strip().lower()
         stg = str(stage or "").strip().lower()
         mapped_status = str(status or "").strip().lower()
-        if mapped_status == "pending":
+        if mapped_status == "pending" and not _is_bootstrap_ready_stage(stg):
             blocked_reason = "Waiting for Prerequisites..."
         else:
             blocked_reason = ""
@@ -4396,11 +4414,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
         widf = str(workflow_id or "").strip().lower() or "default"
         wid = str(worker_id or "").strip()
         source_reason = str(reason or "").strip()
-        try:
-            requested_total_attempts = int(max_attempts or 0)
-        except (TypeError, ValueError):
-            requested_total_attempts = 0
-        max_attempts_int = _workflow_total_attempts() if requested_total_attempts <= 0 else max(2, requested_total_attempts)
+        max_attempts_int = _positive_int(max_attempts, _workflow_total_attempts()) if max_attempts else _workflow_total_attempts()
         if not rd or not stg:
             return {
                 "ok": False,
@@ -4534,7 +4548,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
                         decision_reason = "already_running"
                     elif current_status == "failed":
                         can_retry = bool(allow_retry_failed)
-                        if attempt_count >= max_attempts_int:
+                        if max_attempts_int > 0 and attempt_count >= max_attempts_int:
                             can_retry = False
                             decision_reason = "max_attempts_reached"
                         if can_retry:
@@ -4600,7 +4614,7 @@ WHERE workflow_id = %s
                     "worker_id": wid,
                     "reason": source_reason or decision_reason,
                     "allow_retry_failed": bool(allow_retry_failed),
-                    "retry_limit": max(1, max_attempts_int - 1),
+                    "max_attempts": max_attempts_int,
                     "resume_mode": resume_mode_text,
                     "progress_artifact_type": progress_artifact_type_text,
                     "table": "coordinator_stage_tasks",
@@ -4617,7 +4631,6 @@ WHERE workflow_id = %s
             "status": status,
             "reason": decision_reason,
             "attempt_count": attempt_count,
-            "retry_limit": max(1, max_attempts_int - 1),
         }
 
     def enqueue_stage(
@@ -4773,7 +4786,7 @@ SELECT workflow_id, root_domain, stage, status, worker_id, attempt_count, lease_
        checkpoint_json, progress_json, progress_artifact_type, resume_mode,
        COALESCE(resource_class, 'default'), COALESCE(access_mode, 'write'),
        COALESCE(concurrency_group, ''), GREATEST(COALESCE(max_parallelism, 1), 1),
-       GREATEST(COALESCE(max_attempts, 4), 2)
+       GREATEST(COALESCE(max_attempts, 1), 1)
 FROM coordinator_stage_tasks
 WHERE (
     status = 'ready'
@@ -4781,7 +4794,7 @@ WHERE (
       status = 'running'
       AND lease_expires_at IS NOT NULL
       AND lease_expires_at < NOW()
-      AND attempt_count < GREATEST(COALESCE(max_attempts, 4), 2)
+      AND attempt_count < GREATEST(COALESCE(max_attempts, 1), 1)
     )
 )
   AND (%s::text[] IS NULL OR stage = ANY(%s))
@@ -5579,35 +5592,12 @@ SET status = 'pending',
     updated_at_utc = NOW()
 WHERE {where_clause};
 """
-        readiness_updates = 0
         with self._connect() as conn:
             with conn.cursor() as cur:
                 self._lock_stage_task_scope_cur(cur, widf or "default")
                 cur.execute(sql, tuple(params))
                 affected = int(cur.rowcount or 0)
             conn.commit()
-        if affected > 0 and not hard_delete:
-            try:
-                if domains:
-                    for domain in domains:
-                        readiness_updates += int(
-                            self.refresh_stage_task_readiness(
-                                root_domain=domain,
-                                workflow_id=widf,
-                                limit=max(affected, 500),
-                            )
-                            or 0
-                        )
-                else:
-                    readiness_updates = int(
-                        self.refresh_stage_task_readiness(
-                            workflow_id=widf,
-                            limit=max(affected, 500),
-                        )
-                        or 0
-                    )
-            except Exception:
-                readiness_updates = 0
         self.record_system_event(
             "workflow.task.reset",
             "workflow_tasks",
@@ -5619,7 +5609,6 @@ WHERE {where_clause};
                 "statuses": normalized_statuses,
                 "hard_delete": bool(hard_delete),
                 "affected_rows": affected,
-                "readiness_updates": readiness_updates,
             },
         )
         return {
@@ -5630,7 +5619,6 @@ WHERE {where_clause};
             "statuses": normalized_statuses,
             "hard_delete": bool(hard_delete),
             "affected_rows": affected,
-            "readiness_updates": readiness_updates,
             "reset_at_utc": _iso_now(),
         }
 
