@@ -1,2 +1,370 @@
 <!doctype html>
-<html><body>placeholder</body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ workflow_interface.title or "Recon Workflow" }}</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
+    h1 { margin: 0 0 6px; }
+    h2 { margin: 0 0 8px; font-size: 15px; }
+    .muted { color: #64748b; font-size: 13px; }
+    .header { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(90px, 1fr)); gap: 8px; min-width: 320px; }
+    .stat { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; text-align: center; }
+    .stat .k { font-size: 11px; color: #64748b; text-transform: uppercase; }
+    .stat .v { font-size: 20px; font-weight: 700; margin-top: 2px; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-top: 12px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    input { border: 1px solid #94a3b8; border-radius: 6px; padding: 6px 8px; }
+    input[type="text"], input[type="password"] { min-width: 170px; }
+    button { border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button.primary { background: #0ea5e9; border-color: #0284c7; color: #fff; }
+    button.warn { background: #dc2626; border-color: #b91c1c; color: #fff; }
+    .layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+    .table-wrap { overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 46vh; }
+    .table-wrap.assets { max-height: 38vh; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #cbd5e1; font-size: 12px; text-align: left; padding: 6px 8px; vertical-align: top; }
+    th { background: #f1f5f9; position: sticky; top: 0; z-index: 1; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .selected-row { background: #ecfeff; }
+    .status-pill { border: 1px solid #cbd5e1; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+    .status-active { border-color: #86efac; color: #166534; background: #f0fdf4; }
+    .status-paused { border-color: #fcd34d; color: #92400e; background: #fffbeb; }
+    .status-other { border-color: #cbd5e1; color: #334155; background: #f8fafc; }
+    .status-box { margin-top: 8px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px; background: #f8fafc; white-space: pre-wrap; font-size: 12px; }
+    @media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } .stats { min-width: 0; } }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html.j2' %}
+  <div class="header">
+    <div>
+      <h1>{{ workflow_interface.title or "Recon Scanning Workspace" }}</h1>
+      <div class="muted">{{ workflow_interface.description or "Select targets, inspect subdomains and replay HTTP traces." }}</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="k">Targets</div><div class="v" id="statTargets">0</div></div>
+      <div class="stat"><div class="k">Subdomains</div><div class="v" id="statSubdomains">0</div></div>
+      <div class="stat"><div class="k">Assets</div><div class="v" id="statAssets">0</div></div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="toolbar">
+      <input id="token" type="password" placeholder="Coordinator token">
+      <input id="domainSearch" type="text" placeholder="Filter domains">
+      <button type="button" class="primary" id="refreshBtn">Refresh</button>
+      <button type="button" class="primary" id="generateBtn">Generate Workflow Tasks</button>
+      <button type="button" class="warn" id="clearSelectedBtn">Clear Selected</button>
+      <button type="button" id="selectAllBtn">Select / Unselect All</button>
+      <input id="importFile" type="file" accept=".txt,.csv,.json" style="display:none">
+      <button type="button" id="importBtn">Import TXT/CSV/JSON</button>
+      <button type="button" id="addTargetBtn">Add target</button>
+    </div>
+    <div class="layout">
+      <div>
+        <h2>Available targets</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Sel</th><th>Domain</th><th>Scope</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="targetRows"><tr><td colspan="5" class="muted">Loading targets...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h2>Subdomain intelligence</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Domain</th><th>Full Subdomain URL</th><th>Request</th><th>Response</th><th>Code</th><th>Discover Method</th><th>Takeover?</th></tr></thead>
+            <tbody id="subdomainRows"><tr><td colspan="7" class="muted">Select one or more targets.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Selected target assets</h2>
+    <div class="toolbar">
+      <input id="assetSearch" type="text" placeholder="Filter assets">
+      <button type="button" id="refreshAssetsBtn">Refresh assets</button>
+      <span class="muted" id="assetMeta"></span>
+    </div>
+    <div class="table-wrap assets">
+      <table>
+        <thead><tr><th>URL</th><th>Request</th><th>Response</th><th>Req KB</th><th>Duration</th><th>Res KB</th><th>Status</th><th>Replay</th></tr></thead>
+        <tbody id="assetRows"><tr><td colspan="8" class="muted">Loading assets...</td></tr></tbody>
+      </table>
+    </div>
+    <div id="statusBox" class="status-box muted">Ready.</div>
+  </section>
+
+  <script>
+    (() => {
+      const WORKFLOW_ID = "{{ workflow_id or 'run-recon' }}".trim().toLowerCase() || "run-recon";
+      const state = { targets: [], selectedDomains: new Set(), subdomainRows: [], assets: [] };
+
+      function authHeaders() {
+        if (window.NightmareAuth && typeof window.NightmareAuth.withAuthHeaders === "function") return window.NightmareAuth.withAuthHeaders({}).headers;
+        const token = String(document.getElementById("token").value || "").trim();
+        const headers = new Headers();
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+        return headers;
+      }
+      async function fetchJson(url, init = {}) {
+        const rsp = await fetch(url, { ...init, headers: authHeaders(), credentials: "same-origin", cache: "no-store" });
+        const payload = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) throw new Error(String(payload.error || payload.detail || `HTTP ${rsp.status}`));
+        return payload;
+      }
+      function escapeHtml(v) { return String(v || "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+      function setStatus(t, isError = false) {
+        const box = document.getElementById("statusBox");
+        box.textContent = String(t || "");
+        box.style.color = isError ? "#991b1b" : "#0f172a";
+      }
+      function withAuthToken(path) {
+        const raw = String(path || "").trim();
+        if (!raw) return "#";
+        const token = String(document.getElementById("token").value || "").trim();
+        return token ? `${raw}${raw.includes("?") ? "&" : "?"}coordinator_token=${encodeURIComponent(token)}` : raw;
+      }
+      function statusClass(v) {
+        const s = String(v || "").toLowerCase();
+        if (s === "active") return "status-pill status-active";
+        if (s === "paused") return "status-pill status-paused";
+        return "status-pill status-other";
+      }
+      function selectedDomainList() { return Array.from(state.selectedDomains).sort(); }
+      function updateStats() {
+        document.getElementById("statTargets").textContent = String(state.targets.length);
+        document.getElementById("statSubdomains").textContent = String(state.subdomainRows.length);
+        document.getElementById("statAssets").textContent = String(state.assets.length);
+      }
+      function renderTargets() {
+        const tbody = document.getElementById("targetRows");
+        const q = String(document.getElementById("domainSearch").value || "").trim().toLowerCase();
+        const rows = q ? state.targets.filter((r) => String(r.root_domain || "").toLowerCase().includes(q)) : state.targets;
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">No targets found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map((row) => {
+          const d = String(row.root_domain || "").trim().toLowerCase();
+          const selected = state.selectedDomains.has(d);
+          return `<tr class="${selected ? "selected-row" : ""}"><td><input type="checkbox" data-domain-check="${escapeHtml(d)}" ${selected ? "checked" : ""}></td><td class="mono">${escapeHtml(d)}</td><td>${escapeHtml(row.scope || "Wildcard")}</td><td><span class="${statusClass(row.status || "active")}">${escapeHtml(row.status || "Active")}</span></td><td><button type="button" data-edit="${escapeHtml(d)}">Edit</button><button type="button" data-remove="${escapeHtml(d)}" class="warn">Remove</button></td></tr>`;
+        }).join("");
+        tbody.querySelectorAll("input[data-domain-check]").forEach((input) => input.addEventListener("change", () => {
+          const d = String(input.getAttribute("data-domain-check") || "");
+          if (!d) return;
+          if (input.checked) state.selectedDomains.add(d); else state.selectedDomains.delete(d);
+          renderTargets();
+          void refreshIntelligence();
+        }));
+        tbody.querySelectorAll("button[data-edit]").forEach((b) => b.addEventListener("click", () => {
+          const d = String(b.getAttribute("data-edit") || "");
+          const updated = window.prompt("Edit target domain", d) || "";
+          if (!updated || updated === d) return;
+          void importDomains([updated.trim().toLowerCase()]);
+        }));
+        tbody.querySelectorAll("button[data-remove]").forEach((b) => b.addEventListener("click", async () => {
+          const d = String(b.getAttribute("data-remove") || "");
+          if (!d || !window.confirm(`Clear generated workflow data/tasks for ${d}?`)) return;
+          try {
+            setStatus(`Clearing ${d}...`);
+            await fetchJson("/api/coord/workflow/clear-data", { method: "POST", body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domain: d }) });
+            await fetchJson("/api/coord/workflow/clear-generated-tasks", { method: "POST", body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domains: [d], hard_delete: true, stop_running_workers: false }) });
+            setStatus(`Cleared workflow data/tasks for ${d}.`);
+            await loadTargets();
+            await refreshIntelligence();
+          } catch (err) {
+            setStatus(err.message || err, true);
+          }
+        }));
+      }
+      function renderSubdomains() {
+        const tbody = document.getElementById("subdomainRows");
+        if (!state.subdomainRows.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="muted">No subdomain intelligence rows for current selection.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = state.subdomainRows.map((row) => {
+          const code = Number(row.status_code || 0);
+          const cls = code >= 200 && code < 300 ? "status-pill status-active" : (code >= 400 ? "status-pill status-paused" : "status-pill status-other");
+          return `<tr><td class="mono">${escapeHtml(row.root_domain || "")}</td><td><a href="${escapeHtml(row.url || "#")}" target="_blank" rel="noopener">${escapeHtml(row.url || "")}</a></td><td>${row.request_link ? `<a href="${escapeHtml(withAuthToken(row.request_link))}" target="_blank" rel="noopener">${escapeHtml(row.request_id || "REQ")}</a>` : ""}</td><td>${row.response_link ? `<a href="${escapeHtml(withAuthToken(row.response_link))}" target="_blank" rel="noopener">${escapeHtml(row.response_id || "RES")}</a>` : ""}</td><td><span class="${cls}">${escapeHtml(String(code || ""))}</span></td><td>${escapeHtml(row.discover_method || "artifact")}</td><td>${row.takeover ? "Yes" : "No"}</td></tr>`;
+        }).join("");
+      }
+      function renderAssets() {
+        const tbody = document.getElementById("assetRows");
+        const q = String(document.getElementById("assetSearch").value || "").trim().toLowerCase();
+        const rows = q ? state.assets.filter((r) => String(r.url || "").toLowerCase().includes(q)) : state.assets;
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="muted">No selected target assets.</td></tr>';
+          document.getElementById("assetMeta").textContent = "0 rows";
+          return;
+        }
+        tbody.innerHTML = rows.map((row) => `<tr><td class="mono">${escapeHtml(row.url || "")}</td><td>${row.request_link ? `<a href="${escapeHtml(withAuthToken(row.request_link))}" target="_blank" rel="noopener">${escapeHtml(row.request_id || "REQ")}</a>` : ""}</td><td>${row.response_link ? `<a href="${escapeHtml(withAuthToken(row.response_link))}" target="_blank" rel="noopener">${escapeHtml(row.response_id || "RES")}</a>` : ""}</td><td>${escapeHtml(String(row.req_kb || ""))}</td><td>${escapeHtml(String(row.duration_ms || ""))} ms</td><td>${escapeHtml(String(row.res_kb || ""))}</td><td>${escapeHtml(String(row.status_code || ""))}</td><td><button type="button" data-replay="${escapeHtml(row.root_domain || "")}">Replay</button></td></tr>`).join("");
+        document.getElementById("assetMeta").textContent = `${rows.length} rows`;
+        tbody.querySelectorAll("button[data-replay]").forEach((b) => b.addEventListener("click", () => {
+          window.open(`/http-requests?root_domain=${encodeURIComponent(String(b.getAttribute("data-replay") || ""))}`, "_blank", "noopener");
+        }));
+      }
+      async function loadTargets() {
+        const payload = await fetchJson(`/api/coord/discovered-targets?limit=500&offset=0&sort_key=saved_at_utc&sort_dir=desc`);
+        state.targets = Array.isArray(payload.domains) ? payload.domains.map((d) => ({
+          root_domain: String(d.root_domain || "").trim().toLowerCase(),
+          status: String(d.status || "active"),
+          scope: "Wildcard",
+        })) : [];
+        if (!state.selectedDomains.size && state.targets.length) state.selectedDomains.add(String(state.targets[0].root_domain || ""));
+        renderTargets();
+      }
+      async function refreshIntelligence() {
+        const domains = selectedDomainList();
+        state.subdomainRows = [];
+        state.assets = [];
+        if (!domains.length) { renderSubdomains(); renderAssets(); updateStats(); return; }
+        for (const domain of domains.slice(0, 25)) {
+          const [subPayload, sitePayload] = await Promise.all([
+            fetchJson(`/api/coord/workflow-interface/recon/subdomains?root_domain=${encodeURIComponent(domain)}`),
+            fetchJson(`/api/coord/discovered-target-sitemap?root_domain=${encodeURIComponent(domain)}&limit=200&offset=0&include_details=1&sort_key=url&sort_dir=asc`),
+          ]);
+          const subdomains = Array.isArray(subPayload.subdomains) ? subPayload.subdomains : [];
+          const urls = Array.isArray(sitePayload.rows) ? sitePayload.rows : [];
+          const firstBySub = new Map();
+          for (const r of urls) {
+            const s = String(r.subdomain || "").trim().toLowerCase();
+            if (s && !firstBySub.has(s)) firstBySub.set(s, r);
+          }
+          for (const sub of subdomains.slice(0, 300)) {
+            const r = firstBySub.get(String(sub).toLowerCase()) || {};
+            state.subdomainRows.push({
+              root_domain: domain,
+              url: r.url || `https://${sub}`,
+              request_link: r.download_request_path || "",
+              response_link: r.download_response_path || r.view_response_path || "",
+              request_id: r.request_id || "REQ",
+              response_id: r.response_id || "RES",
+              status_code: Number(r.response_status_code || r.status_code || 0),
+              discover_method: r.discover_method || (r.subdomain ? "sitemap" : "artifact"),
+              takeover: Boolean(r.takeover_candidate),
+            });
+          }
+          for (const r of urls) {
+            state.assets.push({
+              root_domain: domain,
+              url: r.url || "",
+              request_link: r.download_request_path || "",
+              response_link: r.download_response_path || r.view_response_path || "",
+              request_id: r.request_id || "REQ",
+              response_id: r.response_id || "RES",
+              req_kb: r.request_size_bytes ? (Number(r.request_size_bytes) / 1024).toFixed(1) : "",
+              duration_ms: r.response_elapsed_ms || "",
+              res_kb: r.response_size_bytes ? (Number(r.response_size_bytes) / 1024).toFixed(1) : "",
+              status_code: r.response_status_code || r.status_code || "",
+            });
+          }
+        }
+        renderSubdomains();
+        renderAssets();
+        updateStats();
+      }
+      async function importDomains(domains) {
+        const list = (Array.isArray(domains) ? domains : []).map((d) => String(d || "").trim().toLowerCase()).filter(Boolean);
+        if (!list.length) { setStatus("No valid domains parsed from import.", true); return; }
+        setStatus(`Registering ${list.length} target(s)...`);
+        await fetchJson("/api/coord/register-targets", { method: "POST", body: JSON.stringify({ targets: list, replace_existing: false }) });
+        setStatus(`Registered ${list.length} target(s).`);
+        await loadTargets();
+        await refreshIntelligence();
+      }
+      async function generateWorkflowTasks() {
+        const domains = selectedDomainList();
+        if (!domains.length) { setStatus("Select at least one target domain.", true); return; }
+        setStatus(`Generating workflow tasks for ${domains.length} domain(s)...`);
+        const payload = await fetchJson("/api/coord/workflow/run", { method: "POST", body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domains: domains, force_run: true, notify_workers: true, reason: "recon_results_generate" }) });
+        const counts = payload.counts || {};
+        setStatus(`Generated tasks: scheduled=${Number(counts.scheduled || 0)}, already_running=${Number(counts.already_running || 0)}, pending=${Number(counts.pending || 0)}.`);
+      }
+      async function clearSelected() {
+        const domains = selectedDomainList();
+        if (!domains.length) { setStatus("No selected domains to clear.", true); return; }
+        if (!window.confirm(`Clear workflow data and generated tasks for ${domains.length} selected domain(s)?`)) return;
+        setStatus(`Clearing ${domains.length} selected domain(s)...`);
+        for (const d of domains) {
+          await fetchJson("/api/coord/workflow/clear-data", { method: "POST", body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domain: d }) });
+        }
+        await fetchJson("/api/coord/workflow/clear-generated-tasks", { method: "POST", body: JSON.stringify({ workflow_id: WORKFLOW_ID, root_domains: domains, hard_delete: true, stop_running_workers: false }) });
+        setStatus(`Cleared workflow data/tasks for ${domains.length} domain(s).`);
+        await loadTargets();
+        await refreshIntelligence();
+      }
+
+      document.getElementById("refreshBtn").addEventListener("click", async () => {
+        try { setStatus("Refreshing recon workspace..."); await loadTargets(); await refreshIntelligence(); setStatus("Recon workspace refreshed."); }
+        catch (err) { setStatus(err.message || err, true); }
+      });
+      document.getElementById("domainSearch").addEventListener("input", renderTargets);
+      document.getElementById("assetSearch").addEventListener("input", renderAssets);
+      document.getElementById("refreshAssetsBtn").addEventListener("click", () => renderAssets());
+      document.getElementById("generateBtn").addEventListener("click", () => { void generateWorkflowTasks().catch((err) => setStatus(err.message || err, true)); });
+      document.getElementById("clearSelectedBtn").addEventListener("click", () => { void clearSelected().catch((err) => setStatus(err.message || err, true)); });
+      document.getElementById("selectAllBtn").addEventListener("click", () => {
+        const visible = state.targets.filter((r) => {
+          const q = String(document.getElementById("domainSearch").value || "").trim().toLowerCase();
+          return !q || String(r.root_domain || "").includes(q);
+        }).map((r) => String(r.root_domain || ""));
+        const allVisible = visible.length > 0 && visible.every((d) => state.selectedDomains.has(d));
+        if (allVisible) for (const d of visible) state.selectedDomains.delete(d); else for (const d of visible) state.selectedDomains.add(d);
+        renderTargets();
+        void refreshIntelligence();
+      });
+      document.getElementById("addTargetBtn").addEventListener("click", () => {
+        const value = window.prompt("Add target domain (one)", "") || "";
+        if (!value.trim()) return;
+        void importDomains([value]).catch((err) => setStatus(err.message || err, true));
+      });
+      document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importFile").click());
+      document.getElementById("importFile").addEventListener("change", async (event) => {
+        const input = event.target;
+        const file = input && input.files && input.files[0] ? input.files[0] : null;
+        if (!file) return;
+        try {
+          const text = await file.text();
+          let domains = [];
+          if (file.name.toLowerCase().endsWith(".json")) {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) domains = parsed;
+            else if (Array.isArray(parsed.targets)) domains = parsed.targets;
+          } else {
+            domains = text.split(/[\\n,]/g);
+          }
+          await importDomains(domains);
+        } catch (err) {
+          setStatus(err.message || err, true);
+        } finally {
+          input.value = "";
+        }
+      });
+
+      const cookieToken = document.cookie.split(";").map((x) => x.trim()).find((x) => x.startsWith("nightmare_coord_token="));
+      if (cookieToken) document.getElementById("token").value = decodeURIComponent(cookieToken.split("=", 2)[1] || "");
+      if (window.localStorage && !document.getElementById("token").value) {
+        const token = String(window.localStorage.getItem("nightmare_coord_token") || "").trim();
+        if (token) document.getElementById("token").value = token;
+      }
+      document.getElementById("token").addEventListener("change", () => {
+        const token = String(document.getElementById("token").value || "").trim();
+        try { window.localStorage.setItem("nightmare_coord_token", token); } catch (_) {}
+      });
+
+      (async () => {
+        try { setStatus("Loading recon workspace..."); await loadTargets(); await refreshIntelligence(); setStatus("Recon workspace loaded."); }
+        catch (err) { setStatus(err.message || err, true); }
+      })();
+    })();
+  </script>
+</body>
+</html>
