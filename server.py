@@ -6827,10 +6827,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     status=500,
                 )
                 return
+            try:
+                self.coordinator_store.refresh_stage_task_readiness(workflow_id=workflow_id, limit=5000)
+            except Exception:
+                pass
+
+            worker_snapshot = self.coordinator_store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS)
+            workers = worker_snapshot.get("workers") if isinstance(worker_snapshot.get("workers"), list) else []
             reload_workers_queued: list[str] = []
             if saved_parameter_overrides and bool(body.get("reload_workers", True)):
-                worker_snapshot = self.coordinator_store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS)
-                workers = worker_snapshot.get("workers") if isinstance(worker_snapshot.get("workers"), list) else []
                 for row in workers:
                     if not isinstance(row, dict):
                         continue
@@ -6843,6 +6848,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         payload={"source": "workflow_run_overrides", "workflow_id": workflow_id},
                     ):
                         reload_workers_queued.append(worker_id)
+
+            workers_notified: list[str] = []
+            if persisted_stage_task_rows > 0 and bool(body.get("notify_workers", True)):
+                for row in workers:
+                    if not isinstance(row, dict):
+                        continue
+                    worker_id = str(row.get("worker_id") or "").strip()
+                    status = str(row.get("status") or "").strip().lower()
+                    if not worker_id or "-plugin-" not in worker_id.lower():
+                        continue
+                    if status != "idle" or worker_id in reload_workers_queued:
+                        continue
+                    if self.coordinator_store.queue_worker_command(
+                        worker_id,
+                        "start",
+                        payload={"source": "workflow_run", "workflow_id": workflow_id, "reason": "ready_tasks_available"},
+                    ):
+                        workers_notified.append(worker_id)
             self._write_json(
                 {
                     "ok": True,
@@ -6853,6 +6876,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "starter_plugins": runnable_plugin_names,
                     "saved_parameter_overrides": saved_parameter_overrides,
                     "reload_workers_queued": reload_workers_queued,
+                    "workers_notified": workers_notified,
                     "counts": counts,
                     "persisted_stage_task_rows": int(persisted_stage_task_rows),
                     "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),

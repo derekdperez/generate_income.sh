@@ -12,7 +12,7 @@ from typing import Any, Optional
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
-from server_app.store import CoordinatorStore, _stream_file_chunks
+from server_app.store import CoordinatorStore, DEFAULT_COORDINATOR_LEASE_SECONDS, _stream_file_chunks
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -828,6 +828,27 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
         except Exception:
             pass
 
+        workers_notified: list[str] = []
+        if persisted_stage_task_rows > 0 and bool(body.get("notify_workers", True)):
+            try:
+                worker_snapshot = store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS)
+                workers = worker_snapshot.get("workers") if isinstance(worker_snapshot.get("workers"), list) else []
+                for row in workers:
+                    if not isinstance(row, dict):
+                        continue
+                    worker_id = str(row.get("worker_id") or "").strip()
+                    status = str(row.get("status") or "").strip().lower()
+                    if not worker_id or "-plugin-" not in worker_id.lower() or status != "idle":
+                        continue
+                    if store.queue_worker_command(
+                        worker_id,
+                        "start",
+                        payload={"source": "workflow_run", "workflow_id": workflow_id, "reason": "ready_tasks_available"},
+                    ):
+                        workers_notified.append(worker_id)
+            except Exception:
+                workers_notified = []
+
         return {
             "ok": True,
             "workflow_id": workflow_id,
@@ -836,6 +857,7 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             "selected_plugins": sorted(selected_plugins),
             "starter_plugins": plugin_names,
             "saved_parameter_overrides": saved_parameter_overrides,
+            "workers_notified": workers_notified,
             "counts": counts,
             "persisted_stage_task_rows": int(persisted_stage_task_rows),
             "persisted_stage_task_rows_plugin_filtered": int(persisted_stage_task_rows_plugin_filtered),

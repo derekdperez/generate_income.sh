@@ -4670,31 +4670,30 @@ WHERE workflow_id = %s
         stage = str(row.get("stage") or "").strip().lower()
         return group or resource or stage or "default"
 
-    def _cleanup_stage_resource_leases_cur(self, cur: Any) -> None:
-        """Remove leases that can no longer represent an active stage claim.
+    def _cleanup_orphaned_stage_resource_leases_cur(self, cur: Any) -> int:
+        """Remove resource leases that no longer protect an actively running stage task.
 
-        Resource leases are only advisory blockers for concurrently-running
-        stage tasks.  If a task is reset/promoted back to ready, completed, or
-        its worker lease expires, the resource lease must not continue to block
-        idle workers from claiming ready work.
+        A stale lease row can otherwise make every worker skip a ready task even
+        though no worker is actually running the protected stage anymore.
         """
-        cur.execute("DELETE FROM coordinator_resource_leases WHERE lease_expires_at < NOW();")
         cur.execute(
             """
 DELETE FROM coordinator_resource_leases l
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM coordinator_stage_tasks s
-    WHERE s.workflow_id = l.workflow_id
-      AND s.root_domain = l.root_domain
-      AND s.stage = l.stage
-      AND s.status = 'running'
-      AND s.worker_id = l.worker_id
-      AND s.lease_expires_at IS NOT NULL
-      AND s.lease_expires_at >= NOW()
-);
+WHERE l.lease_expires_at < NOW()
+   OR NOT EXISTS (
+        SELECT 1
+        FROM coordinator_stage_tasks s
+        WHERE s.workflow_id = l.workflow_id
+          AND s.root_domain = l.root_domain
+          AND s.stage = l.stage
+          AND s.worker_id = l.worker_id
+          AND s.status = 'running'
+          AND s.lease_expires_at IS NOT NULL
+          AND s.lease_expires_at >= NOW()
+   );
 """
         )
+        return int(getattr(cur, "rowcount", 0) or 0)
 
     def _resource_conflict_exists(
         self,
@@ -4867,7 +4866,7 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
         with self._connect() as conn:
             with conn.cursor() as cur:
                 self._touch_worker_presence(cur, wid, "claim_stage")
-                self._cleanup_stage_resource_leases_cur(cur)
+                self._cleanup_orphaned_stage_resource_leases_cur(cur)
                 cur.execute(candidates_sql, (allowlist or None, allowlist or None))
                 rows = cur.fetchall()
                 for row in rows:

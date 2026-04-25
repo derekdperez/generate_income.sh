@@ -11,6 +11,7 @@ from server_app.fastapi_app import create_app
 class _StoreRunOk:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.worker_commands: list[tuple[str, str, dict[str, Any]]] = []
 
     @contextmanager
     def workflow_stage_task_scope(self, workflow_id: str):
@@ -37,6 +38,18 @@ class _StoreRunOk:
     def recent_stage_task_events(self, *, workflow_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
         _ = (workflow_id, limit)
         return []
+
+    def refresh_stage_task_readiness(self, *, workflow_id: str = "", limit: int = 1000) -> int:
+        _ = (workflow_id, limit)
+        return 0
+
+    def worker_statuses(self, *, stale_after_seconds: int = 60, retention_seconds: int = 300) -> dict[str, Any]:
+        _ = (stale_after_seconds, retention_seconds)
+        return {"workers": []}
+
+    def queue_worker_command(self, worker_id: str, command: str, payload: dict[str, Any] | None = None) -> bool:
+        self.worker_commands.append((worker_id, command, dict(payload or {})))
+        return True
 
 
 class _StoreRunMismatch(_StoreRunOk):
@@ -86,3 +99,42 @@ def test_fastapi_workflow_run_fails_when_persistence_check_misses_rows() -> None
         assert "no rows were persisted" in str(detail.get("error") or "").lower()
     else:
         assert "no rows were persisted" in str(detail or "").lower()
+
+
+class _StoreRunWithIdleWorkers(_StoreRunOk):
+    def worker_statuses(self, *, stale_after_seconds: int = 60, retention_seconds: int = 300) -> dict[str, Any]:
+        _ = (stale_after_seconds, retention_seconds)
+        return {
+            "workers": [
+                {"worker_id": "worker-plugin-1", "status": "idle"},
+                {"worker_id": "worker-plugin-2", "status": "running"},
+                {"worker_id": "worker-scheduler-1", "status": "idle"},
+                {"worker_id": "legacy-worker-1", "status": "idle"},
+            ]
+        }
+
+
+def test_fastapi_workflow_run_notifies_idle_plugin_workers() -> None:
+    store = _StoreRunWithIdleWorkers()
+    app = create_app(coordinator_store=store, coordinator_api_token="")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/coord/workflow/run",
+        json={
+            "workflow_id": "run-recon",
+            "root_domains": ["example.com"],
+            "plugins": ["recon_subdomain_enumeration"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workers_notified"] == ["worker-plugin-1"]
+    assert store.worker_commands == [
+        (
+            "worker-plugin-1",
+            "start",
+            {"source": "workflow_run", "workflow_id": "run-recon", "reason": "ready_tasks_available"},
+        )
+    ]
