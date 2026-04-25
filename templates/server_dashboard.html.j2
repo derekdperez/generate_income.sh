@@ -15,6 +15,7 @@
     .v { font-size:20px; font-weight:700; margin-top:4px; }
     .section { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:10px; margin-bottom:14px; }
     .table-wrap { max-height: 460px; overflow: auto; border:1px solid #cbd5e1; border-radius:8px; background:#fff; }
+    .table-wrap.events-stream { max-height: 20vh; }
     table { width:100%; border-collapse:collapse; }
     th, td { border:1px solid #cbd5e1; padding:6px 8px; font-size:12px; text-align:left; vertical-align:top; }
     th { background:#e2e8f0; position: sticky; top: 0; z-index: 2; }
@@ -24,31 +25,23 @@
     .muted { color:#64748b; }
     code { background:#e2e8f0; border-radius:4px; padding:1px 4px; }
     .pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11px; font-weight:600; border:1px solid #cbd5e1; }
-    #dashDebugPanel { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 10px; margin-top: 8px; }
-    #dashDebugPanel.dash-debug-off { display: none; }
   </style>
 </head>
 <body>
   {% include '_navbar.html.j2' %}
   <h1>Nightmare Live Dashboard</h1>
-  <div class="meta">System health dashboard. Auto-refresh every 10s. Legacy endpoint reference: <code>/api/summary</code>. Add <code>?debug=1</code> to the URL for verbose browser console logging.</div>
+  <div class="meta">System health dashboard. Auto-refresh every 10s. Legacy endpoint reference: <code>/api/summary</code>.</div>
   <div class="toolbar">
     <input id="globalSearch" type="text" placeholder="Search all dashboard tables">
     <button onclick="refreshDashboard()">Refresh</button>
-    <button type="button" id="toggleDebugBtn" onclick="toggleDashDebug()">Toggle diagnostics</button>
     <span id="statusText" class="muted"></span>
   </div>
   <div id="cards" class="cards"></div>
-  <div class="section">
-    <h2>Client diagnostics</h2>
-    <p class="muted" style="margin:0 0 8px;">Last refresh: timings, HTTP status, top-level JSON keys, and row counts. Use if tables stay on &quot;Loading…&quot; (usually a JS error before DOM update or a wrong response shape).</p>
-    <pre id="dashDebugPanel" class="dash-debug-off"></pre>
-  </div>
 
   <main id="nightmare-dashboard-main">
   <div class="section">
     <h2>Virtual Machines</h2>
-    <div class="table-wrap"><table id="vmTable"><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th></tr></thead><tbody id="vmRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+    <div class="table-wrap"><table id="vmTable"><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th><th>Disk (Total/Free GB)</th><th>Uptime</th><th>Last Seen (EST)</th><th>Actions</th></tr></thead><tbody id="vmRows"><tr><td colspan="9">Loading...</td></tr></tbody></table></div>
   </div>
   <div class="section">
     <h2>Docker Images / Containers</h2>
@@ -56,11 +49,11 @@
   </div>
   <div class="section">
     <h2>System Events</h2>
-    <div class="table-wrap"><table id="eventTable"><thead><tr><th>When</th><th>Type</th><th>Source</th><th>Aggregate</th><th>Message</th></tr></thead><tbody id="eventRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+    <div class="table-wrap events-stream"><table id="eventTable"><thead><tr><th>When</th><th>Type</th><th>Source</th><th>Aggregate</th><th>Message</th></tr></thead><tbody id="eventRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
   </div>
   <div class="section">
     <h2>Database Inserts / Table Activity</h2>
-    <div class="table-wrap"><table id="dbTable"><thead><tr><th>Schema</th><th>Table</th><th>Rows</th><th>Preview Rows</th><th>Columns</th></tr></thead><tbody id="dbRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+    <div class="table-wrap"><table id="dbTable"><thead><tr><th>Schema</th><th>Table</th><th>Rows</th><th>Columns</th><th>Last Update (EST)</th><th>Table Size (MB)</th></tr></thead><tbody id="dbRows"><tr><td colspan="6">Loading...</td></tr></tbody></table></div>
   </div>
   <div class="section">
     <h2>Recent Log Messages</h2>
@@ -88,21 +81,8 @@
   </main>
 
   <script>
-    const DASH_DEBUG = typeof location !== "undefined" && /(?:^|[?&])debug=1(?:&|$)/.test(location.search || "");
     function esc(v){return String(v ?? "").replace(/[&<>\"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));}
     function showLoadError(message){ document.getElementById("statusText").textContent = `Load failed: ${String(message || "unknown error")}`; }
-    function dashLog(...args) {
-      if (DASH_DEBUG && typeof console !== "undefined" && console.info) console.info("[dashboard]", ...args);
-    }
-    function toggleDashDebug() {
-      const el = document.getElementById("dashDebugPanel");
-      if (!el) return;
-      el.classList.toggle("dash-debug-off");
-    }
-    function setDashDebugText(text) {
-      const el = document.getElementById("dashDebugPanel");
-      if (el) el.textContent = text;
-    }
     function applySearch() {
       const root = document.getElementById("nightmare-dashboard-main");
       const needle = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
@@ -120,52 +100,19 @@
       }
       return [];
     }
-    function topKeys(obj) {
-      if (!obj || typeof obj !== "object") return [];
-      try { return Object.keys(obj).slice(0, 24); } catch { return []; }
-    }
-    async function fetchJsonDiagnostic(url) {
-      const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-      let status = 0;
-      let text = "";
-      let data = null;
-      let parseErr = "";
-      try {
-        const init = { method: "GET", cache: "no-store", credentials: "same-origin" };
-        const rsp = await fetch(url, window.NightmareAuth && typeof window.NightmareAuth.withAuthHeaders === "function" ? window.NightmareAuth.withAuthHeaders(init) : init);
-        status = rsp.status;
-        text = await rsp.text();
-        try { data = text ? JSON.parse(text) : null; } catch (e) { parseErr = String(e && e.message ? e.message : e); data = null; }
-        if (!rsp.ok) {
-          const detail = data && typeof data === "object" ? (data.error || data.detail) : "";
-          throw new Error(String(detail || `HTTP ${status}`));
-        }
-      } catch (e) {
-        const ms = Math.round(((typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now()) - t0);
-        return { url, ok: false, ms, status, keys: [], parseError: parseErr || String(e && e.message ? e.message : e), rowHints: {}, bodyLen: text ? text.length : 0 };
+    async function authJson(url, init = { method: "GET" }) {
+      const reqInit = { cache: "no-store", credentials: "same-origin", ...(init || {}) };
+      if (window.NightmareAuth && typeof window.NightmareAuth.fetchJson === "function") {
+        return await window.NightmareAuth.fetchJson(url, reqInit);
       }
-      const ms = Math.round(((typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now()) - t0);
-      const keys = topKeys(data);
-      const rowHints = {
-        vm: firstArray(data && data.ec2_instances && data.ec2_instances.instances).length,
-        docker: firstArray(data && data.all_containers).length,
-        events: firstArray(data && data.items, data && data.events).length,
-        dbTables: firstArray(data && data.tables).length,
-        logs: firstArray(data && data.items, data && data.events).length,
-        workers: firstArray(data && data.workers).length,
-        domains: firstArray(data && data.domains).length,
-        logSources: firstArray(data && data.sources).length,
-      };
-      return { url, ok: true, ms, status, keys, parseError: parseErr, rowHints, bodyLen: text ? text.length : 0, data };
+      const rsp = await fetch(url, reqInit);
+      const payload = await rsp.json().catch(() => ({}));
+      if (!rsp.ok) throw new Error(String(payload.error || payload.detail || `HTTP ${rsp.status}`));
+      return payload;
     }
     function setRows(id, html, cols) {
       const el = document.getElementById(id);
-      if (!el) {
-        const msg = `[dashboard] missing tbody id="${id}" — check rendered HTML / template deploy.`;
-        dashLog(msg);
-        if (typeof console !== "undefined" && console.error) console.error(msg);
-        return;
-      }
+      if (!el) return;
       el.innerHTML = html || `<tr><td colspan="${cols}">No rows.</td></tr>`;
     }
     function settledValue(result, fallback) {
@@ -180,22 +127,59 @@
     function asArray(value) {
       return Array.isArray(value) ? value : [];
     }
+    function est(value) {
+      if (!value) return "";
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value || "");
+      return d.toLocaleString("en-US", { timeZone: "Etc/GMT+5", hour12: false });
+    }
+    async function handleVmAction(action, instanceId) {
+      if (!instanceId) return;
+      if (!window.confirm(`${action} VM ${instanceId}?`)) return;
+      try {
+        document.getElementById("statusText").textContent = `${action} requested for ${instanceId}...`;
+        await authJson("/api/coord/vm/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, instance_id: instanceId }),
+        });
+        document.getElementById("statusText").textContent = `${action} command submitted for ${instanceId}.`;
+        await refreshDashboard();
+      } catch (error) {
+        showLoadError(error && error.message ? error.message : String(error));
+      }
+    }
+    async function refreshEventsAndDb() {
+      try {
+        const [events, dbActivity] = await Promise.all([
+          authJson("/api/coord/events?limit=1000&offset=0&sort_dir=desc"),
+          authJson("/api/coord/database-activity?limit=1000"),
+        ]);
+        const eventList = firstArray(events.items, events.events);
+        setRows("eventRows", eventList.map((e) =>
+          `<tr><td>${esc(est(e.created_at || e.created_at_utc || ""))}</td><td>${esc(e.event_type || "")}</td><td>${esc(e.source || "")}</td><td>${esc(e.aggregate_key || "")}</td><td>${esc(e.message || "")}</td></tr>`
+        ).join(""), 5);
+        setRows("dbRows", asArray(dbActivity.tables).map((t) =>
+          `<tr><td>${esc(t.schema || "")}</td><td>${esc(t.name || "")}</td><td>${esc(t.row_count || 0)}</td><td>${esc(t.column_count || 0)}</td><td>${esc(est(t.last_update_utc || ""))}</td><td>${esc(t.table_size_mb || 0)}</td></tr>`
+        ).join(""), 6);
+      } catch (_) {
+        // Keep background poll failures from breaking other panels.
+      }
+    }
     async function refreshDashboard() {
       const status = document.getElementById("statusText");
       status.textContent = "Loading...";
-      const endpoints = [
-        "/api/coord/docker-status?include_logs=0&log_lines=100",
-        "/api/coord/events?limit=100&offset=0&sort_dir=desc",
-        "/api/coord/database-status",
-        "/api/coord/log-events?source_id=__all__&limit=100&offset=0&sort_dir=desc",
-        "/api/coord/workers?stale_after_seconds=180",
-        "/api/coord/workflow-snapshot?limit=2000",
-        "/api/coord/log-sources",
-        "/api/coord/observability/summary",
-      ];
       try {
-        const diag = await Promise.all(endpoints.map((u) => fetchJsonDiagnostic(u)));
-        const results = diag.map((d) => (d.ok ? { status: "fulfilled", value: d.data } : { status: "rejected", reason: new Error(d.parseError || `HTTP ${d.status}`) }));
+        const results = await Promise.allSettled([
+          authJson("/api/coord/docker-status?include_logs=0&log_lines=100"),
+          authJson("/api/coord/events?limit=1000&offset=0&sort_dir=desc"),
+          authJson("/api/coord/database-activity?limit=1000"),
+          authJson("/api/coord/log-events?source_id=__all__&limit=100&offset=0&sort_dir=desc"),
+          authJson("/api/coord/workers?stale_after_seconds=180"),
+          authJson("/api/coord/workflow-snapshot?limit=2000"),
+          authJson("/api/coord/log-sources"),
+          authJson("/api/coord/observability/summary"),
+        ]);
         const docker = settledValue(results[0], {});
         const events = settledValue(results[1], {});
         const db = settledValue(results[2], {});
@@ -216,29 +200,32 @@
           ["observability-summary", settledError(results[7])],
         ].filter((item) => item[1]);
 
-        setDashDebugText(JSON.stringify({
-          generatedAt: new Date().toISOString(),
-          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-          location: typeof location !== "undefined" ? location.href : "",
-          sources: diag.map((d, i) => ({
-            name: ["docker-status","events","database-status","log-events","workers","workflow-snapshot","log-sources","observability"][i],
-            ok: d.ok,
-            ms: d.ms,
-            status: d.status,
-            keys: d.keys,
-            rowHints: d.rowHints,
-            parseError: d.parseError || "",
-            bodyLen: d.bodyLen,
-          })),
-        }, null, 2));
-        dashLog("refresh diagnostics", diag);
-        const dbgEl = document.getElementById("dashDebugPanel");
-        if (dbgEl && diag.some((d) => !d.ok)) dbgEl.classList.remove("dash-debug-off");
-
         const vmRows = asArray(docker.ec2_instances && docker.ec2_instances.instances).map((r) =>
-          `<tr><td>${esc(r.name || "")}</td><td>${esc(r.instance_id || "")}</td><td>${esc(r.state || "")}</td><td>${esc(r.private_ip || "")}</td><td>${esc(r.public_ip || "")}</td></tr>`
+          `<tr>
+            <td>${esc(r.name || "")}</td>
+            <td>${esc(r.instance_id || "")}</td>
+            <td>${esc(r.state || "")}</td>
+            <td>${esc(r.private_ip || "")}</td>
+            <td>${esc(r.public_ip || "")}</td>
+            <td>${esc(r.disk_total_gb || 0)}/${esc(r.disk_free_gb || 0)}</td>
+            <td>${esc(r.uptime_text || "")}</td>
+            <td>${esc(r.last_seen_est || est(r.last_seen_utc || ""))}</td>
+            <td>
+              <button type="button" data-vm-action="reboot" data-vm-id="${esc(r.instance_id || "")}">Reboot</button>
+              <button type="button" data-vm-action="terminate" data-vm-id="${esc(r.instance_id || "")}" class="warn">Terminate</button>
+              <button type="button" data-vm-action="update" data-vm-id="${esc(r.instance_id || "")}" class="primary">Update</button>
+            </td>
+          </tr>`
         ).join("");
-        setRows("vmRows", vmRows, 5);
+        setRows("vmRows", vmRows, 9);
+        document.querySelectorAll("button[data-vm-action][data-vm-id]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const vmId = String(btn.getAttribute("data-vm-id") || "");
+            const action = String(btn.getAttribute("data-vm-action") || "");
+            if (!vmId || vmId === "local-coordinator") return;
+            void handleVmAction(action, vmId);
+          });
+        });
 
         const dockerRows = asArray(docker.all_containers).map((r) =>
           `<tr><td>${esc(r.name || "")}</td><td>${esc(r.host_label || r.host_type || "")}</td><td>${esc(r.image || "")}</td><td>${esc(r.status || "")}</td><td>${esc(r.running_for || "")}</td><td>${esc(r.ports || "")}</td><td><code>${esc(r.id || "")}</code></td></tr>`
@@ -247,14 +234,14 @@
 
         const eventList = firstArray(events.items, events.events);
         const eventRows = eventList.map((e) =>
-          `<tr><td>${esc(e.created_at || "")}</td><td>${esc(e.event_type || "")}</td><td>${esc(e.source || "")}</td><td>${esc(e.aggregate_key || "")}</td><td>${esc(e.message || "")}</td></tr>`
+          `<tr><td>${esc(est(e.created_at || e.created_at_utc || ""))}</td><td>${esc(e.event_type || "")}</td><td>${esc(e.source || "")}</td><td>${esc(e.aggregate_key || "")}</td><td>${esc(e.message || "")}</td></tr>`
         ).join("");
         setRows("eventRows", eventRows, 5);
 
         const dbRows = asArray(db.tables).map((t) =>
-          `<tr><td>${esc(t.schema || "")}</td><td>${esc(t.name || "")}</td><td>${esc(t.row_count || 0)}</td><td>${esc(t.rows_returned || 0)}</td><td>${esc((t.columns || []).length)}</td></tr>`
+          `<tr><td>${esc(t.schema || "")}</td><td>${esc(t.name || "")}</td><td>${esc(t.row_count || 0)}</td><td>${esc(t.column_count || 0)}</td><td>${esc(est(t.last_update_utc || ""))}</td><td>${esc(t.table_size_mb || 0)}</td></tr>`
         ).join("");
-        setRows("dbRows", dbRows, 5);
+        setRows("dbRows", dbRows, 6);
 
         const logList = firstArray(logs.items, logs.events);
         const logRows = logList.map((l) =>
@@ -344,6 +331,7 @@
     document.getElementById("globalSearch").addEventListener("input", applySearch);
     refreshDashboard();
     setInterval(refreshDashboard, 10000);
+    setInterval(refreshEventsAndDb, 2000);
   </script>
 </body>
 </html>

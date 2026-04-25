@@ -1799,6 +1799,62 @@ ORDER BY ordinal_position;
             "generated_at_utc": _iso_now(),
         }
 
+    def database_activity(self, *, limit: int = 500) -> dict[str, Any]:
+        """Return lightweight table activity metrics optimized for frequent polling."""
+        requested = max(1, min(2000, int(limit or 500)))
+        sql = """
+SELECT
+  n.nspname AS schema_name,
+  c.relname AS table_name,
+  COALESCE(s.n_live_tup, 0)::bigint AS rows_estimate,
+  COALESCE(col.column_count, 0)::int AS column_count,
+  pg_total_relation_size(c.oid) AS table_size_bytes,
+  GREATEST(
+    COALESCE(s.last_vacuum, 'epoch'::timestamptz),
+    COALESCE(s.last_autovacuum, 'epoch'::timestamptz),
+    COALESCE(s.last_analyze, 'epoch'::timestamptz),
+    COALESCE(s.last_autoanalyze, 'epoch'::timestamptz)
+  ) AS last_update_utc
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+LEFT JOIN (
+  SELECT table_schema, table_name, COUNT(*) AS column_count
+  FROM information_schema.columns
+  GROUP BY table_schema, table_name
+) col ON col.table_schema = n.nspname AND col.table_name = c.relname
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(c.oid) DESC, n.nspname ASC, c.relname ASC
+LIMIT %s;
+"""
+        rows: list[Any] = []
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (requested,))
+                rows = cur.fetchall()
+            conn.commit()
+        tables: list[dict[str, Any]] = []
+        for row in rows:
+            size_bytes = int(row[4] or 0)
+            updated = row[5]
+            tables.append(
+                {
+                    "schema": str(row[0] or ""),
+                    "name": str(row[1] or ""),
+                    "row_count": int(row[2] or 0),
+                    "column_count": int(row[3] or 0),
+                    "table_size_bytes": size_bytes,
+                    "table_size_mb": round(float(size_bytes) / (1024.0 * 1024.0), 2),
+                    "last_update_utc": (updated.isoformat() if updated else None),
+                }
+            )
+        return {
+            "generated_at_utc": _iso_now(),
+            "limit": requested,
+            "tables": tables,
+        }
+
     def status_summary(self) -> dict[str, Any]:
         counts: dict[str, int] = {}
         with self._connect() as conn:

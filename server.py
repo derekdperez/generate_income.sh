@@ -1386,11 +1386,94 @@ def _ec2_log_settings_from_env() -> dict[str, Any]:
         "filter_values": str(
             os.getenv(
                 "COORDINATOR_LOG_EC2_FILTER_VALUES",
-                "nightmare-worker*,nightmare-central*,nightmare-log-db*",
+                "nightmare-worker*,nightmare-central*,nightmare-coordinator*,nightmare-log-db*",
             )
             or "nightmare-worker*,nightmare-central*,nightmare-log-db*"
         ).strip(),
     }
+
+
+def _uptime_text_from_seconds(value: Any) -> str:
+    seconds = max(0, int(value or 0))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h {mins}m"
+    if hours > 0:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+_vm_runtime_cache_lock = threading.Lock()
+_vm_runtime_cache: dict[str, Any] = {"expires_at_epoch": 0.0, "key": "", "data": {}}
+
+
+def _collect_vm_runtime_metrics(*, instance_ids: list[str], cache_ttl_seconds: int = 20) -> dict[str, dict[str, Any]]:
+    ids = [str(x or "").strip() for x in instance_ids if str(x or "").strip()]
+    if not ids:
+        return {}
+    cache_key = ",".join(sorted(ids))
+    now = time.time()
+    ttl = max(5, int(cache_ttl_seconds or 20))
+    with _vm_runtime_cache_lock:
+        if (
+            _vm_runtime_cache.get("key") == cache_key
+            and float(_vm_runtime_cache.get("expires_at_epoch") or 0.0) > now
+            and isinstance(_vm_runtime_cache.get("data"), dict)
+        ):
+            return dict(_vm_runtime_cache.get("data") or {})
+
+    settings = dict(_worker_ssm_settings_from_env())
+    settings["timeout_seconds"] = max(20, int(settings.get("timeout_seconds") or 60))
+    cmd = (
+        "DF=$(df -kP / | awk 'NR==2{print $2\" \"$4}'); "
+        "UP=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0); "
+        "NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); "
+        "echo \"$DF|$UP|$NOW\""
+    )
+    result = _run_ssm_shell(cmd, settings=settings, instance_ids=ids)
+    out: dict[str, dict[str, Any]] = {}
+    if result.get("ok"):
+        for inv in result.get("invocations", []):
+            if not isinstance(inv, dict):
+                continue
+            iid = str(inv.get("InstanceId", "") or "").strip()
+            if not iid:
+                continue
+            output = ""
+            plugins = inv.get("CommandPlugins")
+            if isinstance(plugins, list) and plugins and isinstance(plugins[0], dict):
+                output = str(plugins[0].get("Output", "") or "").strip()
+            line = str(output.splitlines()[0] if output else "").strip()
+            parts = line.split("|")
+            total_kb = 0
+            free_kb = 0
+            uptime_seconds = 0
+            seen_utc = ""
+            if len(parts) >= 1:
+                numbers = str(parts[0]).split()
+                if len(numbers) >= 2:
+                    total_kb = _safe_int(numbers[0], 0)
+                    free_kb = _safe_int(numbers[1], 0)
+            if len(parts) >= 2:
+                uptime_seconds = _safe_int(parts[1], 0)
+            if len(parts) >= 3:
+                seen_utc = str(parts[2] or "").strip()
+            seen_dt = _parse_timestamp(seen_utc) if seen_utc else None
+            out[iid] = {
+                "disk_total_gb": round(float(total_kb) / (1024.0 * 1024.0), 2) if total_kb > 0 else 0.0,
+                "disk_free_gb": round(float(free_kb) / (1024.0 * 1024.0), 2) if free_kb > 0 else 0.0,
+                "uptime_seconds": int(uptime_seconds),
+                "uptime_text": _uptime_text_from_seconds(uptime_seconds),
+                "last_seen_utc": seen_dt.isoformat() if seen_dt else "",
+                "last_seen_est": _format_est_datetime(seen_dt) if seen_dt else "",
+            }
+    with _vm_runtime_cache_lock:
+        _vm_runtime_cache["key"] = cache_key
+        _vm_runtime_cache["expires_at_epoch"] = now + ttl
+        _vm_runtime_cache["data"] = dict(out)
+    return out
 
 
 def _list_ec2_fleet_instances() -> dict[str, Any]:
@@ -1435,9 +1518,24 @@ def _list_ec2_fleet_instances() -> dict[str, Any]:
                     "name": name,
                     "private_ip": str(item.get("PrivateIpAddress", "") or ""),
                     "public_ip": str(item.get("PublicIpAddress", "") or ""),
+                    "launch_time_utc": (
+                        item.get("LaunchTime").astimezone(timezone.utc).isoformat()
+                        if item.get("LaunchTime") is not None and hasattr(item.get("LaunchTime"), "astimezone")
+                        else ""
+                    ),
                 }
             )
     instances = [row for row in instances if row.get("instance_id")]
+    runtime = _collect_vm_runtime_metrics(instance_ids=[str(r.get("instance_id") or "") for r in instances])
+    for row in instances:
+        iid = str(row.get("instance_id") or "").strip()
+        metrics = runtime.get(iid, {})
+        row["disk_total_gb"] = float(metrics.get("disk_total_gb") or 0.0)
+        row["disk_free_gb"] = float(metrics.get("disk_free_gb") or 0.0)
+        row["uptime_seconds"] = int(metrics.get("uptime_seconds") or 0)
+        row["uptime_text"] = str(metrics.get("uptime_text") or "")
+        row["last_seen_utc"] = str(metrics.get("last_seen_utc") or "")
+        row["last_seen_est"] = str(metrics.get("last_seen_est") or "")
     instances.sort(key=lambda row: (str(row.get("name", "")).lower(), str(row.get("instance_id", "")).lower()))
     return {"ok": True, "error": "", "instances": instances}
 
@@ -1466,6 +1564,34 @@ def _read_ec2_console_output(instance_id: str) -> tuple[bool, str, str]:
     if not ok:
         return False, "", error
     return True, str(stdout or ""), ""
+
+
+def _run_vm_update(instance_id: str) -> dict[str, Any]:
+    iid = str(instance_id or "").strip()
+    if not iid:
+        return {"ok": False, "error": "instance_id is required"}
+    settings = dict(_worker_ssm_settings_from_env())
+    settings["timeout_seconds"] = max(120, int(settings.get("timeout_seconds") or 60))
+    cmd = (
+        "set -e; "
+        "cd /opt/nightmare; "
+        "git fetch --all --prune; "
+        "git pull --rebase || true; "
+        "if docker compose version >/dev/null 2>&1; then DC='docker compose'; "
+        "elif command -v docker-compose >/dev/null 2>&1; then DC='docker-compose'; "
+        "else echo 'docker compose missing'; exit 1; fi; "
+        "if [ -f deploy/docker-compose.worker.yml ] && [ -f deploy/.env ]; then "
+        "  cd /opt/nightmare/deploy && $DC -f docker-compose.worker.yml --env-file .env up -d --build; "
+        "fi; "
+        "if [ -f /opt/nightmare/deploy/docker-compose.central.yml ] && [ -f /opt/nightmare/deploy/.env ]; then "
+        "  cd /opt/nightmare/deploy && $DC -f docker-compose.central.yml --env-file .env up -d --build; "
+        "fi; "
+        "echo update_complete"
+    )
+    result = _run_ssm_shell(cmd, settings=settings, instance_ids=[iid])
+    if not result.get("ok"):
+        return {"ok": False, "error": str(result.get("error") or "vm update command failed"), "result": result}
+    return {"ok": True, "result": result}
 
 
 def _format_est_datetime(dt: datetime) -> str:
@@ -1630,6 +1756,42 @@ def _collect_docker_status(app_root: Path, *, include_logs: bool = False, log_li
     all_containers = [*local_containers, *worker_containers]
     app_containers = [item for item in all_containers if bool(item.get("is_application"))]
     ec2_instances = _list_ec2_fleet_instances()
+    # Always include the local coordinator host row for operator visibility.
+    if isinstance(ec2_instances, dict):
+        rows = ec2_instances.get("instances")
+        vm_rows = rows if isinstance(rows, list) else []
+        if not any(str((row or {}).get("instance_id") or "") == "local-coordinator" for row in vm_rows if isinstance(row, dict)):
+            try:
+                disk = shutil.disk_usage("/")
+                disk_total_gb = round(float(disk.total) / (1024.0 * 1024.0 * 1024.0), 2)
+                disk_free_gb = round(float(disk.free) / (1024.0 * 1024.0 * 1024.0), 2)
+            except Exception:
+                disk_total_gb = 0.0
+                disk_free_gb = 0.0
+            uptime_seconds = 0
+            try:
+                uptime_raw = Path("/proc/uptime").read_text(encoding="utf-8", errors="ignore").split()[0]
+                uptime_seconds = int(float(uptime_raw))
+            except Exception:
+                uptime_seconds = 0
+            now_utc = datetime.now(timezone.utc)
+            vm_rows.append(
+                {
+                    "instance_id": "local-coordinator",
+                    "state": "running",
+                    "name": "nightmare-coordinator-server (local)",
+                    "private_ip": "",
+                    "public_ip": "",
+                    "launch_time_utc": "",
+                    "disk_total_gb": disk_total_gb,
+                    "disk_free_gb": disk_free_gb,
+                    "uptime_seconds": uptime_seconds,
+                    "uptime_text": _uptime_text_from_seconds(uptime_seconds),
+                    "last_seen_utc": now_utc.isoformat(),
+                    "last_seen_est": _format_est_datetime(now_utc),
+                }
+            )
+            ec2_instances["instances"] = vm_rows
     return {
         "generated_at_utc": _iso_now(),
         "docker": docker,
@@ -4798,6 +4960,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json(payload)
             return
+        if path == "/api/coord/database-activity":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = max(1, min(2000, _safe_int((query.get("limit") or [500])[0], 500)))
+            try:
+                payload = self.coordinator_store.database_activity(limit=limit)
+            except Exception as exc:
+                self.log_message("database_activity failed: %r", exc)
+                self._write_json({"error": "database activity query failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json(payload)
+            return
         if path == "/api/coord/readiness":
             if self.coordinator_store is None:
                 self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
@@ -7220,6 +7398,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if signal_workers_clear_disk:
                 result["fleet_signal"] = self.coordinator_store.bump_output_clear_generation()
             self._write_json({"ok": True, **result})
+            return
+
+        if path == "/api/coord/vm/action":
+            action = str(body.get("action", "") or "").strip().lower()
+            instance_id = str(body.get("instance_id", "") or "").strip()
+            if action not in {"reboot", "terminate", "update"}:
+                self._write_json({"error": "action must be one of: reboot, terminate, update"}, status=400)
+                return
+            if not instance_id:
+                self._write_json({"error": "instance_id is required"}, status=400)
+                return
+            if instance_id == "local-coordinator":
+                self._write_json({"error": "local-coordinator does not support this VM action"}, status=400)
+                return
+            if action == "update":
+                result = _run_vm_update(instance_id)
+                status = 200 if bool(result.get("ok")) else 500
+                self._write_json({"ok": bool(result.get("ok")), "action": action, "instance_id": instance_id, **result}, status=status)
+                return
+            settings = _ec2_log_settings_from_env()
+            region = str(settings.get("region", "us-east-1") or "us-east-1").strip()
+            if action == "reboot":
+                cmd = ["aws", "ec2", "reboot-instances", "--instance-ids", instance_id, "--region", region]
+            else:
+                cmd = ["aws", "ec2", "terminate-instances", "--instance-ids", instance_id, "--region", region]
+            ok, stdout, error = _run_aws_text(cmd, timeout_seconds=30)
+            if not ok:
+                self._write_json({"ok": False, "action": action, "instance_id": instance_id, "error": error, "stdout": stdout}, status=500)
+                return
+            self._write_json({"ok": True, "action": action, "instance_id": instance_id, "stdout": stdout})
             return
 
         if path == "/api/coord/workers/command":
