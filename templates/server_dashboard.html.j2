@@ -81,6 +81,8 @@
   </main>
 
   <script>
+    const DASHBOARD_CACHE_KEY = "nightmare_dashboard_snapshot_v1";
+    const DASHBOARD_CACHE_MAX_AGE_MS = 120000;
     function esc(v){return String(v ?? "").replace(/[&<>\"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));}
     function showLoadError(message){ document.getElementById("statusText").textContent = `Load failed: ${String(message || "unknown error")}`; }
     function applySearch() {
@@ -114,6 +116,51 @@
       const el = document.getElementById(id);
       if (!el) return;
       el.innerHTML = html || `<tr><td colspan="${cols}">No rows.</td></tr>`;
+    }
+    function _safeReadDashboardCache() {
+      try {
+        const raw = window.localStorage.getItem(DASHBOARD_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+        const createdAtMs = Number(parsed.created_at_ms || 0);
+        if (!createdAtMs || (Date.now() - createdAtMs) > DASHBOARD_CACHE_MAX_AGE_MS) return null;
+        return parsed;
+      } catch (_) {
+        return null;
+      }
+    }
+    function _safeWriteDashboardCache(snapshot) {
+      try {
+        window.localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(snapshot));
+      } catch (_) {
+        // Best-effort cache only.
+      }
+    }
+    function _applyCachedDashboardSnapshot() {
+      const snapshot = _safeReadDashboardCache();
+      if (!snapshot) return false;
+      const rows = snapshot.rows || {};
+      if (rows.vmRows) setRows("vmRows", rows.vmRows, 9);
+      if (rows.dockerRows) setRows("dockerRows", rows.dockerRows, 7);
+      if (rows.eventRows) setRows("eventRows", rows.eventRows, 5);
+      if (rows.dbRows) setRows("dbRows", rows.dbRows, 6);
+      if (rows.logRows) setRows("logRows", rows.logRows, 5);
+      if (rows.pluginWorkerRows) setRows("pluginWorkerRows", rows.pluginWorkerRows, 8);
+      if (rows.workflowRows) setRows("workflowRows", rows.workflowRows, 6);
+      if (rows.observabilityRows) setRows("observabilityRows", rows.observabilityRows, 2);
+      if (rows.logSourceRows) setRows("logSourceRows", rows.logSourceRows, 4);
+      if (snapshot.cardsHtml) {
+        const cardsEl = document.getElementById("cards");
+        if (cardsEl) cardsEl.innerHTML = String(snapshot.cardsHtml);
+      }
+      const status = document.getElementById("statusText");
+      if (status) {
+        const ts = snapshot.generated_at || "";
+        status.textContent = `Loaded cached snapshot${ts ? ` (${ts})` : ""}; refreshing...`;
+      }
+      applySearch();
+      return true;
     }
     function settledValue(result, fallback) {
       if (!result || result.status !== "fulfilled") return fallback;
@@ -316,7 +363,24 @@
           ["Event Rate (5m)", (observability.event_volume || {}).last_5m || 0],
           ["Log Sources", asArray(logSources.sources).length],
         ];
-        document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+        const cardsHtml = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+        document.getElementById("cards").innerHTML = cardsHtml;
+        _safeWriteDashboardCache({
+          created_at_ms: Date.now(),
+          generated_at: new Date().toISOString(),
+          cardsHtml,
+          rows: {
+            vmRows,
+            dockerRows,
+            eventRows,
+            dbRows,
+            logRows,
+            pluginWorkerRows,
+            workflowRows: runningWorkflowRows.join(""),
+            observabilityRows,
+            logSourceRows,
+          },
+        });
         if (failedSources.length) {
           const summary = failedSources.map(([name, msg]) => `${name}: ${msg}`).join(" | ");
           status.textContent = `Partial update ${new Date().toISOString()} (${failedSources.length} source error${failedSources.length === 1 ? "" : "s"}): ${summary}`;
@@ -329,6 +393,7 @@
       }
     }
     document.getElementById("globalSearch").addEventListener("input", applySearch);
+    _applyCachedDashboardSnapshot();
     refreshDashboard();
     setInterval(refreshDashboard, 10000);
     setInterval(refreshEventsAndDb, 2000);
