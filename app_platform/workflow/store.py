@@ -924,7 +924,7 @@ INSERT INTO workflow_step_runs(
   id, workflow_run_id, workflow_definition_id, step_definition_id, step_key, plugin_key,
   ordinal, status, blocked_reason, max_attempts, input_json, resolved_config_json
 )
-VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb);
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
 ON CONFLICT(workflow_run_id, step_key) DO UPDATE SET
   status = EXCLUDED.status,
   blocked_reason = EXCLUDED.blocked_reason,

@@ -44,6 +44,8 @@ from app_platform.server.store import CoordinatorStore, _get_root_domain, _make_
 def test_render_dashboard_html_contains_expected_heading():
     html = render_dashboard_html()
     assert "Nightmare Live Dashboard" in html
+    assert "nightmare-dashboard-main" in html
+    assert "firstArray" in html or "events.events" in html
 
 
 def test_render_workers_html_contains_expected_heading():
