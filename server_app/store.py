@@ -28,6 +28,7 @@ from nightmare_app.artifacts import FileSystemArtifactStore
 from shared.events import DbEventBroker, build_projection
 from shared.schemas import ArtifactSchema, EventSchema, ExecutionResultSchema, TaskSchema
 from shared.models import EventRecord, RiskScorecard
+from shared.observability import get_telemetry
 from shared.versioning import registry
 from workflow_app.tailor_adapter import normalize_workflow_payload
 
@@ -376,6 +377,7 @@ class CoordinatorStore:
         self._event_stream_enabled = False
         self._worker_presence_min_interval_seconds = max(5, int(os.getenv("NIGHTMARE_WORKER_PRESENCE_INTERVAL_SECONDS", "30") or "30"))
         self._durable_progress_min_interval_seconds = max(15, int(os.getenv("NIGHTMARE_DURABLE_PROGRESS_INTERVAL_SECONDS", "60") or "60"))
+        self._telemetry = get_telemetry("coordinator.store")
         self._ensure_schema()
 
     @staticmethod
@@ -440,6 +442,10 @@ class CoordinatorStore:
 
     def _emit_event(self, event_type: str, aggregate_key: str, payload: dict[str, Any]) -> None:
         safe_payload = self._safe_event_payload(payload or {})
+        self._telemetry.incr("coordinator.events.emitted", tags={
+            "event_type": str(event_type or "unknown"),
+            "source": str(safe_payload.get("source") or "unknown"),
+        })
         event = EventRecord(
             event_type=str(event_type or ""),
             aggregate_key=str(aggregate_key or ""),
