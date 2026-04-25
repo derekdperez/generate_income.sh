@@ -25,7 +25,8 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     ConnectionPool = None  # type: ignore[assignment]
 
 from nightmare_app.artifacts import FileSystemArtifactStore
-from shared.events import build_projection
+from shared.events import DbEventBroker, build_projection
+from shared.schemas import EventSchema
 from shared.models import EventRecord, RiskScorecard
 from shared.versioning import registry
 
@@ -436,6 +437,24 @@ class CoordinatorStore:
             schema_version=registry.current_version("event_record"),
             payload=safe_payload,
         )
+        validated_event = EventSchema(
+            event_id=str(event.event_id),
+            event_type=str(event.event_type or "system.event"),
+            aggregate_key=str(event.aggregate_key or "system"),
+            schema_version=int(event.schema_version or 1),
+            source=str(safe_payload.get("source") or "")[:120],
+            message=str(safe_payload.get("message") or "")[:1000],
+            payload=safe_payload,
+            idempotency_key=str(safe_payload.get("idempotency_key") or "")[:500],
+        )
+        # Append first to the immutable event log. Recent-event and projection
+        # tables remain rebuildable read models over this central event stream.
+        try:
+            DbEventBroker(self._connect).publish(validated_event)
+        except Exception:
+            # Observability must not make task state transitions fail while
+            # older deployments are still applying schema migrations.
+            pass
         sql = """
 INSERT INTO coordinator_recent_events(
     event_id, created_at_utc, event_type, aggregate_key, schema_version, source, message, payload_json
@@ -605,6 +624,19 @@ LIMIT %s OFFSET %s;
             "source": "coordinator_recent_events",
         }
 
+
+    def list_event_log(
+        self,
+        *,
+        limit: int = 250,
+        after_sequence: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return append-only event-log rows for live UI streaming or projections."""
+        return DbEventBroker(self._connect).list_recent(
+            limit=limit,
+            after_sequence=after_sequence,
+        )
+
     def _ensure_schema(self) -> None:
         ddl = """
 CREATE TABLE IF NOT EXISTS coordinator_targets (
@@ -765,6 +797,22 @@ CREATE TABLE IF NOT EXISTS coordinator_recent_events (
 CREATE INDEX IF NOT EXISTS idx_recent_events_created ON coordinator_recent_events(created_at_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_recent_events_lookup ON coordinator_recent_events(event_type, aggregate_key, source);
 
+CREATE TABLE IF NOT EXISTS coordinator_event_log (
+  event_sequence BIGSERIAL PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE,
+  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  event_type TEXT NOT NULL,
+  aggregate_key TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_created ON coordinator_event_log(created_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_event_log_aggregate ON coordinator_event_log(aggregate_key, event_sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_event_log_type ON coordinator_event_log(event_type, event_sequence DESC);
+
 CREATE TABLE IF NOT EXISTS coordinator_fleet_settings (
   singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
   output_clear_generation BIGINT NOT NULL DEFAULT 0,
@@ -845,6 +893,10 @@ CREATE TABLE IF NOT EXISTS coordinator_projection_state (
             "CREATE TABLE IF NOT EXISTS coordinator_recent_events (event_id TEXT PRIMARY KEY, created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(), event_type TEXT NOT NULL, aggregate_key TEXT NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '', payload_json JSONB NOT NULL DEFAULT '{}'::jsonb)",
             "CREATE INDEX IF NOT EXISTS idx_recent_events_created ON coordinator_recent_events(created_at_utc DESC)",
             "CREATE INDEX IF NOT EXISTS idx_recent_events_lookup ON coordinator_recent_events(event_type, aggregate_key, source)",
+            "CREATE TABLE IF NOT EXISTS coordinator_event_log (event_sequence BIGSERIAL PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(), event_type TEXT NOT NULL, aggregate_key TEXT NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '', idempotency_key TEXT NOT NULL DEFAULT '', payload_json JSONB NOT NULL DEFAULT '{}'::jsonb)",
+            "CREATE INDEX IF NOT EXISTS idx_event_log_created ON coordinator_event_log(created_at_utc DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_event_log_aggregate ON coordinator_event_log(aggregate_key, event_sequence DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_event_log_type ON coordinator_event_log(event_type, event_sequence DESC)",
             "CREATE INDEX IF NOT EXISTS idx_targets_claim_partial ON coordinator_targets(line_number, created_at_utc) WHERE status IN ('pending','running')",
             "CREATE INDEX IF NOT EXISTS idx_targets_running_domain_lease ON coordinator_targets(root_domain, lease_expires_at) WHERE status='running'",
             "CREATE INDEX IF NOT EXISTS idx_stage_tasks_claim_partial ON coordinator_stage_tasks(workflow_id, created_at_utc) WHERE status IN ('ready','running')",

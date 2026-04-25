@@ -58,6 +58,7 @@ class PluginExecutionContext:
     workflow_id: str
     plugin_name: str
     entry: dict[str, Any]
+    system_services: Any = None
 
 
 @dataclass(frozen=True)

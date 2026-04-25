@@ -71,3 +71,7 @@ def build_projection(events: Iterable[dict[str, Any]], *, key_field: str = "aggr
         if isinstance(payload, dict):
             bucket.update(payload)
     return projection
+
+from .db_event_broker import DbEventBroker
+
+__all__ = ["DbEventBroker", "EventStream", "build_projection"]

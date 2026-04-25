@@ -563,6 +563,44 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
     ) -> dict[str, Any]:
         return {"root_domain": root_domain, "artifacts": store.list_artifacts(root_domain)}
 
+
+    @app.get("/api/coord/events")
+    def events(
+        limit: int = Query(default=250, ge=1, le=5000),
+        offset: int = Query(default=0, ge=0),
+        search: str = Query(default=""),
+        event_type: str = Query(default=""),
+        aggregate_key: str = Query(default=""),
+        source: str = Query(default=""),
+        sort_dir: str = Query(default="desc"),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        """Return the central projected event stream for the web log view."""
+        return store.list_events(
+            limit=limit,
+            offset=offset,
+            search=search,
+            event_type=event_type,
+            aggregate_key=aggregate_key,
+            source=source,
+            sort_dir=sort_dir,
+        )
+
+    @app.get("/api/coord/event-log")
+    def event_log(
+        limit: int = Query(default=250, ge=1, le=5000),
+        after_sequence: int = Query(default=0, ge=0),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        """Return append-only event-log rows for live UI streaming."""
+        return {
+            "ok": True,
+            "after_sequence": after_sequence,
+            "events": store.list_event_log(limit=limit, after_sequence=after_sequence),
+        }
+
     @app.get("/api/coord/fleet-settings")
     def fleet_settings(
         _auth: None = Depends(require_auth),
