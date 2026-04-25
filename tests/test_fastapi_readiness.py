@@ -49,3 +49,13 @@ def test_readiness_returns_503_when_probe_not_ready() -> None:
     body = response.json()
     assert body.get("ready") is False
     assert body.get("issues")
+
+
+def test_coord_ping_returns_ok_without_store() -> None:
+    app = create_app(coordinator_store=None, coordinator_api_token="")
+    client = TestClient(app)
+    response = client.get("/api/coord/ping")
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("ok") is True
+    assert body.get("route") == "/api/coord/ping"

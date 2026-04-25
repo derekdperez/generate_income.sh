@@ -7,11 +7,12 @@ import base64
 import json
 import re
 from time import perf_counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from app_platform.server.store import CoordinatorStore, DEFAULT_COORDINATOR_LEASE_SECONDS, _stream_file_chunks
 from app_platform.workflow.tailor_adapter import normalize_workflow_payload, resolve_workflow_runtime_payload
@@ -159,6 +160,16 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz() -> str:
         return "ok"
+
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        """Browsers request this by default; avoid noisy 404s in logs and DevTools."""
+        return Response(status_code=204)
+
+    @app.get("/api/coord/ping")
+    def coord_ping() -> dict[str, Any]:
+        """Minimal JSON response without DB access; verifies HTTP routing is alive."""
+        return {"ok": True, "route": "/api/coord/ping", "generated_at_utc": datetime.now(timezone.utc).isoformat()}
 
     @app.get("/api/coord/database-status")
     def database_status(

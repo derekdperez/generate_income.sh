@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import glob
 import html
 import io
@@ -128,6 +129,16 @@ WORKFLOW_FILE_SUFFIX = ".workflow.json"
 WORKFLOW_FILE_GLOB = f"*{WORKFLOW_FILE_SUFFIX}"
 WORKFLOW_INTERFACE_ROUTE_PREFIX = "/workflow-interfaces"
 WORKFLOW_INTERFACE_TYPES = ("control", "results")
+
+_log_http_event_executor: ThreadPoolExecutor | None = None
+
+
+def _get_log_http_event_executor() -> ThreadPoolExecutor:
+    """Background executor so HTTP access logging never blocks request completion on log DB I/O."""
+    global _log_http_event_executor
+    if _log_http_event_executor is None:
+        _log_http_event_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="http_access_log")
+    return _log_http_event_executor
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -3842,10 +3853,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Keep server output concise.
         message = format % args
         sys.stdout.write("[server] " + message + "\n")
-        try:
-            if self.log_store is not None:
+        log_store = self.log_store
+        if log_store is None:
+            return
+
+        def _persist_access_log() -> None:
+            try:
                 now_utc = datetime.now(timezone.utc)
-                self.log_store.insert_events(
+                log_store.insert_events(
                     [
                         {
                             "event_time_utc": now_utc.isoformat(),
@@ -3859,6 +3874,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         }
                     ]
                 )
+            except Exception:
+                pass
+
+        try:
+            _get_log_http_event_executor().submit(_persist_access_log)
         except Exception:
             pass
 
@@ -4167,6 +4187,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self._send_cors_headers()
+            self.end_headers()
+            return
+
+        if path == "/api/coord/ping":
+            self._write_json({"ok": True, "route": "/api/coord/ping", "generated_at_utc": _iso_now()})
+            return
 
         if path == "/":
             self._write_text(render_workers_html(), content_type="text/html; charset=utf-8")
@@ -7732,6 +7762,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[server] interrupt received, shutting down.", flush=True)
     finally:
+        global _log_http_event_executor
+        if _log_http_event_executor is not None:
+            try:
+                _log_http_event_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            _log_http_event_executor = None
         for _scheme, srv in servers:
             stop_event = getattr(srv, "page_cache_warm_stop", None)
             if isinstance(stop_event, threading.Event):
