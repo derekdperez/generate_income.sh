@@ -4456,8 +4456,46 @@ VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, NOW())
                     status = current_status
                     if current_status == "completed":
                         decision_reason = "already_completed"
-                    elif current_status in {"pending", "ready", "running"}:
-                        decision_reason = f"already_{current_status}"
+                    elif current_status in {"pending", "ready"}:
+                        if current_status != initial_status:
+                            cur.execute(
+                                """
+UPDATE coordinator_stage_tasks
+SET status = %s,
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    error = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
+""",
+                                (
+                                    initial_status,
+                                    prereq_reason[:2000] if initial_status == "pending" else "",
+                                    widf,
+                                    rd,
+                                    stg,
+                                ),
+                            )
+                            status = initial_status
+                            scheduled = initial_status == "ready"
+                            decision_reason = (
+                                "prerequisites_satisfied_ready"
+                                if initial_status == "ready"
+                                else "waiting_for_prerequisites"
+                            )
+                            self._sync_workflow_step_runs_for_stage_cur(
+                                cur,
+                                workflow_id=widf,
+                                root_domain=rd,
+                                stage=stg,
+                                status=initial_status,
+                                error=prereq_reason if initial_status == "pending" else "",
+                            )
+                        else:
+                            decision_reason = f"already_{current_status}"
+                    elif current_status == "running":
+                        decision_reason = "already_running"
                     elif current_status == "failed":
                         can_retry = bool(allow_retry_failed)
                         if max_attempts_int > 0 and attempt_count >= max_attempts_int:
