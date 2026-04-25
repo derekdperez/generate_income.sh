@@ -98,11 +98,20 @@
     function setRows(id, html, cols) {
       document.getElementById(id).innerHTML = html || `<tr><td colspan="${cols}">No rows.</td></tr>`;
     }
+    function settledValue(result, fallback) {
+      if (!result || result.status !== "fulfilled") return fallback;
+      return result.value ?? fallback;
+    }
+    function settledError(result) {
+      if (!result || result.status !== "rejected") return "";
+      const reason = result.reason;
+      return reason && reason.message ? String(reason.message) : String(reason || "request failed");
+    }
     async function refreshDashboard() {
       const status = document.getElementById("statusText");
       status.textContent = "Loading...";
       try {
-        const [docker, events, db, logs, workers, workflows, logSources, observability] = await Promise.all([
+        const results = await Promise.allSettled([
           authJson("/api/coord/docker-status?include_logs=0&log_lines=100"),
           authJson("/api/coord/events?limit=100&offset=0&sort_dir=desc"),
           authJson("/api/coord/database-status"),
@@ -112,6 +121,25 @@
           authJson("/api/coord/log-sources"),
           authJson("/api/coord/observability/summary"),
         ]);
+        const docker = settledValue(results[0], {});
+        const events = settledValue(results[1], {});
+        const db = settledValue(results[2], {});
+        const logs = settledValue(results[3], {});
+        const workers = settledValue(results[4], {});
+        const workflows = settledValue(results[5], {});
+        const logSources = settledValue(results[6], {});
+        const observability = settledValue(results[7], {});
+
+        const failedSources = [
+          ["docker-status", settledError(results[0])],
+          ["events", settledError(results[1])],
+          ["database-status", settledError(results[2])],
+          ["log-events", settledError(results[3])],
+          ["workers", settledError(results[4])],
+          ["workflow-snapshot", settledError(results[5])],
+          ["log-sources", settledError(results[6])],
+          ["observability-summary", settledError(results[7])],
+        ].filter((item) => item[1]);
 
         const vmRows = ((docker.ec2_instances && docker.ec2_instances.instances) || []).map((r) =>
           `<tr><td>${esc(r.name || "")}</td><td>${esc(r.instance_id || "")}</td><td>${esc(r.state || "")}</td><td>${esc(r.private_ip || "")}</td><td>${esc(r.public_ip || "")}</td></tr>`
@@ -206,7 +234,12 @@
           ["Log Sources", (logSources.sources || []).length],
         ];
         document.getElementById("cards").innerHTML = cards.map(([k,v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
-        status.textContent = `Updated ${new Date().toISOString()}`;
+        if (failedSources.length) {
+          const summary = failedSources.map(([name, msg]) => `${name}: ${msg}`).join(" | ");
+          status.textContent = `Partial update ${new Date().toISOString()} (${failedSources.length} source error${failedSources.length === 1 ? "" : "s"}): ${summary}`;
+        } else {
+          status.textContent = `Updated ${new Date().toISOString()}`;
+        }
         applySearch();
       } catch (error) {
         showLoadError(error && error.message ? error.message : String(error || "request failed"));
