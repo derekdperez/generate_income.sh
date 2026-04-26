@@ -3863,6 +3863,11 @@ LIMIT %s;
                 or str(item.get("event_type") or "").strip()
             )
             current_time = str(item.get("created_at") or "").strip()
+            last_workflow_id = str(
+                payload_dict.get("workflow_run_id")
+                or payload_dict.get("workflow_id")
+                or ""
+            ).strip()
             existing = out.get(worker_id)
             if existing is not None and str(existing.get("last_event_emitted_at_utc") or "") >= current_time:
                 return
@@ -3870,6 +3875,7 @@ LIMIT %s;
                 "last_event_emitted": message,
                 "last_event_type": str(item.get("event_type") or "").strip(),
                 "last_event_emitted_at_utc": current_time,
+                "last_workflow_ran": last_workflow_id,
             }
 
         for row in rows:
@@ -4132,6 +4138,7 @@ ORDER BY w.worker_id ASC;
                     "last_event_emitted": "",
                     "last_event_type": "",
                     "last_event_emitted_at_utc": "",
+                    "last_workflow_ran": "",
                     "last_log_message": "",
                     "last_log_message_at_utc": "",
                     "last_seen_time_at_utc": last_heartbeat_iso or "",
@@ -4145,6 +4152,7 @@ ORDER BY w.worker_id ASC;
                 worker["last_event_emitted"] = str(event_info.get("last_event_emitted") or "")
                 worker["last_event_type"] = str(event_info.get("last_event_type") or "")
                 worker["last_event_emitted_at_utc"] = str(event_info.get("last_event_emitted_at_utc") or "")
+                worker["last_workflow_ran"] = str(event_info.get("last_workflow_ran") or worker.get("current_workflow_id") or "")
                 if not str(worker.get("last_action_performed") or "").strip() or str(worker.get("last_action_performed") or "").strip().lower() == "unknown":
                     worker["last_action_performed"] = str(event_info.get("last_event_emitted") or "")
                 worker["last_seen_time_at_utc"] = _max_iso_datetime(
@@ -4168,6 +4176,8 @@ ORDER BY w.worker_id ASC;
                 worker.get("last_event_emitted_at_utc"),
             )
             worker["last_run_time_at_utc"] = str(worker.get("last_seen_time_at_utc") or "")
+            if not str(worker.get("last_workflow_ran") or "").strip():
+                worker["last_workflow_ran"] = str(worker.get("current_workflow_id") or "")
         total = len(workers)
         return {
             "generated_at_utc": now_utc.isoformat(),

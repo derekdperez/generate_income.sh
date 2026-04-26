@@ -61,7 +61,7 @@
   </div>
   <div class="section">
     <h2>Plugin Worker Details</h2>
-    <div class="table-wrap"><table id="pluginWorkerTable"><thead><tr><th>Worker</th><th>Status</th><th>State</th><th>Current Domain</th><th>Current Stage</th><th>Running Targets</th><th>Running Stage Tasks</th><th>Last Heartbeat</th></tr></thead><tbody id="pluginWorkerRows"><tr><td colspan="8">Loading...</td></tr></tbody></table></div>
+    <div class="table-wrap"><table id="pluginWorkerTable"><thead><tr><th>Worker</th><th>Status</th><th>State</th><th>Current Domain</th><th>Current Stage</th><th>Running Targets</th><th>Running Stage Tasks</th><th>Last Heartbeat</th><th>Last Run Time (EST)</th><th>Last Workflow Ran</th></tr></thead><tbody id="pluginWorkerRows"><tr><td colspan="10">Loading...</td></tr></tbody></table></div>
   </div>
   <div class="section">
     <h2>Running Workflow Details</h2>
@@ -146,7 +146,7 @@
       if (rows.eventRows) setRows("eventRows", rows.eventRows, 5);
       if (rows.dbRows) setRows("dbRows", rows.dbRows, 6);
       if (rows.logRows) setRows("logRows", rows.logRows, 5);
-      if (rows.pluginWorkerRows) setRows("pluginWorkerRows", rows.pluginWorkerRows, 8);
+      if (rows.pluginWorkerRows) setRows("pluginWorkerRows", rows.pluginWorkerRows, 10);
       if (rows.workflowRows) setRows("workflowRows", rows.workflowRows, 6);
       if (rows.observabilityRows) setRows("observabilityRows", rows.observabilityRows, 2);
       if (rows.logSourceRows) setRows("logSourceRows", rows.logSourceRows, 4);
@@ -298,9 +298,9 @@
 
         const pluginWorkers = asArray(workers.workers).filter((w) => String(w.worker_id || "").toLowerCase().includes("-plugin-"));
         const pluginWorkerRows = pluginWorkers.map((w) =>
-          `<tr><td>${esc(w.worker_id || "")}</td><td>${esc(w.status || "")}</td><td>${esc(w.worker_state || "")}</td><td>${esc(w.current_root_domain || "")}</td><td>${esc(w.current_stage || "")}</td><td>${esc(w.running_targets || 0)}</td><td>${esc(w.running_stage_tasks || 0)}</td><td>${esc(w.last_heartbeat_at_utc || "")}</td></tr>`
+          `<tr><td>${esc(w.worker_id || "")}</td><td>${esc(w.status || "")}</td><td>${esc(w.worker_state || "")}</td><td>${esc(w.current_root_domain || w.current_stage_root_domain || "")}</td><td>${esc(w.current_stage || w.current_plugin_name || "")}</td><td>${esc(w.running_targets || 0)}</td><td>${esc(w.running_stage_tasks || 0)}</td><td>${esc(w.last_heartbeat_at_utc || "")}</td><td>${esc(est(w.last_run_time_at_utc || w.last_seen_time_at_utc || ""))}</td><td>${esc(w.last_workflow_ran || w.current_workflow_id || "")}</td></tr>`
         ).join("");
-        setRows("pluginWorkerRows", pluginWorkerRows, 8);
+        setRows("pluginWorkerRows", pluginWorkerRows, 10);
 
         const runningWorkflowRows = [];
         for (const d of asArray(workflows.domains)) {
