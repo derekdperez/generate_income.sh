@@ -868,6 +868,22 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                             "status": str(result.get("status") or ""),
                         }
                     )
+            try:
+                store.record_system_event(
+                    "workflow.run.enqueued",
+                    f"workflow:{workflow_id}",
+                    {
+                        "source": "fastapi.api.workflow_run",
+                        "workflow_id": workflow_id,
+                        "domains_count": len(root_domains),
+                        "starter_plugins": plugin_names,
+                        "counts": counts,
+                        "selected_plugins": sorted(selected_plugins),
+                        "saved_parameter_overrides": saved_parameter_overrides,
+                    },
+                )
+            except Exception:
+                pass
 
             persisted_stage_task_rows_plugin_filtered = store.count_stage_tasks(
                 workflow_id=workflow_id,

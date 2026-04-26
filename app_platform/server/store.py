@@ -4785,6 +4785,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
         progress: Optional[dict[str, Any]] = None,
         progress_artifact_type: str = "",
         resume_mode: str = "exact",
+        force_ready: bool = False,
     ) -> dict[str, Any]:
         rd = str(root_domain or "").strip().lower()
         stg = str(stage or "").strip().lower()
@@ -4831,6 +4832,15 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
             }
         checkpoint_obj = dict(checkpoint or {}) if isinstance(checkpoint, dict) else {}
         progress_obj = dict(progress or {}) if isinstance(progress, dict) else {}
+        force_requested = bool(
+            force_ready
+            or checkpoint_obj.get("force_ready")
+            or checkpoint_obj.get("force_run")
+            or checkpoint_obj.get("force_run_override")
+        )
+        if force_requested:
+            checkpoint_obj["force_run_override"] = True
+            checkpoint_obj["force_run_requested_at_utc"] = _iso_now()
         progress_artifact_type_text = str(progress_artifact_type or "").strip().lower()
         resume_mode_text = str(resume_mode or "exact").strip().lower() or "exact"
         profile = self._stage_execution_profile(stg)
@@ -4859,7 +4869,8 @@ FOR UPDATE;
                     root_domain=rd,
                     stage=stg,
                 )
-                initial_status = "ready" if prereq_ready else "pending"
+                initial_status = "ready" if (force_requested or prereq_ready) else "pending"
+                prereq_error = "" if force_requested else prereq_reason
                 if row is None:
                     cur.execute(
                         """
@@ -4891,7 +4902,7 @@ VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, NOW())
                     if initial_status == "pending":
                         cur.execute(
                             "UPDATE coordinator_stage_tasks SET error = %s WHERE workflow_id = %s AND root_domain = %s AND stage = %s;",
-                            (prereq_reason[:2000], widf, rd, stg),
+                            (prereq_error[:2000], widf, rd, stg),
                         )
                     self._sync_workflow_step_runs_for_stage_cur(
                         cur,
@@ -4899,14 +4910,64 @@ VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, NOW())
                         root_domain=rd,
                         stage=stg,
                         status=initial_status,
-                        error=prereq_reason if initial_status == "pending" else "",
+                        error=prereq_error if initial_status == "pending" else "",
                     )
                     attempt_count = 0
                 else:
                     current_status = str(row[0] or "").strip().lower()
                     attempt_count = int(row[1] or 0)
                     status = current_status
-                    if current_status == "completed":
+                    if force_requested and current_status in {"completed", "failed", "pending", "ready", "running", "paused"}:
+                        cur.execute(
+                            """
+UPDATE coordinator_stage_tasks
+SET status = 'ready',
+    worker_id = NULL,
+    lease_expires_at = NULL,
+    heartbeat_at_utc = NULL,
+    completed_at_utc = NULL,
+    error = NULL,
+    checkpoint_json = %s::jsonb,
+    progress_json = %s::jsonb,
+    progress_artifact_type = %s,
+    resume_mode = %s,
+    resource_class = %s,
+    access_mode = %s,
+    concurrency_group = %s,
+    max_parallelism = %s,
+    max_attempts = %s,
+    updated_at_utc = NOW()
+WHERE workflow_id = %s
+  AND root_domain = %s
+  AND stage = %s;
+""",
+                            (
+                                json.dumps(checkpoint_obj, ensure_ascii=False),
+                                json.dumps(progress_obj, ensure_ascii=False),
+                                progress_artifact_type_text,
+                                resume_mode_text,
+                                profile["resource_class"],
+                                profile["access_mode"],
+                                profile["concurrency_group"],
+                                int(profile["max_parallelism"]),
+                                max_attempts_int,
+                                widf,
+                                rd,
+                                stg,
+                            ),
+                        )
+                        status = "ready"
+                        scheduled = True
+                        decision_reason = "force_ready_override"
+                        self._sync_workflow_step_runs_for_stage_cur(
+                            cur,
+                            workflow_id=widf,
+                            root_domain=rd,
+                            stage=stg,
+                            status="ready",
+                            error="",
+                        )
+                    elif current_status == "completed":
                         decision_reason = "already_completed"
                     elif current_status in {"pending", "ready"}:
                         if current_status != initial_status:
@@ -4923,7 +4984,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
 """,
                                 (
                                     initial_status,
-                                    prereq_reason[:2000] if initial_status == "pending" else "",
+                                    prereq_error[:2000] if initial_status == "pending" else "",
                                     widf,
                                     rd,
                                     stg,
@@ -4942,7 +5003,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
                                 root_domain=rd,
                                 stage=stg,
                                 status=initial_status,
-                                error=prereq_reason if initial_status == "pending" else "",
+                                error=prereq_error if initial_status == "pending" else "",
                             )
                         else:
                             decision_reason = f"already_{current_status}"
