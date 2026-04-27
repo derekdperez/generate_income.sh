@@ -53,6 +53,10 @@
     border-color: #93c5fd;
     color: #1d4ed8;
   }
+  .app-nav-link:focus-visible {
+    outline: 3px solid rgba(14, 165, 233, 0.32);
+    outline-offset: 2px;
+  }
   .app-nav-link.active {
     background: #0ea5e9;
     border-color: #0284c7;
@@ -61,7 +65,16 @@
   }
   @media (max-width: 900px) {
     .app-nav { margin-left: -16px; margin-right: -16px; }
+    .app-nav-inner { align-items: flex-start; }
     .app-nav-brand { width: 100%; margin-bottom: 2px; }
+    .app-nav-links {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      width: 100%;
+      padding-bottom: 4px;
+      scrollbar-width: thin;
+    }
+    .app-nav-link { flex: 0 0 auto; }
   }
   .app-net-indicator {
     position: fixed;
@@ -126,14 +139,19 @@
       let matched = false;
       document.querySelectorAll(".app-nav-link").forEach((link) => {
         link.classList.remove("active");
+        link.removeAttribute("aria-current");
         if (String(link.dataset.navPath || "") === currentWithHash) {
           link.classList.add("active");
+          link.setAttribute("aria-current", "page");
           matched = true;
         }
       });
       if (matched) return;
       document.querySelectorAll(".app-nav-link").forEach((link) => {
-        if (String(link.dataset.navPath || "") === path) link.classList.add("active");
+        if (String(link.dataset.navPath || "") === path) {
+          link.classList.add("active");
+          link.setAttribute("aria-current", "page");
+        }
       });
     }
     markActiveNav();
@@ -235,19 +253,26 @@
         const payload = await window.NightmareAuth.fetchJson("/api/coord/workflow-interfaces", { method: "GET", cache: "no-store" });
         const items = Array.isArray(payload.interfaces) ? payload.interfaces : [];
         const seenRoutes = new Set();
-        const fragments = [];
+        host.innerHTML = "";
+        const fragment = document.createDocumentFragment();
         for (const item of items) {
           if (!item || typeof item !== "object") continue;
           const rawRoute = String(item.route || "").trim();
           const route = rawRoute.endsWith("/") && rawRoute !== "/" ? rawRoute.slice(0, -1) : rawRoute;
           const label = String(item.nav_label || item.title || "").trim();
-          if (!route || !label) continue;
+          if (!route || !label || !route.startsWith("/")) continue;
           if (seenRoutes.has(route)) continue;
           seenRoutes.add(route);
-          const navPath = `${route}${String(item.hash || "")}`;
-          fragments.push(`<a class="app-nav-link" href="${route}" data-nav-path="${navPath}">${label}</a>`);
+          const hash = String(item.hash || "");
+          const navPath = `${route}${hash}`;
+          const link = document.createElement("a");
+          link.className = "app-nav-link";
+          link.href = `${route}${hash}`;
+          link.dataset.navPath = navPath;
+          link.textContent = label;
+          fragment.appendChild(link);
         }
-        host.innerHTML = fragments.join("");
+        host.appendChild(fragment);
         markActiveNav();
       } catch (_) {
         host.innerHTML = "";

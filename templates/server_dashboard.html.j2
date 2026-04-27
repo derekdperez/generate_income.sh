@@ -5,81 +5,267 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nightmare Dashboard</title>
   <style>
-    body { font-family: Segoe UI, Arial, sans-serif; margin: 16px; background: #f8fafc; color: #0f172a; }
-    h1 { margin: 0 0 8px; }
-    h2 { margin: 18px 0 8px; }
-    .meta { color: #475569; font-size: 13px; margin-bottom: 12px; }
-    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin: 10px 0 14px; }
-    .card { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:10px; }
-    .k { font-size:12px; color:#64748b; }
-    .v { font-size:20px; font-weight:700; margin-top:4px; }
-    .section { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:10px; margin-bottom:14px; }
-    .table-wrap { max-height: 460px; overflow: auto; border:1px solid #cbd5e1; border-radius:8px; background:#fff; }
-    .table-wrap.events-stream { max-height: 20vh; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { border:1px solid #cbd5e1; padding:6px 8px; font-size:12px; text-align:left; vertical-align:top; }
-    th { background:#e2e8f0; position: sticky; top: 0; z-index: 2; }
-    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-    input { padding:6px 8px; border:1px solid #94a3b8; border-radius:6px; min-width: 300px; }
-    button { border:1px solid #94a3b8; background:#fff; border-radius:6px; padding:6px 10px; cursor:pointer; }
-    .muted { color:#64748b; }
-    code { background:#e2e8f0; border-radius:4px; padding:1px 4px; }
-    .pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11px; font-weight:600; border:1px solid #cbd5e1; }
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-soft: #f1f5f9;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #cbd5e1;
+      --border-strong: #94a3b8;
+      --primary: #0284c7;
+      --primary-strong: #0369a1;
+      --danger: #b91c1c;
+      --danger-bg: #fef2f2;
+      --ok-bg: #ecfdf5;
+      --ok-text: #047857;
+      --warn-bg: #fffbeb;
+      --warn-text: #b45309;
+      --shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      margin: 16px;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    a { color: var(--primary-strong); }
+    .skip-link {
+      position: absolute;
+      left: 12px;
+      top: -48px;
+      z-index: 200;
+      background: var(--text);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: top .15s ease;
+    }
+    .skip-link:focus { top: 12px; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    .page-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0; font-size: clamp(1.7rem, 3vw, 2.45rem); letter-spacing: -0.035em; }
+    h2 { margin: 0; font-size: 1rem; letter-spacing: -0.01em; }
+    .meta { color: #475569; font-size: 13px; }
+    .page-header .meta { max-width: 760px; margin-top: 6px; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin: 12px 0 18px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .card .k { font-size: 12px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .card .v { font-size: 24px; font-weight: 800; margin-top: 5px; letter-spacing: -0.03em; }
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .section-count { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .table-wrap {
+      max-height: 460px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+      box-shadow: inset 0 1px 0 rgba(15, 23, 42, 0.04);
+    }
+    .table-wrap.events-stream { max-height: 28vh; min-height: 160px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    th, td {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 8px 10px;
+      font-size: 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    tbody tr:hover { background: #eff6ff; }
+    th {
+      background: #e2e8f0;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      color: #334155;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    td code, code { background: #e2e8f0; border-radius: 6px; padding: 2px 5px; }
+    .toolbar {
+      position: sticky;
+      top: 78px;
+      z-index: 20;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 10px;
+      background: rgba(248, 250, 252, 0.9);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(203, 213, 225, 0.9);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .search-wrap { position: relative; flex: 1 1 320px; max-width: 560px; }
+    input {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--text);
+      min-height: 38px;
+    }
+    input:focus, button:focus-visible {
+      outline: 3px solid rgba(14, 165, 233, 0.32);
+      outline-offset: 2px;
+      border-color: var(--primary);
+    }
+    button {
+      border: 1px solid var(--border-strong);
+      background: #fff;
+      border-radius: 10px;
+      padding: 8px 11px;
+      min-height: 38px;
+      cursor: pointer;
+      font-weight: 700;
+      color: #334155;
+    }
+    button:hover { background: #f1f5f9; border-color: #64748b; }
+    button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    button.primary:hover { background: var(--primary-strong); }
+    button.warn { background: var(--danger-bg); border-color: #fecaca; color: var(--danger); }
+    .muted { color: var(--muted); }
+    .status-line {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      min-height: 24px;
+      font-size: 13px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 800;
+      border: 1px solid var(--border);
+      background: var(--surface-soft);
+      color: #334155;
+      white-space: nowrap;
+    }
+    .pill.ok { background: var(--ok-bg); color: var(--ok-text); border-color: #bbf7d0; }
+    .pill.warn { background: var(--warn-bg); color: var(--warn-text); border-color: #fde68a; }
+    .pill.danger { background: var(--danger-bg); color: var(--danger); border-color: #fecaca; }
+    .empty-state { color: var(--muted); text-align: center; padding: 24px; }
+    @media (max-width: 800px) {
+      body { margin: 12px; }
+      .page-header { grid-template-columns: 1fr; align-items: start; }
+      .toolbar { top: 96px; }
+      th, td { padding: 7px 8px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; }
+    }
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#nightmare-dashboard-main">Skip to dashboard content</a>
   {% include '_navbar.html.j2' %}
-  <h1>Nightmare Live Dashboard</h1>
-  <div class="meta">System health dashboard. Auto-refresh every 10s. Legacy endpoint reference: <code>/api/summary</code>.</div>
-  <div class="toolbar">
-    <input id="globalSearch" type="text" placeholder="Search all dashboard tables">
-    <button onclick="refreshDashboard()">Refresh</button>
-    <button onclick="downloadDiagnosticsData()">Download Diagnostics Data</button>
-    <span id="statusText" class="muted"></span>
+  <header class="page-header">
+    <div>
+      <h1>Nightmare Live Dashboard</h1>
+      <div class="meta">System health, worker activity, logs, events, and workflow status in one operational view.</div>
+    </div>
+    <div class="status-line" aria-live="polite">
+      <span id="statusText" class="muted">Preparing dashboard...</span>
+    </div>
+  </header>
+  <div class="toolbar" role="search" aria-label="Dashboard controls">
+    <label class="search-wrap">
+      <span class="sr-only">Search all dashboard tables</span>
+      <input id="globalSearch" type="search" autocomplete="off" placeholder="Search VMs, containers, events, logs, workers...">
+    </label>
+    <button type="button" id="clearSearchBtn">Clear</button>
+    <button type="button" id="refreshBtn" class="primary">Refresh now</button>
+    <button type="button" id="toggleAutoRefreshBtn" aria-pressed="false">Pause auto-refresh</button>
+    <button type="button" id="downloadDiagnosticsBtn">Download diagnostics</button>
+    <span id="perfStats" class="muted">Cache: waiting. Network: waiting.</span>
   </div>
-  <div class="meta" id="perfStats">Cache load: waiting. Database fetch: waiting.</div>
-  <div id="cards" class="cards"></div>
+  <div id="cards" class="cards" aria-label="Dashboard summary"></div>
 
-  <main id="nightmare-dashboard-main">
-  <div class="section">
-    <h2>Virtual Machines</h2>
+  <main id="nightmare-dashboard-main" tabindex="-1">
+  <section class="section" aria-labelledby="vm-heading">
+    <div class="section-header"><h2 id="vm-heading">Virtual Machines</h2><span class="section-count" data-count-for="vmRows">Loading</span></div>
     <div class="table-wrap"><table id="vmTable"><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th><th>Disk (Total/Free GB)</th><th>Uptime</th><th>Last Seen (EST)</th><th>Actions</th></tr></thead><tbody id="vmRows"><tr><td colspan="9">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Docker Images / Containers</h2>
+  </section>
+  <section class="section" aria-labelledby="docker-heading">
+    <div class="section-header"><h2 id="docker-heading">Docker Images / Containers</h2><span class="section-count" data-count-for="dockerRows">Loading</span></div>
     <div class="table-wrap"><table id="dockerTable"><thead><tr><th>Container</th><th>Host</th><th>Image</th><th>Status</th><th>Running For</th><th>Ports</th><th>Container ID</th></tr></thead><tbody id="dockerRows"><tr><td colspan="7">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>System Events</h2>
+  </section>
+  <section class="section" aria-labelledby="events-heading">
+    <div class="section-header"><h2 id="events-heading">System Events</h2><span class="section-count" data-count-for="eventRows">Loading</span></div>
     <div class="table-wrap events-stream"><table id="eventTable"><thead><tr><th>When</th><th>Type</th><th>Source</th><th>Aggregate</th><th>Message</th></tr></thead><tbody id="eventRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Database Inserts / Table Activity</h2>
+  </section>
+  <section class="section" aria-labelledby="db-heading">
+    <div class="section-header"><h2 id="db-heading">Database Inserts / Table Activity</h2><span class="section-count" data-count-for="dbRows">Loading</span></div>
     <div class="table-wrap"><table id="dbTable"><thead><tr><th>Schema</th><th>Table</th><th>Rows</th><th>Columns</th><th>Last Update (EST)</th><th>Table Size (MB)</th></tr></thead><tbody id="dbRows"><tr><td colspan="6">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Recent Log Messages</h2>
+  </section>
+  <section class="section" aria-labelledby="logs-heading">
+    <div class="section-header"><h2 id="logs-heading">Recent Log Messages</h2><span class="section-count" data-count-for="logRows">Loading</span></div>
     <div class="table-wrap"><table id="logTable"><thead><tr><th>When</th><th>Severity</th><th>Machine</th><th>Source</th><th>Description</th></tr></thead><tbody id="logRows"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Plugin Worker Details</h2>
+  </section>
+  <section class="section" aria-labelledby="workers-heading">
+    <div class="section-header"><h2 id="workers-heading">Plugin Worker Details</h2><span class="section-count" data-count-for="pluginWorkerRows">Loading</span></div>
     <div class="table-wrap"><table id="pluginWorkerTable"><thead><tr><th>Worker</th><th>Status</th><th>State</th><th>Current Domain</th><th>Current Stage</th><th>Running Targets</th><th>Running Stage Tasks</th><th>Last Heartbeat</th><th>Last Run Time (EST)</th><th>Last Workflow Ran</th></tr></thead><tbody id="pluginWorkerRows"><tr><td colspan="10">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Running Workflow Details</h2>
+  </section>
+  <section class="section" aria-labelledby="workflow-heading">
+    <div class="section-header"><h2 id="workflow-heading">Running Workflow Details</h2><span class="section-count" data-count-for="workflowRows">Loading</span></div>
     <div class="table-wrap"><table id="workflowTable"><thead><tr><th>Domain</th><th>Running Tasks</th><th>Pending Tasks</th><th>Failed Tasks</th><th>Active Stages</th><th>Workflow IDs</th></tr></thead><tbody id="workflowRows"><tr><td colspan="6">Loading...</td></tr></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Coordinator Observability</h2>
+  </section>
+  <section class="section" aria-labelledby="observability-heading">
+    <div class="section-header"><h2 id="observability-heading">Coordinator Observability</h2><span class="section-count" data-count-for="observabilityRows">Loading</span></div>
     <div class="table-wrap"><table id="observabilityTable"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody id="observabilityRows"><tr><td colspan="2">Loading...</td></tr></tbody></table></div>
     <div class="muted" style="margin-top:8px">
       Workflow controls are available at <a href="/workflow-runs">Workflow Runs</a> (cancel run + retry failed tasks).
     </div>
-  </div>
-  <div class="section">
-    <h2>Detailed Log Sources</h2>
+  </section>
+  <section class="section" aria-labelledby="sources-heading">
+    <div class="section-header"><h2 id="sources-heading">Detailed Log Sources</h2><span class="section-count" data-count-for="logSourceRows">Loading</span></div>
     <div class="table-wrap"><table id="logSourceTable"><thead><tr><th>Label</th><th>Type</th><th>Source ID</th><th>Details</th></tr></thead><tbody id="logSourceRows"><tr><td colspan="4">Loading...</td></tr></tbody></table></div>
-  </div>
+  </section>
   </main>
 
   <script>
@@ -87,14 +273,36 @@
     const DASHBOARD_CACHE_MAX_AGE_MS = 120000;
     function esc(v){return String(v ?? "").replace(/[&<>\"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));}
     function showLoadError(message){ document.getElementById("statusText").textContent = `Load failed: ${String(message || "unknown error")}`; }
+    function debounce(fn, delayMs) {
+      let timer = null;
+      return (...args) => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => fn(...args), delayMs);
+      };
+    }
+    function updateRowCount(tbodyId) {
+      const tbody = document.getElementById(tbodyId);
+      const label = document.querySelector(`[data-count-for="${tbodyId}"]`);
+      if (!tbody || !label) return;
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const total = rows.filter((tr) => !tr.dataset.emptyRow).length;
+      const visible = rows.filter((tr) => !tr.dataset.emptyRow && tr.style.display !== "none").length;
+      label.textContent = total ? `${visible} of ${total} shown` : "No rows";
+    }
+    function updateAllRowCounts() {
+      document.querySelectorAll("[data-count-for]").forEach((node) => updateRowCount(node.dataset.countFor || ""));
+    }
     function applySearch() {
       const root = document.getElementById("nightmare-dashboard-main");
-      const needle = String(document.getElementById("globalSearch").value || "").trim().toLowerCase();
+      const input = document.getElementById("globalSearch");
+      const needle = String(input && input.value || "").trim().toLowerCase();
       const scope = root && root.querySelectorAll ? root.querySelectorAll(".table-wrap tbody tr") : document.querySelectorAll(".table-wrap tbody tr");
       scope.forEach((tr) => {
+        if (tr.dataset.emptyRow) return;
         const text = String(tr.textContent || "").toLowerCase();
         tr.style.display = (!needle || text.includes(needle)) ? "" : "none";
       });
+      updateAllRowCounts();
     }
     /** Prefer the first array found (APIs use different keys across endpoints). */
     function firstArray(...candidates) {
@@ -117,7 +325,8 @@
     function setRows(id, html, cols) {
       const el = document.getElementById(id);
       if (!el) return;
-      el.innerHTML = html || `<tr><td colspan="${cols}">No rows.</td></tr>`;
+      el.innerHTML = html || `<tr data-empty-row="true"><td class="empty-state" colspan="${cols}">No rows match this view.</td></tr>`;
+      updateRowCount(id);
     }
     function _safeReadDashboardCache() {
       try {
@@ -182,6 +391,19 @@
       if (Number.isNaN(d.getTime())) return String(value || "");
       return d.toLocaleString("en-US", { timeZone: "Etc/GMT+5", hour12: false });
     }
+    function statusPill(value) {
+      const text = String(value || "").trim();
+      if (!text) return "";
+      const lowered = text.toLowerCase();
+      const tone = /fail|error|terminate|down|stopped|offline|critical/.test(lowered)
+        ? "danger"
+        : /warn|pending|stale|starting|unknown/.test(lowered)
+          ? "warn"
+          : /run|online|active|ok|success|ready|idle/.test(lowered)
+            ? "ok"
+            : "";
+      return `<span class="pill ${tone}">${esc(text)}</span>`;
+    }
     const TOKEN_COOKIE_NAME = "nightmare_coord_token";
     function readCookie(name) {
       return document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) || "";
@@ -216,6 +438,9 @@
       }
     }
     let dashboardEventStream = null;
+    let dashboardRefreshInFlight = false;
+    let dashboardAutoRefreshPaused = false;
+    let dashboardAutoRefreshTimer = null;
     function getPerfStatsNode() {
       return document.getElementById("perfStats");
     }
@@ -274,9 +499,13 @@
         dashboardEventStream = null;
       }
     }
-    async function refreshDashboard() {
+    async function refreshDashboard({ silent = false } = {}) {
+      if (dashboardRefreshInFlight) return;
+      dashboardRefreshInFlight = true;
       const status = document.getElementById("statusText");
-      status.textContent = "Loading...";
+      const refreshBtn = document.getElementById("refreshBtn");
+      if (refreshBtn) refreshBtn.disabled = true;
+      if (!silent && status) status.textContent = "Loading...";
       try {
         const startedAt = performance.now();
         const results = await Promise.allSettled([
@@ -314,7 +543,7 @@
           `<tr>
             <td>${esc(r.name || "")}</td>
             <td>${esc(r.instance_id || "")}</td>
-            <td>${esc(r.state || "")}</td>
+            <td>${statusPill(r.state || "")}</td>
             <td>${esc(r.private_ip || "")}</td>
             <td>${esc(r.public_ip || "")}</td>
             <td>${esc(r.disk_total_gb || 0)}/${esc(r.disk_free_gb || 0)}</td>
@@ -338,7 +567,7 @@
         });
 
         const dockerRows = asArray(docker.all_containers).map((r) =>
-          `<tr><td>${esc(r.name || "")}</td><td>${esc(r.host_label || r.host_type || "")}</td><td>${esc(r.image || "")}</td><td>${esc(r.status || "")}</td><td>${esc(r.running_for || "")}</td><td>${esc(r.ports || "")}</td><td><code>${esc(r.id || "")}</code></td></tr>`
+          `<tr><td>${esc(r.name || "")}</td><td>${esc(r.host_label || r.host_type || "")}</td><td>${esc(r.image || "")}</td><td>${statusPill(r.status || "")}</td><td>${esc(r.running_for || "")}</td><td>${esc(r.ports || "")}</td><td><code>${esc(r.id || "")}</code></td></tr>`
         ).join("");
         setRows("dockerRows", dockerRows, 7);
 
@@ -352,13 +581,13 @@
 
         const logList = firstArray(logs.items, logs.events);
         const logRows = logList.map((l) =>
-          `<tr><td>${esc(l.event_time_utc || "")}</td><td>${esc(l.severity || "")}</td><td>${esc(l.machine || "")}</td><td>${esc(l.source_id || "")}</td><td>${esc(l.description || "")}</td></tr>`
+          `<tr><td>${esc(l.event_time_utc || "")}</td><td>${statusPill(l.severity || "")}</td><td>${esc(l.machine || "")}</td><td>${esc(l.source_id || "")}</td><td>${esc(l.description || "")}</td></tr>`
         ).join("");
         setRows("logRows", logRows, 5);
 
         const pluginWorkers = asArray(workers.workers).filter((w) => String(w.worker_id || "").toLowerCase().includes("-plugin-"));
         const pluginWorkerRows = pluginWorkers.map((w) =>
-          `<tr><td>${esc(w.worker_id || "")}</td><td>${esc(w.status || "")}</td><td>${esc(w.worker_state || "")}</td><td>${esc(w.current_root_domain || w.current_stage_root_domain || "")}</td><td>${esc(w.current_stage || w.current_plugin_name || "")}</td><td>${esc(w.running_targets || 0)}</td><td>${esc(w.running_stage_tasks || 0)}</td><td>${esc(w.last_heartbeat_at_utc || "")}</td><td>${esc(est(w.last_run_time_at_utc || w.last_seen_time_at_utc || ""))}</td><td>${esc(w.last_workflow_ran || w.current_workflow_id || "")}</td></tr>`
+          `<tr><td>${esc(w.worker_id || "")}</td><td>${statusPill(w.status || "")}</td><td>${statusPill(w.worker_state || "")}</td><td>${esc(w.current_root_domain || w.current_stage_root_domain || "")}</td><td>${esc(w.current_stage || w.current_plugin_name || "")}</td><td>${esc(w.running_targets || 0)}</td><td>${esc(w.running_stage_tasks || 0)}</td><td>${esc(w.last_heartbeat_at_utc || "")}</td><td>${esc(est(w.last_run_time_at_utc || w.last_seen_time_at_utc || ""))}</td><td>${esc(w.last_workflow_ran || w.current_workflow_id || "")}</td></tr>`
         ).join("");
         setRows("pluginWorkerRows", pluginWorkerRows, 10);
 
@@ -450,6 +679,9 @@
         applySearch();
       } catch (error) {
         showLoadError(error && error.message ? error.message : String(error || "request failed"));
+      } finally {
+        dashboardRefreshInFlight = false;
+        if (refreshBtn) refreshBtn.disabled = false;
       }
     }
     async function downloadDiagnosticsData() {
@@ -471,7 +703,24 @@
         showLoadError(error && error.message ? error.message : String(error || "diagnostics download failed"));
       }
     }
-    document.getElementById("globalSearch").addEventListener("input", applySearch);
+    const debouncedSearch = debounce(applySearch, 120);
+    document.getElementById("globalSearch").addEventListener("input", debouncedSearch);
+    document.getElementById("clearSearchBtn").addEventListener("click", () => {
+      const input = document.getElementById("globalSearch");
+      if (input) input.value = "";
+      applySearch();
+      input && input.focus();
+    });
+    document.getElementById("refreshBtn").addEventListener("click", () => refreshDashboard());
+    document.getElementById("downloadDiagnosticsBtn").addEventListener("click", downloadDiagnosticsData);
+    document.getElementById("toggleAutoRefreshBtn").addEventListener("click", (event) => {
+      dashboardAutoRefreshPaused = !dashboardAutoRefreshPaused;
+      const btn = event.currentTarget;
+      btn.setAttribute("aria-pressed", String(dashboardAutoRefreshPaused));
+      btn.textContent = dashboardAutoRefreshPaused ? "Resume auto-refresh" : "Pause auto-refresh";
+      const status = document.getElementById("statusText");
+      if (status) status.textContent = dashboardAutoRefreshPaused ? "Auto-refresh paused." : "Auto-refresh resumed.";
+    });
     {
       const cacheStartedAt = performance.now();
       const hadCache = _applyCachedDashboardSnapshot();
@@ -481,7 +730,9 @@
       setCacheTiming(cacheDuration, hadCache ? ageMs : 0);
     }
     refreshDashboard();
-    setInterval(refreshDashboard, 10000);
+    dashboardAutoRefreshTimer = setInterval(() => {
+      if (!dashboardAutoRefreshPaused) refreshDashboard({ silent: true });
+    }, 10000);
     subscribeToEventStream();
   </script>
 </body>
