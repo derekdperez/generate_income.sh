@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>API Debugger</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #cbd5e1;
+      --soft: #e2e8f0;
+      --brand: #0284c7;
+      --brand-ink: #075985;
+      --ok: #047857;
+      --warn: #b45309;
+      --bad: #b91c1c;
+      --shadow: 0 18px 38px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      background: radial-gradient(circle at top left, #e0f2fe 0, transparent 38rem), var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .skip-link {
+      position: absolute;
+      left: 12px;
+      top: -44px;
+      background: #0f172a;
+      color: #fff;
+      padding: 10px 12px;
+      border-radius: 10px;
+      z-index: 200;
+    }
+    .skip-link:focus { top: 12px; }
+    .page {
+      width: min(1600px, 100%);
+      margin: 0 auto;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: end;
+      margin: 18px 0;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 4vw, 44px);
+      letter-spacing: -0.04em;
+    }
+    .lead {
+      margin: 0;
+      color: var(--muted);
+      max-width: 76ch;
+      line-height: 1.55;
+    }
+    .toolbar, .endpoint, .result-card {
+      background: rgba(255,255,255,0.92);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+    .toolbar {
+      position: sticky;
+      top: 72px;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) 190px 180px auto;
+      gap: 12px;
+      padding: 14px;
+      margin-bottom: 16px;
+      backdrop-filter: blur(10px);
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 800;
+      color: #334155;
+      margin: 0 0 6px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    input, select, textarea, button {
+      font: inherit;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      color: var(--ink);
+      padding: 10px 12px;
+      min-height: 42px;
+    }
+    textarea {
+      min-height: 128px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      tab-size: 2;
+    }
+    input:focus, select:focus, textarea:focus, button:focus-visible {
+      outline: 3px solid rgba(14, 165, 233, 0.28);
+      outline-offset: 2px;
+    }
+    .button-row {
+      display: flex;
+      gap: 8px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      color: #0f172a;
+      min-height: 42px;
+      padding: 10px 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    button:hover { border-color: #7dd3fc; background: #f0f9ff; }
+    button.primary {
+      background: var(--brand);
+      color: #fff;
+      border-color: #0369a1;
+    }
+    button.primary:hover { background: #0369a1; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid var(--soft);
+      background: #f8fafc;
+      padding: 5px 9px;
+      font-weight: 750;
+    }
+    .method {
+      min-width: 68px;
+      justify-content: center;
+      color: #075985;
+      background: #e0f2fe;
+      border-color: #bae6fd;
+    }
+    .status-ok { color: var(--ok); background: #ecfdf5; border-color: #bbf7d0; }
+    .status-warn { color: var(--warn); background: #fffbeb; border-color: #fde68a; }
+    .status-bad { color: var(--bad); background: #fef2f2; border-color: #fecaca; }
+    .endpoint-list {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 40px;
+    }
+    .endpoint {
+      overflow: hidden;
+    }
+    .endpoint[hidden] { display: none; }
+    .endpoint summary {
+      list-style: none;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 16px 18px;
+      cursor: pointer;
+    }
+    .endpoint summary::-webkit-details-marker { display: none; }
+    .path {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .summary-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .endpoint-body {
+      border-top: 1px solid var(--soft);
+      padding: 16px 18px 18px;
+      display: grid;
+      gap: 14px;
+    }
+    .request-grid {
+      display: grid;
+      grid-template-columns: 150px minmax(280px, 1fr) minmax(260px, .75fr);
+      gap: 12px;
+      align-items: end;
+    }
+    .editors {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .result-card {
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      box-shadow: none;
+      background: #f8fafc;
+    }
+    .result-header {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    pre {
+      margin: 0;
+      max-height: 420px;
+      overflow: auto;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #0f172a;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .mini {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .empty {
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 24px;
+      background: rgba(255,255,255,.7);
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+    }
+    @media (max-width: 1100px) {
+      .hero, .toolbar, .request-grid, .editors {
+        grid-template-columns: 1fr;
+      }
+      .toolbar { position: static; }
+      .endpoint summary { grid-template-columns: 1fr; }
+      .summary-actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#apiDebuggerMain">Skip to API debugger</a>
+  {% include "_navbar.html.j2" %}
+  <main id="apiDebuggerMain" class="page">
+    <section class="hero" aria-labelledby="pageTitle">
+      <div>
+        <h1 id="pageTitle">API Debugger</h1>
+        <p class="lead">
+          Test every API route discovered in the application from one place. Each endpoint has editable method,
+          path, query, headers, request body, and token settings, plus a compact response viewer.
+        </p>
+      </div>
+      <div class="meta" aria-live="polite">
+        <span class="pill" id="catalogCount">Loading endpoints…</span>
+        <span class="pill" id="visibleCount">0 visible</span>
+      </div>
+    </section>
+
+    <section class="toolbar" aria-label="API debugger filters">
+      <div>
+        <label for="searchInput">Search endpoints</label>
+        <input id="searchInput" type="search" placeholder="Filter by path, method, source, or handler">
+      </div>
+      <div>
+        <label for="methodFilter">Method</label>
+        <select id="methodFilter">
+          <option value="">All methods</option>
+        </select>
+      </div>
+      <div>
+        <label for="sourceFilter">Source</label>
+        <select id="sourceFilter">
+          <option value="">All sources</option>
+        </select>
+      </div>
+      <div class="button-row" aria-label="Catalog actions">
+        <button type="button" id="expandAllBtn">Expand all</button>
+        <button type="button" id="collapseAllBtn">Collapse all</button>
+        <button type="button" id="reloadCatalogBtn">Reload catalog</button>
+      </div>
+    </section>
+
+    <div id="endpointList" class="endpoint-list" aria-live="polite"></div>
+    <div id="emptyState" class="empty" hidden>No matching endpoints.</div>
+  </main>
+
+  <template id="endpointTemplate">
+    <details class="endpoint">
+      <summary>
+        <span class="pill method" data-role="summary-method"></span>
+        <span>
+          <span class="path" data-role="summary-path"></span>
+          <span class="meta" data-role="summary-meta"></span>
+        </span>
+        <span class="summary-actions">
+          <span class="pill" data-role="auth-pill"></span>
+          <button type="button" class="primary" data-action="send">Send</button>
+        </span>
+      </summary>
+      <div class="endpoint-body">
+        <div class="request-grid">
+          <div>
+            <label>Request type</label>
+            <select data-field="method"></select>
+          </div>
+          <div>
+            <label>Path or URL</label>
+            <input data-field="path" spellcheck="false">
+          </div>
+          <div>
+            <label>API token</label>
+            <input data-field="token" type="password" autocomplete="off" placeholder="From cookie/localStorage when available">
+          </div>
+        </div>
+        <div class="editors">
+          <div>
+            <label>Query variables JSON</label>
+            <textarea data-field="query" spellcheck="false"></textarea>
+            <div class="mini">Use an object. Empty values are omitted from the URL.</div>
+          </div>
+          <div>
+            <label>Headers JSON</label>
+            <textarea data-field="headers" spellcheck="false"></textarea>
+            <div class="mini">Authorization is added automatically when a token is present.</div>
+          </div>
+          <div>
+            <label>Body</label>
+            <textarea data-field="body" spellcheck="false"></textarea>
+            <div class="mini">JSON objects are sent as JSON. Plain text is sent as-is.</div>
+          </div>
+        </div>
+        <div class="button-row">
+          <button type="button" class="primary" data-action="send">Send request</button>
+          <button type="button" data-action="reset">Reset defaults</button>
+          <button type="button" data-action="copy-curl">Copy curl</button>
+        </div>
+        <section class="result-card" aria-label="API response">
+          <div class="result-header">
+            <div class="meta" data-role="result-meta">
+              <span class="pill">No request sent</span>
+            </div>
+            <div class="button-row">
+              <button type="button" data-action="copy-result" disabled>Copy result</button>
+              <button type="button" data-action="clear-result" disabled>Clear</button>
+            </div>
+          </div>
+          <pre data-role="result-body">Response body will appear here.</pre>
+        </section>
+      </div>
+    </details>
+  </template>
+
+  <script>
+    (() => {
+      const endpointList = document.getElementById("endpointList");
+      const endpointTemplate = document.getElementById("endpointTemplate");
+      const searchInput = document.getElementById("searchInput");
+      const methodFilter = document.getElementById("methodFilter");
+      const sourceFilter = document.getElementById("sourceFilter");
+      const catalogCount = document.getElementById("catalogCount");
+      const visibleCount = document.getElementById("visibleCount");
+      const emptyState = document.getElementById("emptyState");
+      const expandAllBtn = document.getElementById("expandAllBtn");
+      const collapseAllBtn = document.getElementById("collapseAllBtn");
+      const reloadCatalogBtn = document.getElementById("reloadCatalogBtn");
+      const TOKEN_COOKIE_NAME = "nightmare_coord_token";
+      const BODYLESS_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+      let catalog = [];
+      let lastResults = new WeakMap();
+
+      function readCookie(name) {
+        return document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) || "";
+      }
+
+      function readToken() {
+        if (window.NightmareAuth && typeof window.NightmareAuth.readAuthToken === "function") {
+          return window.NightmareAuth.readAuthToken();
+        }
+        const cookieToken = decodeURIComponent(readCookie(TOKEN_COOKIE_NAME) || "").trim();
+        if (cookieToken) return cookieToken;
+        try { return String(localStorage.getItem(TOKEN_COOKIE_NAME) || "").trim(); } catch { return ""; }
+      }
+
+      function pretty(value) {
+        if (value === undefined || value === null) return "";
+        if (typeof value === "string") return value;
+        return JSON.stringify(value, null, 2);
+      }
+
+      function parseJsonObject(raw, fallback, label) {
+        const text = String(raw || "").trim();
+        if (!text) return fallback;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+          throw new Error(`${label} must be a JSON object`);
+        } catch (err) {
+          throw new Error(`${label}: ${err.message || err}`);
+        }
+      }
+
+      function parseBody(raw) {
+        const text = String(raw || "");
+        if (!text.trim()) return { body: undefined, isJson: false };
+        try {
+          return { body: JSON.parse(text), isJson: true };
+        } catch (_) {
+          return { body: text, isJson: false };
+        }
+      }
+
+      function buildUrl(pathOrUrl, query) {
+        const url = new URL(String(pathOrUrl || "/"), window.location.origin);
+        Object.entries(query || {}).forEach(([key, value]) => {
+          if (value === undefined || value === null || value === "") return;
+          if (Array.isArray(value)) {
+            value.forEach((item) => {
+              if (item !== undefined && item !== null && item !== "") url.searchParams.append(key, String(item));
+            });
+            return;
+          }
+          url.searchParams.set(key, String(value));
+        });
+        return url;
+      }
+
+      function statusClass(status) {
+        if (status >= 200 && status < 300) return "status-ok";
+        if (status >= 300 && status < 500) return "status-warn";
+        return "status-bad";
+      }
+
+      function methodOptions(selected) {
+        const methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
+        return methods.map((method) => `<option value="${method}" ${method === selected ? "selected" : ""}>${method}</option>`).join("");
+      }
+
+      function endpointDefaults(endpoint) {
+        const method = String(endpoint.method || "GET").toUpperCase();
+        const headers = { Accept: "application/json", ...(endpoint.headers || {}) };
+        if (!BODYLESS_METHODS.has(method) && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+        return {
+          method,
+          path: endpoint.path || "/",
+          token: readToken(),
+          query: endpoint.query || {},
+          headers,
+          body: endpoint.body === null || endpoint.body === undefined ? "" : endpoint.body,
+        };
+      }
+
+      function setEndpointForm(details, endpoint) {
+        const defaults = endpointDefaults(endpoint);
+        details.querySelector('[data-field="method"]').value = defaults.method;
+        details.querySelector('[data-field="path"]').value = defaults.path;
+        details.querySelector('[data-field="token"]').value = defaults.token;
+        details.querySelector('[data-field="query"]').value = pretty(defaults.query);
+        details.querySelector('[data-field="headers"]').value = pretty(defaults.headers);
+        details.querySelector('[data-field="body"]').value = typeof defaults.body === "string" ? defaults.body : pretty(defaults.body);
+      }
+
+      function readEndpointForm(details) {
+        const method = String(details.querySelector('[data-field="method"]').value || "GET").toUpperCase();
+        const path = details.querySelector('[data-field="path"]').value;
+        const token = details.querySelector('[data-field="token"]').value.trim();
+        const query = parseJsonObject(details.querySelector('[data-field="query"]').value, {}, "Query variables");
+        const headers = parseJsonObject(details.querySelector('[data-field="headers"]').value, {}, "Headers");
+        const bodyInfo = parseBody(details.querySelector('[data-field="body"]').value);
+        if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`;
+        return { method, path, token, query, headers, ...bodyInfo };
+      }
+
+      function resultMeta(details, html) {
+        const node = details.querySelector('[data-role="result-meta"]');
+        node.innerHTML = html;
+      }
+
+      function resultBody(details, text) {
+        details.querySelector('[data-role="result-body"]').textContent = text;
+        details.querySelector('[data-action="copy-result"]').disabled = false;
+        details.querySelector('[data-action="clear-result"]').disabled = false;
+      }
+
+      async function sendEndpoint(details) {
+        const sendButtons = details.querySelectorAll('[data-action="send"]');
+        sendButtons.forEach((button) => { button.disabled = true; button.textContent = "Sending…"; });
+        const started = performance.now();
+        try {
+          const request = readEndpointForm(details);
+          const url = buildUrl(request.path, request.query);
+          const init = {
+            method: request.method,
+            headers: request.headers,
+            credentials: "same-origin",
+          };
+          if (!BODYLESS_METHODS.has(request.method) && request.body !== undefined) {
+            init.body = request.isJson ? JSON.stringify(request.body) : String(request.body);
+            if (request.isJson && !init.headers["Content-Type"]) init.headers["Content-Type"] = "application/json";
+          }
+          const response = await fetch(url, init);
+          const duration = Math.round(performance.now() - started);
+          const contentType = response.headers.get("content-type") || "";
+          const text = await response.text();
+          let display = text;
+          try { display = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+          const headerDump = {};
+          response.headers.forEach((value, key) => { headerDump[key] = value; });
+          const result = {
+            request: { method: request.method, url: url.toString(), headers: request.headers, body: request.body },
+            response: { status: response.status, statusText: response.statusText, durationMs: duration, contentType, headers: headerDump, body: text },
+          };
+          lastResults.set(details, result);
+          resultMeta(details, `
+            <span class="pill ${statusClass(response.status)}">HTTP ${response.status} ${response.statusText || ""}</span>
+            <span class="pill">${duration} ms</span>
+            <span class="pill">${contentType || "unknown content type"}</span>
+          `);
+          resultBody(details, display || "(empty response)");
+        } catch (err) {
+          const duration = Math.round(performance.now() - started);
+          lastResults.set(details, { error: String(err && err.message || err), durationMs: duration });
+          resultMeta(details, `<span class="pill status-bad">Request failed</span><span class="pill">${duration} ms</span>`);
+          resultBody(details, String(err && err.message || err));
+        } finally {
+          sendButtons.forEach((button) => {
+            button.disabled = false;
+            button.textContent = button.closest("summary") ? "Send" : "Send request";
+          });
+        }
+      }
+
+      function buildCurl(details) {
+        const request = readEndpointForm(details);
+        const url = buildUrl(request.path, request.query);
+        const parts = ["curl", "-i", "-X", request.method, JSON.stringify(url.toString())];
+        Object.entries(request.headers || {}).forEach(([key, value]) => {
+          if (value === undefined || value === null || value === "") return;
+          parts.push("-H", JSON.stringify(`${key}: ${value}`));
+        });
+        if (!BODYLESS_METHODS.has(request.method) && request.body !== undefined) {
+          parts.push("--data", JSON.stringify(request.isJson ? JSON.stringify(request.body) : String(request.body)));
+        }
+        return parts.join(" ");
+      }
+
+      async function copyText(text) {
+        await navigator.clipboard.writeText(text);
+      }
+
+      function renderEndpoint(endpoint) {
+        const clone = endpointTemplate.content.firstElementChild.cloneNode(true);
+        clone.dataset.method = String(endpoint.method || "").toUpperCase();
+        clone.dataset.path = String(endpoint.path || "");
+        clone.dataset.source = String(endpoint.source || "");
+        clone.dataset.handler = String(endpoint.handler || "");
+        clone.dataset.search = [
+          endpoint.method,
+          endpoint.path,
+          endpoint.source,
+          endpoint.handler,
+          endpoint.description,
+        ].map((item) => String(item || "").toLowerCase()).join(" ");
+        clone.querySelector('[data-role="summary-method"]').textContent = endpoint.method || "GET";
+        clone.querySelector('[data-role="summary-path"]').textContent = endpoint.path || "/";
+        const meta = clone.querySelector('[data-role="summary-meta"]');
+        const source = endpoint.source ? `${endpoint.source}${endpoint.line ? `:${endpoint.line}` : ""}` : "discovered";
+        meta.innerHTML = `<span class="pill">${source}</span>${endpoint.handler ? `<span class="pill">${endpoint.handler}</span>` : ""}${endpoint.description ? `<span class="pill">${endpoint.description}</span>` : ""}`;
+        clone.querySelector('[data-role="auth-pill"]').textContent = endpoint.auth ? "Token supported" : "No token required";
+        clone.querySelector('[data-field="method"]').innerHTML = methodOptions(String(endpoint.method || "GET").toUpperCase());
+        setEndpointForm(clone, endpoint);
+        clone.querySelectorAll('[data-action="send"]').forEach((button) => button.addEventListener("click", (event) => {
+          event.preventDefault();
+          clone.open = true;
+          sendEndpoint(clone);
+        }));
+        clone.querySelector('[data-action="reset"]').addEventListener("click", () => setEndpointForm(clone, endpoint));
+        clone.querySelector('[data-action="copy-curl"]').addEventListener("click", async () => {
+          try { await copyText(buildCurl(clone)); } catch (err) { resultBody(clone, `Copy failed: ${err.message || err}`); }
+        });
+        clone.querySelector('[data-action="copy-result"]').addEventListener("click", async () => {
+          const result = lastResults.get(clone);
+          if (result) await copyText(JSON.stringify(result, null, 2));
+        });
+        clone.querySelector('[data-action="clear-result"]').addEventListener("click", () => {
+          lastResults.delete(clone);
+          resultMeta(clone, '<span class="pill">No request sent</span>');
+          clone.querySelector('[data-role="result-body"]').textContent = "Response body will appear here.";
+          clone.querySelector('[data-action="copy-result"]').disabled = true;
+          clone.querySelector('[data-action="clear-result"]').disabled = true;
+        });
+        return clone;
+      }
+
+      function populateFilters(payload) {
+        const methods = new Set();
+        const sources = new Set();
+        payload.forEach((endpoint) => {
+          if (endpoint.method) methods.add(String(endpoint.method).toUpperCase());
+          if (endpoint.source) sources.add(String(endpoint.source));
+        });
+        methodFilter.innerHTML = '<option value="">All methods</option>' + [...methods].sort().map((method) => `<option value="${method}">${method}</option>`).join("");
+        sourceFilter.innerHTML = '<option value="">All sources</option>' + [...sources].sort().map((source) => `<option value="${source}">${source}</option>`).join("");
+      }
+
+      function applyFilters() {
+        const q = String(searchInput.value || "").trim().toLowerCase();
+        const method = String(methodFilter.value || "").toUpperCase();
+        const source = String(sourceFilter.value || "");
+        let visible = 0;
+        endpointList.querySelectorAll(".endpoint").forEach((card) => {
+          const matchesQuery = !q || String(card.dataset.search || "").includes(q);
+          const matchesMethod = !method || card.dataset.method === method;
+          const matchesSource = !source || card.dataset.source === source;
+          const show = matchesQuery && matchesMethod && matchesSource;
+          card.hidden = !show;
+          if (show) visible += 1;
+        });
+        visibleCount.textContent = `${visible} visible`;
+        emptyState.hidden = visible !== 0;
+      }
+
+      function debounce(fn, delay) {
+        let timer = null;
+        return (...args) => {
+          clearTimeout(timer);
+          timer = setTimeout(() => fn(...args), delay);
+        };
+      }
+
+      async function loadCatalog() {
+        catalogCount.textContent = "Loading endpoints…";
+        endpointList.innerHTML = "";
+        emptyState.hidden = true;
+        try {
+          const response = await fetch("/api/debugger/catalog", { cache: "no-store", credentials: "same-origin" });
+          if (!response.ok) throw new Error(`Catalog failed: HTTP ${response.status}`);
+          const payload = await response.json();
+          catalog = Array.isArray(payload.endpoints) ? payload.endpoints : [];
+          populateFilters(catalog);
+          const fragment = document.createDocumentFragment();
+          catalog.forEach((endpoint, index) => {
+            const card = renderEndpoint(endpoint);
+            card.open = index < 3;
+            fragment.appendChild(card);
+          });
+          endpointList.appendChild(fragment);
+          catalogCount.textContent = `${catalog.length} endpoints`;
+          applyFilters();
+        } catch (err) {
+          catalogCount.textContent = "Catalog failed";
+          emptyState.hidden = false;
+          emptyState.textContent = String(err && err.message || err);
+        }
+      }
+
+      searchInput.addEventListener("input", debounce(applyFilters, 120));
+      methodFilter.addEventListener("change", applyFilters);
+      sourceFilter.addEventListener("change", applyFilters);
+      expandAllBtn.addEventListener("click", () => endpointList.querySelectorAll(".endpoint:not([hidden])").forEach((card) => { card.open = true; }));
+      collapseAllBtn.addEventListener("click", () => endpointList.querySelectorAll(".endpoint").forEach((card) => { card.open = false; }));
+      reloadCatalogBtn.addEventListener("click", loadCatalog);
+      loadCatalog();
+    })();
+  </script>
+</body>
+</html>
