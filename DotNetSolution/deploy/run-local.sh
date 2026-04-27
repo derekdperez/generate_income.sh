@@ -17,11 +17,12 @@
 # Requires: Docker Engine + Compose V2 ("docker compose") or V1 ("docker-compose").
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$DEPLOY_DIR/.." && pwd)"
 cd "$ROOT"
 
 # shellcheck source=deploy/lib-nightmare-compose.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-nightmare-compose.sh"
+source "$DEPLOY_DIR/lib-nightmare-compose.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required. Install Docker Engine, then re-run." >&2

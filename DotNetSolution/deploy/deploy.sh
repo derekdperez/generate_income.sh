@@ -15,11 +15,14 @@
 #   "up -d" was parsed as invalid global docker flags. Install the plugin or use docker-compose.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve absolute paths before cd: dirname of ./deploy.sh is ".", so a relative
+# lib path would wrongly resolve against the post-cd working directory.
+DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$DEPLOY_DIR/.." && pwd)"
 cd "$ROOT"
 
 # shellcheck source=deploy/lib-nightmare-compose.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-nightmare-compose.sh"
+source "$DEPLOY_DIR/lib-nightmare-compose.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required. Install Docker Engine, then re-run." >&2
