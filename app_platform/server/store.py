@@ -5361,6 +5361,155 @@ ORDER BY created_at_utc ASC
             plugin_allowlist=[stg],
         )
 
+    def stage_tasks_monitor(
+        self,
+        *,
+        limit: int = 500,
+        statuses: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Return recent stage-task rows for operational monitoring UIs."""
+        safe_limit = max(1, min(5000, int(limit or 500)))
+        allowed = {"pending", "ready", "running", "completed", "failed", "paused", "canceled", "created"}
+        filters = [str(item or "").strip().lower() for item in (statuses or []) if str(item or "").strip()]
+        normalized = [item for item in filters if item in allowed]
+        sql = """
+SELECT workflow_id, root_domain, stage, status, worker_id, attempt_count,
+       lease_expires_at, heartbeat_at_utc, updated_at_utc, created_at_utc,
+       started_at_utc, completed_at_utc, error
+FROM coordinator_stage_tasks
+WHERE (%s::text[] IS NULL OR status = ANY(%s))
+ORDER BY
+  CASE status WHEN 'running' THEN 0 WHEN 'ready' THEN 1 WHEN 'pending' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END,
+  COALESCE(updated_at_utc, heartbeat_at_utc, created_at_utc) DESC
+LIMIT %s;
+"""
+        count_sql = """
+SELECT status, COUNT(*)
+FROM coordinator_stage_tasks
+GROUP BY status;
+"""
+        rows: list[Any] = []
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (normalized or None, normalized or None, safe_limit))
+                rows = cur.fetchall()
+                cur.execute(count_sql)
+                for row in cur.fetchall():
+                    key = str(row[0] or "").strip().lower()
+                    counts[key] = int(row[1] or 0)
+            conn.commit()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            lease_expires = row[6].isoformat() if row[6] else ""
+            heartbeat = row[7].isoformat() if row[7] else ""
+            updated = row[8].isoformat() if row[8] else ""
+            created = row[9].isoformat() if row[9] else ""
+            started = row[10].isoformat() if row[10] else ""
+            completed = row[11].isoformat() if row[11] else ""
+            items.append(
+                {
+                    "workflow_id": str(row[0] or ""),
+                    "root_domain": str(row[1] or ""),
+                    "stage": str(row[2] or ""),
+                    "status": str(row[3] or ""),
+                    "worker_id": str(row[4] or ""),
+                    "attempt_count": int(row[5] or 0),
+                    "lease_expires_at_utc": lease_expires,
+                    "heartbeat_at_utc": heartbeat,
+                    "updated_at_utc": updated,
+                    "created_at_utc": created,
+                    "started_at_utc": started,
+                    "completed_at_utc": completed,
+                    "error": str(row[12] or ""),
+                }
+            )
+        return {
+            "ok": True,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "limit": safe_limit,
+            "statuses": normalized,
+            "counts": counts,
+            "items": items,
+        }
+
+    def force_workers_claim(self, *, lease_seconds: int = DEFAULT_COORDINATOR_LEASE_SECONDS) -> dict[str, Any]:
+        """Force an immediate one-pass claim attempt for every known worker."""
+        lease = max(15, int(lease_seconds or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        workers_payload = self.worker_control_snapshot(stale_after_seconds=lease)
+        workers = workers_payload.get("workers", []) if isinstance(workers_payload, dict) else []
+        if not isinstance(workers, list):
+            workers = []
+        monitor = self.stage_tasks_monitor(limit=1, statuses=["ready"])
+        ready_before = int((monitor.get("counts") or {}).get("ready") or 0)
+        results: list[dict[str, Any]] = []
+        claimed_total = 0
+        for worker in workers:
+            worker_id = str((worker or {}).get("worker_id") or "").strip()
+            worker_status = str((worker or {}).get("status") or "").strip().lower()
+            if not worker_id:
+                continue
+            entry = self.claim_next_stage(worker_id=worker_id, lease_seconds=lease, workflow_id="")
+            if isinstance(entry, dict) and str(entry.get("stage") or "").strip():
+                claimed_total += 1
+                result = {
+                    "worker_id": worker_id,
+                    "worker_status": worker_status,
+                    "result": "claimed",
+                    "reason": "",
+                    "claimed_task": {
+                        "workflow_id": str(entry.get("workflow_id") or ""),
+                        "root_domain": str(entry.get("root_domain") or ""),
+                        "stage": str(entry.get("stage") or ""),
+                    },
+                }
+                self.record_system_event(
+                    "worker.force_claim.claimed",
+                    f"worker:{worker_id}",
+                    {
+                        "source": "coordinator_store.force_workers_claim",
+                        "worker_id": worker_id,
+                        "worker_status": worker_status,
+                        "workflow_id": result["claimed_task"]["workflow_id"],
+                        "root_domain": result["claimed_task"]["root_domain"],
+                        "stage": result["claimed_task"]["stage"],
+                    },
+                )
+                results.append(result)
+                continue
+            reason = "no_ready_tasks" if ready_before <= 0 else "claim_not_acquired"
+            if worker_status and worker_status not in {"idle", "running"}:
+                reason = f"worker_status_{worker_status}"
+            result = {
+                "worker_id": worker_id,
+                "worker_status": worker_status,
+                "result": "skipped",
+                "reason": reason,
+                "claimed_task": None,
+            }
+            self.record_system_event(
+                "worker.force_claim.skipped",
+                f"worker:{worker_id}",
+                {
+                    "source": "coordinator_store.force_workers_claim",
+                    "worker_id": worker_id,
+                    "worker_status": worker_status,
+                    "reason": reason,
+                    "ready_tasks_before_attempt": ready_before,
+                },
+            )
+            results.append(result)
+        ready_after = int((self.stage_tasks_monitor(limit=1, statuses=["ready"]).get("counts") or {}).get("ready") or 0)
+        return {
+            "ok": True,
+            "lease_seconds": lease,
+            "workers_considered": len(results),
+            "claimed_total": claimed_total,
+            "ready_tasks_before": ready_before,
+            "ready_tasks_after": ready_after,
+            "results": results,
+        }
+
     def heartbeat_stage(self, root_domain: str, stage: str, worker_id: str, lease_seconds: int) -> bool:
         return self.heartbeat_stage_with_workflow(
             root_domain=root_domain,

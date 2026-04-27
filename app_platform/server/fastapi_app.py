@@ -1144,6 +1144,28 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
     ) -> dict[str, Any]:
         return store.workflow_scheduler_snapshot(limit=limit)
 
+    @app.get("/api/coord/stage-tasks")
+    def stage_tasks_monitor(
+        limit: int = Query(default=500),
+        status: str = Query(default=""),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        statuses = [part.strip().lower() for part in str(status or "").split(",") if part.strip()]
+        return store.stage_tasks_monitor(limit=limit, statuses=statuses)
+
+    @app.post("/api/coord/workers/force-claim")
+    def force_workers_claim(
+        body: dict[str, Any] = Body(default_factory=dict),
+        _auth: None = Depends(require_auth),
+        store: CoordinatorStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        started = perf_counter()
+        result = store.force_workers_claim(lease_seconds=int(body.get("lease_seconds") or DEFAULT_COORDINATOR_LEASE_SECONDS))
+        _telemetry.incr("coordinator.api.workers.force_claim.requests")
+        _telemetry.observe_ms("coordinator.api.workers.force_claim.duration_ms", (perf_counter() - started) * 1000.0)
+        return result
+
     @app.get("/api/coord/workflow-domain")
     def workflow_domain(
         root_domain: str = Query(default=""),

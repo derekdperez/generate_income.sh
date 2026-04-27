@@ -6391,6 +6391,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._write_json(payload)
             return
+        if path == "/api/coord/stage-tasks":
+            if self.coordinator_store is None:
+                self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
+                return
+            if not self._is_coordinator_authorized():
+                self._write_json({"error": "unauthorized"}, status=401)
+                return
+            limit = _safe_int((query.get("limit") or ["500"])[0], 500)
+            status_raw = str((query.get("status") or [""])[0] or "").strip().lower()
+            statuses = [part.strip().lower() for part in status_raw.split(",") if part.strip()]
+            try:
+                payload = self.coordinator_store.stage_tasks_monitor(limit=limit, statuses=statuses)
+            except Exception as exc:
+                self.log_message("stage_tasks_monitor failed: %r", exc)
+                self._write_json({"error": "stage task monitor query failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json(payload)
+            return
         if path == "/api/coord/worker-log-download":
             if self.coordinator_store is None:
                 self._write_json({"error": "coordinator is not configured (database_url missing)"}, status=503)
@@ -7658,6 +7676,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             command = self.coordinator_store.claim_worker_command(worker_id, worker_state=worker_state)
             self._write_json({"ok": True, "command": command})
+            return
+
+        if path == "/api/coord/workers/force-claim":
+            lease_seconds = _safe_int(body.get("lease_seconds", DEFAULT_COORDINATOR_LEASE_SECONDS), DEFAULT_COORDINATOR_LEASE_SECONDS)
+            try:
+                payload = self.coordinator_store.force_workers_claim(lease_seconds=lease_seconds)
+            except Exception as exc:
+                self.log_message("force_workers_claim failed: %r", exc)
+                self._write_json({"error": "force workers claim failed", "detail": str(exc)}, status=500)
+                return
+            self._write_json(payload)
             return
 
         if path == "/api/coord/worker-command/complete":
