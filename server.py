@@ -4402,7 +4402,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/dashboard":
             self._write_text(render_dashboard_html(), content_type="text/html; charset=utf-8")
             return
-        if path == "/api-debugger":
+        if path in {"/api-debugger", "/api-debugging"}:
             self._write_text(render_api_debugger_html(), content_type="text/html; charset=utf-8")
             return
         if path == "/operations":
