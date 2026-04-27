@@ -115,6 +115,7 @@ WHERE (
   AND ((%s::text[] IS NULL OR stage = ANY(%s)) OR %s)
   AND (
       stage = 'recon_subdomain_enumeration'
+      OR stage LIKE 'recon_subdomain_enumeration__iter_%'
       OR (COALESCE(checkpoint_json, '{}'::jsonb) ? 'force_run_override')
       OR (COALESCE(checkpoint_json, '{}'::jsonb) ? 'workflow_run_id')
       OR NOT EXISTS (
@@ -160,6 +161,8 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                 self._cleanup_orphaned_leases_cur(cur)
                 cur.execute(candidates_sql, (allowlist or None, allowlist or None, bool(bypass_allowlist)))
                 rows = cur.fetchall()
+                skipped_due_to_prereq = 0
+                skipped_due_to_conflict = 0
                 for row in rows:
                     checkpoint_json = row[7] if isinstance(row[7], dict) else {}
                     row_map = {
@@ -184,6 +187,7 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                             stage=row_map["stage"],
                         )
                     if not still_ready:
+                        skipped_due_to_prereq += 1
                         cur.execute(
                             """
 UPDATE coordinator_stage_tasks
@@ -216,6 +220,7 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
                         row_map["access_mode"],
                         row_map["max_parallelism"],
                     ):
+                        skipped_due_to_conflict += 1
                         continue
                     cur.execute(update_sql, (wid, lease, row_map["workflow_id"], row_map["root_domain"], row_map["stage"]))
                     updated = cur.fetchone()
@@ -286,6 +291,25 @@ ON CONFLICT (task_id, attempt_number) DO NOTHING;
                     break
             conn.commit()
         if claimed is None:
+            try:
+                with self._connect() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT COUNT(*) FROM coordinator_stage_tasks WHERE status = 'ready';")
+                        ready_total = int((cur.fetchone() or [0])[0] or 0)
+                    conn.commit()
+            except Exception:
+                ready_total = 0
+            if ready_total > 0:
+                self._record_system_event(
+                    "workflow.task.claim_skipped",
+                    f"worker:{wid}",
+                    {
+                        "source": "coordinator_store.try_claim_stage_with_resources",
+                        "worker_id": wid,
+                        "ready_total": int(ready_total),
+                        "allowlist": allowlist,
+                    },
+                )
             self._telemetry.incr("coordinator.workflow.claim.empty", tags={"worker_id": wid})
             return None
         row = claimed

@@ -5078,7 +5078,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 lambda: self.coordinator_store.list_event_log(limit=events_limit, after_sequence=0),
                 [],
             )
-            database_activity = _safe_collect("database_activity", lambda: self.coordinator_store.database_activity(limit=2000), {"tables": []})
+            database_activity = _safe_collect("database_activity", lambda: self.coordinator_store.database_activity(limit=500), {"tables": []})
             worker_statuses = _safe_collect(
                 "worker_statuses",
                 lambda: self.coordinator_store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS),
@@ -5101,7 +5101,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             log_sources = _safe_collect(
                 "log_sources",
-                lambda: _collect_view_log_sources_cached(self.app_root, self.output_root, force_refresh=True),
+                lambda: _collect_view_log_sources_cached(self.app_root, self.output_root, force_refresh=False),
                 [],
             )
 

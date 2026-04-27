@@ -672,7 +672,7 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
             "event_log": {
                 "items": _safe_collect("event_log", lambda: store.list_event_log(limit=events_limit, after_sequence=0), []),
             },
-            "database_activity": _safe_collect("database_activity", lambda: store.database_activity(limit=2000), {"tables": []}),
+            "database_activity": _safe_collect("database_activity", lambda: store.database_activity(limit=500), {"tables": []}),
             "worker_statuses": _safe_collect(
                 "worker_statuses",
                 lambda: store.worker_statuses(stale_after_seconds=DEFAULT_COORDINATOR_LEASE_SECONDS),

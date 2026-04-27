@@ -185,9 +185,11 @@ ON CONFLICT (entry_hash) DO NOTHING;
         source_id: str = "",
         search: str = "",
         severity: str = "",
+        machine: str = "",
         limit: int = 100,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
+        sort_dir: str = "desc",
+    ) -> dict[str, Any]:
         filters = []
         params: list[Any] = []
         if source_id:
@@ -196,6 +198,9 @@ ON CONFLICT (entry_hash) DO NOTHING;
         if severity:
             filters.append("severity = %s")
             params.append(str(severity))
+        if machine:
+            filters.append("machine = %s")
+            params.append(str(machine))
         if search:
             filters.append(
                 "(description ILIKE %s OR raw_line ILIKE %s OR metadata_json::text ILIKE %s OR stacktrace ILIKE %s)"
@@ -203,14 +208,17 @@ ON CONFLICT (entry_hash) DO NOTHING;
             needle = f"%{str(search)}%"
             params.extend([needle, needle, needle, needle])
         where = "WHERE " + " AND ".join(filters) if filters else ""
-        params.extend([max(1, min(5000, int(limit))), max(0, int(offset))])
+        order_dir = "ASC" if str(sort_dir or "").strip().lower() == "asc" else "DESC"
+        safe_limit = max(1, min(5000, int(limit)))
+        safe_offset = max(0, int(offset))
+        params.extend([safe_limit, safe_offset])
         sql = f"""
 SELECT log_id, event_time_utc, event_time_est, severity, description, machine, source_id, source_type,
        program_name, component_name, class_name, function_name, exception_type, stacktrace, metadata_json,
        raw_line, entry_hash, created_at_utc
 FROM application_logs
 {where}
-ORDER BY event_time_utc DESC, log_id DESC
+ORDER BY event_time_utc {order_dir}, log_id {order_dir}
 LIMIT %s OFFSET %s;
 """
         out: list[dict[str, Any]] = []
@@ -242,9 +250,16 @@ LIMIT %s OFFSET %s;
                     "created_at_utc": row[17].isoformat() if row[17] else None,
                 }
             )
-        return out
+        total = self.count_events(source_id=source_id, search=search, severity=severity, machine=machine)
+        return {
+            "events": out,
+            "total": int(total),
+            "limit": int(safe_limit),
+            "offset": int(safe_offset),
+            "sort_dir": "asc" if order_dir == "ASC" else "desc",
+        }
 
-    def count_events(self, *, source_id: str = "", search: str = "", severity: str = "") -> int:
+    def count_events(self, *, source_id: str = "", search: str = "", severity: str = "", machine: str = "") -> int:
         filters = []
         params: list[Any] = []
         if source_id:
@@ -253,6 +268,9 @@ LIMIT %s OFFSET %s;
         if severity:
             filters.append("severity = %s")
             params.append(str(severity))
+        if machine:
+            filters.append("machine = %s")
+            params.append(str(machine))
         if search:
             filters.append(
                 "(description ILIKE %s OR raw_line ILIKE %s OR metadata_json::text ILIKE %s OR stacktrace ILIKE %s)"
