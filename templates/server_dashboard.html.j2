@@ -220,6 +220,7 @@
     </label>
     <button type="button" id="clearSearchBtn">Clear</button>
     <button type="button" id="refreshBtn" class="primary">Refresh now</button>
+    <button type="button" id="forceClaimBtn" class="warn">Force workers to claim</button>
     <button type="button" id="toggleAutoRefreshBtn" aria-pressed="false">Pause auto-refresh</button>
     <button type="button" id="downloadDiagnosticsBtn">Download diagnostics</button>
     <span id="perfStats" class="muted">Cache: waiting. Network: waiting.</span>
@@ -254,6 +255,10 @@
   <section class="section" aria-labelledby="workflow-heading">
     <div class="section-header"><h2 id="workflow-heading">Running Workflow Details</h2><span class="section-count" data-count-for="workflowRows">Loading</span></div>
     <div class="table-wrap"><table id="workflowTable"><thead><tr><th>Domain</th><th>Running Tasks</th><th>Pending Tasks</th><th>Failed Tasks</th><th>Active Stages</th><th>Workflow IDs</th></tr></thead><tbody id="workflowRows"><tr><td colspan="6">Loading...</td></tr></tbody></table></div>
+  </section>
+  <section class="section" aria-labelledby="tasks-heading">
+    <div class="section-header"><h2 id="tasks-heading">Task Queue Monitor</h2><span class="section-count" data-count-for="taskMonitorRows">Loading</span></div>
+    <div class="table-wrap"><table id="taskMonitorTable"><thead><tr><th>Workflow</th><th>Domain</th><th>Stage</th><th>Status</th><th>Worker</th><th>Attempts</th><th>Updated</th><th>Reason / Error</th></tr></thead><tbody id="taskMonitorRows"><tr><td colspan="8">Loading...</td></tr></tbody></table></div>
   </section>
   <section class="section" aria-labelledby="observability-heading">
     <div class="section-header"><h2 id="observability-heading">Coordinator Observability</h2><span class="section-count" data-count-for="observabilityRows">Loading</span></div>
@@ -359,6 +364,7 @@
       if (rows.logRows) setRows("logRows", rows.logRows, 5);
       if (rows.pluginWorkerRows) setRows("pluginWorkerRows", rows.pluginWorkerRows, 10);
       if (rows.workflowRows) setRows("workflowRows", rows.workflowRows, 6);
+      if (rows.taskMonitorRows) setRows("taskMonitorRows", rows.taskMonitorRows, 8);
       if (rows.observabilityRows) setRows("observabilityRows", rows.observabilityRows, 2);
       if (rows.logSourceRows) setRows("logSourceRows", rows.logSourceRows, 4);
       if (snapshot.cardsHtml) {
@@ -537,6 +543,7 @@
           authJson("/api/coord/log-events?source_id=__all__&limit=100&offset=0&sort_dir=desc"),
           authJson("/api/coord/workers?stale_after_seconds=180"),
           authJson("/api/coord/workflow-snapshot?limit=2000"),
+          authJson("/api/coord/stage-tasks?limit=1500"),
           authJson("/api/coord/log-sources"),
           authJson("/api/coord/observability/summary"),
         ]);
@@ -546,8 +553,9 @@
         const logs = settledValue(results[3], {});
         const workers = settledValue(results[4], {});
         const workflows = settledValue(results[5], {});
-        const logSources = settledValue(results[6], {});
-        const observability = settledValue(results[7], {});
+        const taskMonitor = settledValue(results[6], {});
+        const logSources = settledValue(results[7], {});
+        const observability = settledValue(results[8], {});
         setDbTiming(performance.now() - startedAt);
 
         const failedSources = [
@@ -557,8 +565,9 @@
           ["log-events", settledError(results[3])],
           ["workers", settledError(results[4])],
           ["workflow-snapshot", settledError(results[5])],
-          ["log-sources", settledError(results[6])],
-          ["observability-summary", settledError(results[7])],
+          ["stage-tasks", settledError(results[6])],
+          ["log-sources", settledError(results[7])],
+          ["observability-summary", settledError(results[8])],
         ].filter((item) => item[1]);
 
         const vmRows = asArray(docker.ec2_instances && docker.ec2_instances.instances).map((r) =>
@@ -635,6 +644,11 @@
         }
         setRows("workflowRows", runningWorkflowRows.join(""), 6);
 
+        const taskMonitorRows = asArray(taskMonitor.items).map((task) =>
+          `<tr><td>${esc(task.workflow_id || "")}</td><td>${esc(task.root_domain || "")}</td><td>${esc(task.stage || "")}</td><td>${statusPill(task.status || "")}</td><td>${esc(task.worker_id || "")}</td><td>${esc(task.attempt_count || 0)}</td><td>${esc(est(task.updated_at_utc || task.heartbeat_at_utc || task.created_at_utc || ""))}</td><td>${esc(task.error || "")}</td></tr>`
+        ).join("");
+        setRows("taskMonitorRows", taskMonitorRows, 8);
+
         const logSourceRows = asArray(logSources.sources).map((s) => {
           const sourceId = String(s.source_id || "");
           const detailsHref = `/view-logs#source=${encodeURIComponent(sourceId)}`;
@@ -688,6 +702,7 @@
             logRows,
             pluginWorkerRows,
             workflowRows: runningWorkflowRows.join(""),
+            taskMonitorRows,
             observabilityRows,
             logSourceRows,
           },
@@ -725,6 +740,27 @@
         showLoadError(error && error.message ? error.message : String(error || "diagnostics download failed"));
       }
     }
+    async function forceWorkersToClaimNow() {
+      const status = document.getElementById("statusText");
+      const btn = document.getElementById("forceClaimBtn");
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = "Forcing worker claim attempts...";
+      try {
+        const payload = await authJson("/api/coord/workers/force-claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lease_seconds: 60 }),
+        });
+        await refreshDashboard({ silent: true });
+        if (status) {
+          status.textContent = `Force claim complete: ${Number(payload.claimed_total || 0)} claimed; ${Number(payload.workers_considered || 0)} workers evaluated.`;
+        }
+      } catch (error) {
+        showLoadError(error && error.message ? error.message : String(error || "force claim failed"));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
     const debouncedSearch = debounce(applySearch, 120);
     document.getElementById("globalSearch").addEventListener("input", debouncedSearch);
     document.getElementById("clearSearchBtn").addEventListener("click", () => {
@@ -734,6 +770,7 @@
       input && input.focus();
     });
     document.getElementById("refreshBtn").addEventListener("click", () => refreshDashboard());
+    document.getElementById("forceClaimBtn").addEventListener("click", () => forceWorkersToClaimNow());
     document.getElementById("downloadDiagnosticsBtn").addEventListener("click", downloadDiagnosticsData);
     document.getElementById("toggleAutoRefreshBtn").addEventListener("click", (event) => {
       event.preventDefault();
