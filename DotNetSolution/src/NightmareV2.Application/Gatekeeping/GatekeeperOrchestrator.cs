@@ -1,5 +1,6 @@
 using MassTransit;
 using Microsoft.Extensions.Logging;
+using NightmareV2.Application.Workers;
 using NightmareV2.Contracts;
 using NightmareV2.Contracts.Events;
 
@@ -14,12 +15,19 @@ public sealed class GatekeeperOrchestrator(
     ITargetScopeEvaluator scope,
     IAssetPersistence persistence,
     IPublishEndpoint publish,
+    IWorkerToggleReader workerToggles,
     ILogger<GatekeeperOrchestrator> logger)
 {
     public async Task ProcessAsync(AssetDiscovered message, CancellationToken cancellationToken = default)
     {
         if (message.AdmissionStage != AssetAdmissionStage.Raw)
             return;
+
+        if (!await workerToggles.IsWorkerEnabledAsync(WorkerKeys.Gatekeeper, cancellationToken).ConfigureAwait(false))
+        {
+            logger.LogDebug("Gatekeeper disabled; skipping Raw {Raw}", message.RawValue);
+            return;
+        }
 
         if (message.Depth > message.GlobalMaxDepth)
         {
@@ -52,7 +60,8 @@ public sealed class GatekeeperOrchestrator(
 
             await PublishIndexedAsync(message, canonical, assetId, cancellationToken).ConfigureAwait(false);
 
-            if (message.Kind == AssetKind.IpAddress)
+            if (message.Kind == AssetKind.IpAddress
+                && await workerToggles.IsWorkerEnabledAsync(WorkerKeys.PortScan, cancellationToken).ConfigureAwait(false))
             {
                 await publish.Publish(
                         new PortScanRequested(

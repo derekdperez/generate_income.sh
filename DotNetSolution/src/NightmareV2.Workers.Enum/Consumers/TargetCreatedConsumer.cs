@@ -13,8 +13,11 @@ public sealed class TargetCreatedConsumer(ILogger<TargetCreatedConsumer> logger,
 {
     public async Task Consume(ConsumeContext<TargetCreated> context)
     {
-        while (!await toggles.IsWorkerEnabledAsync(WorkerKeys.Enumeration, context.CancellationToken).ConfigureAwait(false))
-            await Task.Delay(500, context.CancellationToken).ConfigureAwait(false);
+        if (!await toggles.IsWorkerEnabledAsync(WorkerKeys.Enumeration, context.CancellationToken).ConfigureAwait(false))
+        {
+            logger.LogDebug("Enumeration disabled; skipping target {TargetId}", context.Message.TargetId);
+            return;
+        }
 
         var m = context.Message;
         logger.LogInformation("Enumeration starting for {Domain} target {TargetId}", m.RootDomain, m.TargetId);

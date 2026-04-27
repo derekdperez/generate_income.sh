@@ -27,8 +27,11 @@ public sealed class SpiderAssetDiscoveredConsumer(
 
     public async Task Consume(ConsumeContext<AssetDiscovered> context)
     {
-        while (!await workerToggles.IsWorkerEnabledAsync(WorkerKeys.Spider, context.CancellationToken).ConfigureAwait(false))
-            await Task.Delay(500, context.CancellationToken).ConfigureAwait(false);
+        if (!await workerToggles.IsWorkerEnabledAsync(WorkerKeys.Spider, context.CancellationToken).ConfigureAwait(false))
+        {
+            logger.LogDebug("Spider disabled; skipping indexed asset {AssetId}", context.Message.AssetId);
+            return;
+        }
 
         var m = context.Message;
         if (m.AdmissionStage != AssetAdmissionStage.Indexed || m.AssetId is not { } assetId)

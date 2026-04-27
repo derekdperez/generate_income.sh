@@ -7,7 +7,7 @@
 <PageTitle>Operations · Nightmare v2</PageTitle>
 
 <h1>Operations</h1>
-<p class="muted">Live bus shows recent publishes. History includes publishes and consumes as each host records them. Start/Stop toggles are read by workers between messages (in-flight work still completes).</p>
+<p class="muted">Live bus shows recent publishes. History includes publishes and consumes as each host records them. Toggles are checked at the start of each message: disabling <strong>Gatekeeper</strong> skips Raw admissions (no Indexed fan-out); disabling <strong>Spider</strong> / <strong>Enum</strong> / <strong>PortScan</strong> skips that worker’s step for that message (already-running HTTP on one message may still finish).</p>
 
 <section class="panel">
     <h2>Workers</h2>

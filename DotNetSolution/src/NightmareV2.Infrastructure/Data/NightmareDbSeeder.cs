@@ -8,14 +8,26 @@ public static class NightmareDbSeeder
 {
     public static async Task SeedWorkerSwitchesAsync(NightmareDbContext db, CancellationToken cancellationToken = default)
     {
-        if (await db.WorkerSwitches.AnyAsync(cancellationToken).ConfigureAwait(false))
-            return;
-
         var now = DateTimeOffset.UtcNow;
-        db.WorkerSwitches.AddRange(
-            new WorkerSwitch { WorkerKey = WorkerKeys.Spider, IsEnabled = true, UpdatedAtUtc = now },
-            new WorkerSwitch { WorkerKey = WorkerKeys.Enumeration, IsEnabled = true, UpdatedAtUtc = now },
-            new WorkerSwitch { WorkerKey = WorkerKeys.PortScan, IsEnabled = true, UpdatedAtUtc = now });
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        var existing = await db.WorkerSwitches
+            .Select(w => w.WorkerKey)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var required = new[]
+        {
+            WorkerKeys.Gatekeeper,
+            WorkerKeys.Spider,
+            WorkerKeys.Enumeration,
+            WorkerKeys.PortScan,
+        };
+        foreach (var key in required)
+        {
+            if (existing.Contains(key))
+                continue;
+            db.WorkerSwitches.Add(new WorkerSwitch { WorkerKey = key, IsEnabled = true, UpdatedAtUtc = now });
+        }
+
+        if (db.ChangeTracker.HasChanges())
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 }

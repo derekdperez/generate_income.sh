@@ -1,12 +1,18 @@
 using System.Text.Json;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NightmareV2.Domain.Entities;
 using NightmareV2.Infrastructure.Data;
 
 namespace NightmareV2.Infrastructure.Messaging;
 
-public sealed class BusJournalPublishObserver(IServiceScopeFactory scopeFactory) : IPublishObserver
+/// <summary>
+/// Records publishes to <c>bus_journal</c>. Must not throw into MassTransit; scopes must live until <see cref="DbContext.SaveChangesAsync"/> completes.
+/// </summary>
+public sealed class BusJournalPublishObserver(
+    IServiceScopeFactory scopeFactory,
+    ILogger<BusJournalPublishObserver> logger) : IPublishObserver
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -22,20 +28,27 @@ public sealed class BusJournalPublishObserver(IServiceScopeFactory scopeFactory)
         where T : class =>
         Task.CompletedTask;
 
-    private Task WriteAsync(string direction, string messageType, string payloadJson, CancellationToken ct)
+    private async Task WriteAsync(string direction, string messageType, string payloadJson, CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
-        db.BusJournal.Add(
-            new BusJournalEntry
-            {
-                Direction = direction,
-                MessageType = messageType,
-                ConsumerType = null,
-                PayloadJson = Truncate(payloadJson, 24_000),
-                OccurredAtUtc = DateTimeOffset.UtcNow,
-            });
-        return db.SaveChangesAsync(ct);
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
+            db.BusJournal.Add(
+                new BusJournalEntry
+                {
+                    Direction = direction,
+                    MessageType = messageType,
+                    ConsumerType = null,
+                    PayloadJson = Truncate(payloadJson, 24_000),
+                    OccurredAtUtc = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Bus journal skipped for {Direction} {MessageType}", direction, messageType);
+        }
     }
 
     private static string Json<T>(T message) where T : class =>
@@ -45,7 +58,12 @@ public sealed class BusJournalPublishObserver(IServiceScopeFactory scopeFactory)
         s.Length <= max ? s : s[..max] + "…";
 }
 
-public sealed class BusJournalConsumeObserver(IServiceScopeFactory scopeFactory) : IConsumeObserver
+/// <summary>
+/// Records consumes to <c>bus_journal</c>. Same lifetime rules as <see cref="BusJournalPublishObserver"/>.
+/// </summary>
+public sealed class BusJournalConsumeObserver(
+    IServiceScopeFactory scopeFactory,
+    ILogger<BusJournalConsumeObserver> logger) : IConsumeObserver
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -67,20 +85,27 @@ public sealed class BusJournalConsumeObserver(IServiceScopeFactory scopeFactory)
 
     public Task PreConsume(ConsumeContext context) => Task.CompletedTask;
 
-    private Task WriteAsync(string direction, string messageType, object message, string? consumerType, CancellationToken ct)
+    private async Task WriteAsync(string direction, string messageType, object message, string? consumerType, CancellationToken ct)
     {
-        using var scope = scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
-        db.BusJournal.Add(
-            new BusJournalEntry
-            {
-                Direction = direction,
-                MessageType = messageType,
-                ConsumerType = consumerType,
-                PayloadJson = Truncate(Json(message), 24_000),
-                OccurredAtUtc = DateTimeOffset.UtcNow,
-            });
-        return db.SaveChangesAsync(ct);
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
+            db.BusJournal.Add(
+                new BusJournalEntry
+                {
+                    Direction = direction,
+                    MessageType = messageType,
+                    ConsumerType = consumerType,
+                    PayloadJson = Truncate(Json(message), 24_000),
+                    OccurredAtUtc = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Bus journal skipped for {Direction} {MessageType}", direction, messageType);
+        }
     }
 
     private static string Json(object message) =>
