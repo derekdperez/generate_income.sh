@@ -7,7 +7,7 @@ import asyncio
 import base64
 import json
 import re
-from time import perf_counter
+from time import perf_counter, sleep
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1024,6 +1024,26 @@ def create_app(*, coordinator_store: CoordinatorStore | None = None, coordinator
                     root_domains=root_domains,
                     plugins=plugin_names,
                 )
+        if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
+            for _ in range(6):
+                sleep(0.05)
+                persisted_stage_task_rows_plugin_filtered = store.count_stage_tasks(
+                    workflow_id=workflow_id,
+                    root_domains=root_domains,
+                    plugins=plugin_names,
+                )
+                persisted_stage_task_rows = store.count_stage_tasks(
+                    workflow_id=workflow_id,
+                    root_domains=root_domains,
+                    plugins=[],
+                )
+                persisted_stage_task_rows_any_workflow = store.count_stage_tasks(
+                    workflow_id="",
+                    root_domains=root_domains,
+                    plugins=plugin_names,
+                )
+                if persisted_stage_task_rows > 0 or persisted_stage_task_rows_any_workflow > 0:
+                    break
         if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0 and persisted_stage_task_rows_any_workflow > 0:
             persisted_stage_task_rows = int(persisted_stage_task_rows_any_workflow)
         if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:

@@ -7288,6 +7288,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         root_domains=root_domains,
                         plugins=runnable_plugin_names,
                     )
+            if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:
+                for _ in range(6):
+                    time.sleep(0.05)
+                    persisted_stage_task_rows_plugin_filtered = self.coordinator_store.count_stage_tasks(
+                        workflow_id=workflow_id,
+                        root_domains=root_domains,
+                        plugins=runnable_plugin_names,
+                    )
+                    persisted_stage_task_rows = self.coordinator_store.count_stage_tasks(
+                        workflow_id=workflow_id,
+                        root_domains=root_domains,
+                        plugins=[],
+                    )
+                    persisted_stage_task_rows_any_workflow = self.coordinator_store.count_stage_tasks(
+                        workflow_id="",
+                        root_domains=root_domains,
+                        plugins=runnable_plugin_names,
+                    )
+                    if persisted_stage_task_rows > 0 or persisted_stage_task_rows_any_workflow > 0:
+                        break
             if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0 and persisted_stage_task_rows_any_workflow > 0:
                 persisted_stage_task_rows = int(persisted_stage_task_rows_any_workflow)
             if counts["scheduled"] > 0 and persisted_stage_task_rows <= 0:

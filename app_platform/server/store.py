@@ -2291,12 +2291,18 @@ WHERE root_domain = %s;
         if widf:
             where_sql.append("workflow_id = %s")
             params.append(widf)
+        # Use expanded IN (...) instead of ``= ANY(%s)`` with a Python list.
+        # Some psycopg / pool / proxy combinations adapted ``ANY`` parameters in a
+        # way that matched no rows while ``workflow.task.created`` events (same
+        # INSERT transaction, same DB) were already visible in coordinator_recent_events.
         if domains:
-            where_sql.append("root_domain = ANY(%s)")
-            params.append(domains)
+            domain_ph = ", ".join(["%s"] * len(domains))
+            where_sql.append(f"root_domain IN ({domain_ph})")
+            params.extend(domains)
         if stages:
-            where_sql.append("stage = ANY(%s)")
-            params.append(stages)
+            stage_ph = ", ".join(["%s"] * len(stages))
+            where_sql.append(f"stage IN ({stage_ph})")
+            params.extend(stages)
         query = f"SELECT COUNT(*) FROM coordinator_stage_tasks WHERE {' AND '.join(where_sql)};"
         with self._connect() as conn:
             with conn.cursor() as cur:
