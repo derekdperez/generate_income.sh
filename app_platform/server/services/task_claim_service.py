@@ -161,6 +161,18 @@ RETURNING workflow_id, root_domain, stage, status, worker_id, attempt_count, lea
                 self._cleanup_orphaned_leases_cur(cur)
                 cur.execute(candidates_sql, (allowlist or None, allowlist or None, bool(bypass_allowlist)))
                 rows = cur.fetchall()
+                if rows:
+                    self._record_system_event(
+                        "workflow.task.claim_candidates",
+                        f"worker:{wid}",
+                        {
+                            "source": "coordinator_store.try_claim_stage_with_resources",
+                            "worker_id": wid,
+                            "candidate_count": int(len(rows)),
+                            "allowlist": allowlist,
+                            "allowlist_bypassed": bool(bypass_allowlist),
+                        },
+                    )
                 skipped_due_to_prereq = 0
                 skipped_due_to_conflict = 0
                 for row in rows:
@@ -213,15 +225,20 @@ WHERE workflow_id = %s AND root_domain = %s AND stage = %s;
                         continue
                     lease_key = self._stage_lease_key(row_map)
                     cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s));", (f"{row_map['root_domain']}:{lease_key}",))
-                    if self._resource_conflict_exists(
-                        cur,
-                        row_map["root_domain"],
-                        lease_key,
-                        row_map["access_mode"],
-                        row_map["max_parallelism"],
-                    ):
-                        skipped_due_to_conflict += 1
-                        continue
+                    stage_name = str(row_map["stage"] or "").strip().lower()
+                    is_bootstrap_recon = stage_name == "recon_subdomain_enumeration" or stage_name.startswith(
+                        "recon_subdomain_enumeration__iter_"
+                    )
+                    if not is_bootstrap_recon:
+                        if self._resource_conflict_exists(
+                            cur,
+                            row_map["root_domain"],
+                            lease_key,
+                            row_map["access_mode"],
+                            row_map["max_parallelism"],
+                        ):
+                            skipped_due_to_conflict += 1
+                            continue
                     cur.execute(update_sql, (wid, lease, row_map["workflow_id"], row_map["root_domain"], row_map["stage"]))
                     updated = cur.fetchone()
                     if updated is None:
@@ -308,6 +325,11 @@ ON CONFLICT (task_id, attempt_number) DO NOTHING;
                         "worker_id": wid,
                         "ready_total": int(ready_total),
                         "allowlist": allowlist,
+                        "possible_reasons": [
+                            "preconditions_demotion",
+                            "resource_conflict",
+                            "stale_lock_or_lease",
+                        ],
                     },
                 )
             self._telemetry.incr("coordinator.workflow.claim.empty", tags={"worker_id": wid})
