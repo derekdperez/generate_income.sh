@@ -24,7 +24,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+$dockerExe = $null
+if (Get-Command docker.exe -ErrorAction SilentlyContinue) {
+  $dockerExe = (Get-Command docker.exe).Source
+}
+elseif (Get-Command docker -ErrorAction SilentlyContinue) {
+  $dockerExe = (Get-Command docker).Source
+}
+else {
   Write-Error "Docker is not on PATH. Install Docker Desktop for Windows."
 }
 
@@ -36,37 +43,56 @@ $Root = (Resolve-Path (Join-Path $ScriptRoot "..")).Path
 Set-Location $Root
 
 function Invoke-NightmareCompose {
-  param([Parameter(ValueFromRemainingArguments = $true)][string[]] $ComposeArgs)
-  docker compose version *>$null
-  $composeV2 = ($LASTEXITCODE -eq 0)
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]] $CommandArgs
+  )
 
-  if ($composeV2) {
-    & docker compose -f $ComposeFile @ComposeArgs
+  $useComposeV2 = $false
+  & $dockerExe @("compose", "version") *>$null
+  if ($LASTEXITCODE -eq 0) {
+    $useComposeV2 = $true
+  }
+
+  if ($useComposeV2) {
+    $all = @("compose", "-f", $ComposeFile) + $CommandArgs
+    & $dockerExe @all
+  }
+  elseif (Get-Command docker-compose.exe -ErrorAction SilentlyContinue) {
+    $dc = (Get-Command docker-compose.exe).Source
+    $all = @("-f", $ComposeFile) + $CommandArgs
+    & $dc @all
   }
   elseif (Get-Command docker-compose -ErrorAction SilentlyContinue) {
-    & docker-compose -f $ComposeFile @ComposeArgs
+    $dc = (Get-Command docker-compose).Source
+    $all = @("-f", $ComposeFile) + $CommandArgs
+    & $dc @all
   }
   else {
     Write-Error "Docker Compose not found. Install Docker Desktop (Compose V2) or docker-compose v1."
+  }
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Docker compose failed (exit code $LASTEXITCODE)."
   }
 }
 
 switch ($Action) {
   "down" {
     Write-Host "Stopping stack in: $Root"
-    Invoke-NightmareCompose @("down", "--remove-orphans")
+    Invoke-NightmareCompose -CommandArgs @("down", "--remove-orphans")
     Write-Host "Stopped."
   }
   "logs" {
     Write-Host "Following logs (Ctrl+C stops tail only). Project: $Root"
-    Invoke-NightmareCompose @("logs", "-f")
+    Invoke-NightmareCompose -CommandArgs @("logs", "-f")
   }
   "ps" {
-    Invoke-NightmareCompose @("ps")
+    Invoke-NightmareCompose -CommandArgs @("ps")
   }
   default {
     Write-Host "Building and starting stack from: $Root"
-    Invoke-NightmareCompose @("up", "-d", "--build", "--remove-orphans")
+    Invoke-NightmareCompose -CommandArgs @("up", "-d", "--build", "--remove-orphans")
     Write-Host ""
     Write-Host "Stack is up. URLs:"
     Write-Host "  Command Center   http://localhost:8080/"
