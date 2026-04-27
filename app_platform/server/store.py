@@ -540,16 +540,23 @@ class CoordinatorStore:
 
     @contextmanager
     def workflow_stage_task_scope(self, workflow_id: str):
-        """Hold the workflow stage-task advisory lock for a multi-call operation."""
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                self._lock_stage_task_scope_cur(cur, workflow_id)
-            try:
-                yield
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+        """Best-effort scope marker for bulk stage-task operations.
+
+        This used to acquire ``pg_advisory_xact_lock`` while keeping a checkout
+        connection in an open transaction for the entire caller (for example the
+        full ``POST /api/coord/workflow/run`` loop).  ``schedule_stage`` opens its
+        own pooled connections and commits independently; holding a separate idle
+        transaction can interact badly with pool sizing, proxies, and read
+        visibility so follow-up ``COUNT`` checks occasionally saw **zero rows**
+        even though ``schedule_stage`` had already committed inserts.
+
+        Row-level ``SELECT ... FOR UPDATE`` inside ``schedule_stage`` already
+        serializes updates for the same ``(workflow_id, root_domain, stage)``
+        primary key, so the cross-request advisory lock is not required for
+        correctness of persistence checks.
+        """
+        _ = workflow_id
+        yield
 
     def close(self) -> None:
         try:
@@ -5820,7 +5827,14 @@ WHERE workflow_id = %s
     ) -> list[dict[str, Any]]:
         widf = str(workflow_id or "").strip().lower()
         requested = max(1, min(100, int(limit or 20)))
-        filters = ["event_type IN ('workflow.task.enqueued', 'workflow.task.reset', 'workflow.task.control')"]
+        filters = [
+            "event_type IN ("
+            "'workflow.task.created', "
+            "'workflow.task.enqueued', "
+            "'workflow.task.reset', "
+            "'workflow.task.control'"
+            ")"
+        ]
         params: list[Any] = []
         if widf:
             filters.append("(aggregate_key LIKE %s OR LOWER(payload_json::text) LIKE %s)")
