@@ -1,7 +1,6 @@
 @page "/ops"
 @rendermode InteractiveServer
 @using System.Net.Http.Json
-@using NightmareV2.CommandCenter.DataMaintenance
 @using NightmareV2.CommandCenter.Models
 @using static Microsoft.AspNetCore.Components.QuickGrid.SortDirection
 @implements IDisposable
@@ -10,359 +9,52 @@
 <PageTitle>Operations · Nightmare v2</PageTitle>
 
 <h1>Operations</h1>
-<p class="muted">Live bus shows recent publishes. History includes publishes and consumes as each host records them. Toggles are checked at the start of each message: disabling <strong>Gatekeeper</strong> skips Raw admissions (no Indexed fan-out); disabling <strong>Spider</strong> / <strong>Enum</strong> / <strong>PortScan</strong> skips that worker’s step for that message (already-running HTTP on one message may still finish).</p>
 
 <section class="panel">
     <h2>Data overview</h2>
-    @if (_snapshot is null)
+    @if (_overview is null)
     {
         <p>Loading summary…</p>
     }
     else
     {
-        <p class="muted">Counts are from Postgres (<code>stored_assets</code>, <code>recon_targets</code>, <code>bus_journal</code>, <code>high_value_findings</code>). Rabbit queue depth requires <code>RabbitMq:ManagementUrl</code> (set in Docker compose).</p>
         <div class="stat-grid">
             <div class="stat-card">
-                <div class="stat-label">Total assets</div>
-                <div class="stat-value">@_snapshot.Assets.TotalAssets</div>
+                <div class="stat-label">Total targets</div>
+                <div class="stat-value">@_overview.TotalTargets</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Targets</div>
-                <div class="stat-value">@_snapshot.Assets.TotalTargets</div>
+                <div class="stat-label">Total assets discovered</div>
+                <div class="stat-value">@_overview.TotalAssetsDiscovered</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Assets last 1h / 24h</div>
-                <div class="stat-value">@_snapshot.Assets.AssetsLast1Hour / @_snapshot.Assets.AssetsLast24Hours</div>
+                <div class="stat-label">Total URL assets</div>
+                <div class="stat-value">@_overview.TotalUrlAssets</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Last asset discovered (UTC)</div>
-                <div class="stat-value small">@(_snapshot.Assets.LastAssetDiscoveredUtc is { } la ? la.UtcDateTime.ToString("O") : "—")</div>
+                <div class="stat-label">URLs from fetched pages</div>
+                <div class="stat-value">@_overview.UrlsFromFetchedPages</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Lifecycle · Discovered</div>
-                <div class="stat-value">@_snapshot.Assets.AssetsInDiscoveredState</div>
+                <div class="stat-label">URLs from scripts</div>
+                <div class="stat-value">@_overview.UrlsFromScripts</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Lifecycle · Queued</div>
-                <div class="stat-value" title="Wordlist URL probes (hvpath) waiting on Spider / Gatekeeper">@_snapshot.Assets.AssetsInQueuedState</div>
+                <div class="stat-label">URLs guessed via wordlist</div>
+                <div class="stat-value">@_overview.UrlsGuessedWithWordlist</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Lifecycle · Confirmed</div>
-                <div class="stat-value">@_snapshot.Assets.AssetsConfirmedState</div>
+                <div class="stat-label">Domain with most assets</div>
+                <div class="stat-value small">@(_overview.TopDomainByAssets ?? "—") (@_overview.TopDomainAssetCount)</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Fetchable waiting</div>
-                <div class="stat-value" title="Discovered or Queued URL-like assets not yet Confirmed">@_snapshot.Assets.FetchableAssetsStillDiscovered</div>
-            </div>
-        </div>
-
-        <h3 class="subhead">Asset inventory</h3>
-        <p class="muted">By <code>stored_assets.kind</code> and lifecycle. <strong>Queued</strong> = high-value path wordlist URLs (<code>discovered_by</code> <code>hvpath:*</code>) awaiting Spider. <strong>URLs</strong> = <code>AssetKind.Url</code> only. <strong>HTTP pipeline</strong> adds API, JS, and markdown URL assets Spider may fetch. <strong>HTTP snapshots saved</strong> = rows with non-empty <code>type_details_json</code> (captured request/response from confirmation).</p>
-        <div class="stat-grid">
-            <div class="stat-card">
-                <div class="stat-label">Subdomains</div>
-                <div class="stat-value">@_snapshot.Assets.SubdomainsTotal</div>
+                <div class="stat-label">Domains with 10+ assets</div>
+                <div class="stat-value">@_overview.DomainsWith10OrMoreAssets</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Root domains</div>
-                <div class="stat-value">@_snapshot.Assets.DomainsTotal</div>
+                <div class="stat-label">Domains with 10 or fewer assets</div>
+                <div class="stat-value">@_overview.DomainsWith10OrFewerAssets</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">IP addresses</div>
-                <div class="stat-value">@_snapshot.Assets.IpAddressesTotal</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Open ports</div>
-                <div class="stat-value">@_snapshot.Assets.OpenPortsTotal</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">URLs discovered</div>
-                <div class="stat-value" title="AssetKind.Url">@_snapshot.Assets.UrlsTotal</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">URLs confirmed</div>
-                <div class="stat-value" title="AssetKind.Url with lifecycle Confirmed">@_snapshot.Assets.UrlsConfirmed</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">HTTP pipeline (all)</div>
-                <div class="stat-value" title="Url, ApiEndpoint, JavaScriptFile, MarkdownBody">@_snapshot.Assets.HttpPipelineAssetsTotal</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">HTTP pipeline confirmed</div>
-                <div class="stat-value">@_snapshot.Assets.HttpPipelineAssetsConfirmed</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">HTTP snapshots saved</div>
-                <div class="stat-value" title="Non-empty type_details_json (request/response capture)">@_snapshot.Assets.HttpSnapshotsSaved</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">High-value findings</div>
-                <div class="stat-value">@_snapshot.Assets.HighValueFindingsTotal</div>
-            </div>
-        </div>
-
-        <h3 class="subhead">Bus journal traffic</h3>
-        <NightmareDataGrid TGridItem="TrafficRow"
-                           Items="BusTrafficRows"
-                           ShowToolbar="false"
-                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
-                           HostTabIndex="@(-1)">
-            <PropertyColumn Title="" Property="@(r => r.Label)" Sortable="true" />
-            <PropertyColumn Title="Last 1 hour" Property="@(r => r.LastHour)" Sortable="true" />
-            <PropertyColumn Title="Last 24 hours" Property="@(r => r.Last24Hours)" Sortable="true" />
-        </NightmareDataGrid>
-
-        <h3 class="subhead">Assets by root domain (top @(_snapshot.Assets.TopDomainsByAssetCount.Count))</h3>
-        @if (_snapshot.Assets.TopDomainsByAssetCount.Count == 0)
-        {
-            <p class="muted">No assets yet.</p>
-        }
-        else
-        {
-            <NightmareDataGrid TGridItem="AssetCountByDomainDto"
-                               Items="FilteredTopDomains"
-                               @bind-SearchText="_filterTopDomains"
-                               SearchPlaceholder="Filter by domain…"
-                               ScrollPreset="NightmareDataGridScrollPreset.Compact"
-                               HostTabIndex="@(-1)">
-                <TemplateColumn Title="Root domain" Context="r" SortBy="@SortTopDomainByRoot">
-                    <code class="mono">@r.RootDomain</code>
-                </TemplateColumn>
-                <PropertyColumn Title="Assets" Property="@(r => r.Count)" Sortable="true" />
-            </NightmareDataGrid>
-        }
-
-        <h3 class="subhead">Assets by <code>discovered_by</code></h3>
-        <NightmareDataGrid TGridItem="DiscoveredByCountDto"
-                           Items="FilteredDiscoveredBy"
-                           @bind-SearchText="_filterDiscoveredBy"
-                           SearchPlaceholder="Filter by pipeline key…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
-                           HostTabIndex="@(-1)">
-            <TemplateColumn Title="Discovered by" Context="r" SortBy="@SortDiscoveredByPipeline">
-                <code class="mono">@r.DiscoveredBy</code>
-            </TemplateColumn>
-            <PropertyColumn Title="Count" Property="@(r => r.Count)" Sortable="true" />
-        </NightmareDataGrid>
-    }
-</section>
-
-<section class="panel">
-    <h2>Worker metrics</h2>
-    @if (_snapshot is null)
-    {
-        <p>Loading…</p>
-    }
-    else
-    {
-        <p class="muted">Per-worker bus consumes (journal) correlate to the MassTransit <strong>consumer</strong> CLR type recorded on each consume row. DB “assets attributed” counts rows by <code>discovered_by</code> (Spider uses <code>spider-worker</code>; HighValue workers mostly emit findings or child URLs, so those columns may stay low). Rabbit columns sum queues whose names match that worker (heuristic). <strong>Ready + unacked</strong> approximates messages waiting to be processed (incl. in-flight unacked).</p>
-        <NightmareDataGrid TGridItem="WorkerDetailStatsDto"
-                           Items="FilteredWorkerMetrics"
-                           @bind-SearchText="_filterWorkerMetrics"
-                           SearchPlaceholder="Filter workers, queues, timestamps…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Medium"
-                           HostTabIndex="@(-1)">
-            <PropertyColumn Title="Worker" Property="@(m => m.WorkerKey)" Sortable="true" />
-            <TemplateColumn Title="Bus consumes 1h / 24h" Context="m" SortBy="@SortWorkerBus1h">
-                @m.BusConsumesLast1Hour / @m.BusConsumesLast24Hours
-            </TemplateColumn>
-            <TemplateColumn Title="Last consume (UTC)" Context="m" SortBy="@SortWorkerLastConsume">
-                @(m.LastConsumeUtc is { } t ? t.UtcDateTime.ToString("O") : "—")
-            </TemplateColumn>
-            <TemplateColumn Title="DB assets 1h / 24h" Context="m" SortBy="@SortWorkerDbAssets1h">
-                @m.DbAssetsAttributedLast1Hour / @m.DbAssetsAttributedLast24Hours
-            </TemplateColumn>
-            <TemplateColumn Title="Rabbit ready / unacked" Context="m" SortBy="@SortWorkerRabbitReady">
-                @if (_snapshot.RabbitManagementAvailable)
-                {
-                    <span>@m.RabbitMessagesReady / @m.RabbitMessagesUnacked</span>
-                }
-                else
-                {
-                    <span class="muted">n/a</span>
-                }
-            </TemplateColumn>
-            <TemplateColumn Title="Matched queues" Context="m">
-                @(m.MatchedRabbitQueueNames.Count == 0 ? "—" : string.Join(", ", m.MatchedRabbitQueueNames))
-            </TemplateColumn>
-        </NightmareDataGrid>
-
-        @if (_snapshot.RabbitManagementAvailable && _snapshot.RabbitQueues.Count > 0)
-        {
-            <h3 class="subhead">All Rabbit queues (management API)</h3>
-            <NightmareDataGrid TGridItem="RabbitQueueBriefDto"
-                               Items="FilteredRabbitQueues"
-                               @bind-SearchText="_filterRabbitQueues"
-                               SearchPlaceholder="Filter queue name or worker…"
-                               ScrollPreset="NightmareDataGridScrollPreset.Medium"
-                               Virtualize="true"
-                               ItemSize="40"
-                               ItemKey="@(q => q.Name)"
-                               OverscanCount="5"
-                               HostTabIndex="@(-1)">
-                <TemplateColumn Title="Queue" Context="q" SortBy="@SortRabbitQueueName">
-                    <code class="mono">@q.Name</code>
-                </TemplateColumn>
-                <PropertyColumn Title="Msgs" Property="@(q => q.Messages)" Sortable="true" />
-                <PropertyColumn Title="Ready" Property="@(q => q.MessagesReady)" Sortable="true" />
-                <PropertyColumn Title="Unacked" Property="@(q => q.MessagesUnacknowledged)" Sortable="true" />
-                <PropertyColumn Title="Consumers" Property="@(q => q.Consumers)" Sortable="true" />
-                <PropertyColumn Title="Guess worker" Property="@(q => q.LikelyWorkerKey ?? "")" Sortable="true" />
-            </NightmareDataGrid>
-        }
-        else if (!_snapshot.RabbitManagementAvailable)
-        {
-            <p class="muted">RabbitMQ management URL not configured or unreachable — queue depths hidden. Set <code>RabbitMq:ManagementUrl</code> (e.g. <code>http://rabbitmq:15672</code> in Docker).</p>
-        }
-    }
-</section>
-
-<section class="panel">
-    <h2>Worker activity (from bus journal)</h2>
-    <p class="muted">Each container/process writes consumes to the shared journal with its hostname. <strong>Hot / Recently active</strong> means a message <em>completed</em> on that instance recently — not live in-flight work. <strong>Stale</strong> usually means the container is gone or idle. Unknown consumers appear under <code>Other</code>.</p>
-    @if (_snapshot?.WorkerActivity is null)
-    {
-        <p>Loading activity…</p>
-    }
-    else if (_snapshot.WorkerActivity.Summaries.Count == 0 && _snapshot.WorkerActivity.Instances.Count == 0)
-    {
-        <p>No consume activity recorded in the last 24 hours.</p>
-    }
-    else
-    {
-        <h3 class="subhead">By worker type</h3>
-        <NightmareDataGrid TGridItem="WorkerKindSummaryDto"
-                           Items="FilteredWorkerSummaries"
-                           @bind-SearchText="_filterWorkerSummaries"
-                           SearchPlaceholder="Filter worker or status…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
-                           HostTabIndex="@(-1)">
-            <PropertyColumn Title="Worker" Property="@(s => s.WorkerKey)" Sortable="true" />
-            <TemplateColumn Title="Toggle" Context="s" SortBy="@SortWorkerSummaryToggle">
-                @(s.ToggleEnabled ? "on" : "off")
-            </TemplateColumn>
-            <PropertyColumn Title="Instances (24h)" Property="@(s => s.InstanceCount)" Sortable="true" />
-            <TemplateColumn Title="Last completed (UTC)" Context="s" SortBy="@SortWorkerSummaryLastActivity">
-                @(s.LastActivityUtc is { } t ? t.UtcDateTime.ToString("O") : "—")
-            </TemplateColumn>
-            <PropertyColumn Title="Roll-up status" Property="@(s => s.RollupActivityLabel)" Sortable="true" />
-        </NightmareDataGrid>
-
-        <h3 class="subhead">By host &amp; consumer</h3>
-        @if (_snapshot.WorkerActivity.Instances.Count == 0)
-        {
-            <p class="muted">No per-instance consume rows (journal may only have publishes).</p>
-        }
-        else
-        {
-            <NightmareDataGrid TGridItem="WorkerInstanceActivityDto"
-                               Items="FilteredWorkerInstances"
-                               @bind-SearchText="_filterWorkerInstances"
-                               SearchPlaceholder="Filter host, consumer, payload…"
-                               ScrollPreset="NightmareDataGridScrollPreset.Tall"
-                               Virtualize="true"
-                               ItemSize="40"
-                               ItemKey="@InstanceRowKey"
-                               OverscanCount="5"
-                               HostTabIndex="@(-1)">
-                <PropertyColumn Title="Host" Property="@(i => i.HostName)" Sortable="true" />
-                <PropertyColumn Title="Worker" Property="@(i => i.WorkerKind)" Sortable="true" />
-                <PropertyColumn Title="Consumer" Property="@(i => i.ConsumerShortName)" Sortable="true" />
-                <TemplateColumn Title="Toggle" Context="i" SortBy="@SortInstanceToggle">
-                    @(i.ToggleEnabled is null ? "—" : (i.ToggleEnabled.Value ? "on" : "off"))
-                </TemplateColumn>
-                <PropertyColumn Title="Status" Property="@(i => i.ActivityLabel)" Sortable="true" />
-                <PropertyColumn Title="Last completed (UTC)" Property="@(i => i.LastCompletedAtUtc)" Format="O" Sortable="true" />
-                <PropertyColumn Title="Message type" Property="@(i => i.LastMessageType)" Sortable="true" />
-                <TemplateColumn Title="Last payload (truncated)" Context="i" SortBy="@SortInstancePayload">
-                    <span class="mono">@i.LastPayloadPreview</span>
-                </TemplateColumn>
-            </NightmareDataGrid>
-        }
-    }
-</section>
-
-<section class="panel">
-    <h2>Workers</h2>
-    @if (_snapshot is null)
-    {
-        <p>Loading…</p>
-    }
-    else if (_snapshot.Workers.Count == 0)
-    {
-        <p>No worker switches (seed the database).</p>
-    }
-    else
-    {
-        <NightmareDataGrid TGridItem="WorkerSwitchDto"
-                           Items="FilteredWorkers"
-                           @bind-SearchText="_filterWorkers"
-                           SearchPlaceholder="Filter worker key…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
-                           Pagination="_workersPagination"
-                           Virtualize="false"
-                           HostTabIndex="@(-1)">
-            <PropertyColumn Title="Key" Property="@(w => w.WorkerKey)" Sortable="true" />
-            <TemplateColumn Title="Enabled" Context="w" SortBy="@SortWorkerSwitchEnabled">
-                @(w.IsEnabled ? "yes" : "no")
-            </TemplateColumn>
-            <PropertyColumn Title="Updated (UTC)" Property="@(w => w.UpdatedAtUtc)" Format="u" Sortable="true" />
-            <TemplateColumn Title="Actions" Context="w">
-                <button type="button" disabled="@_busyWorkers" @onclick="@(() => SetWorkerAsync(w.WorkerKey, true))">Start</button>
-                <button type="button" disabled="@_busyWorkers" @onclick="@(() => SetWorkerAsync(w.WorkerKey, false))">Stop</button>
-            </TemplateColumn>
-        </NightmareDataGrid>
-    }
-</section>
-
-<section class="panel">
-    <h2>Database maintenance</h2>
-    @if (_maintenanceStatus is null)
-    {
-        <p class="muted">Maintenance API status not loaded.</p>
-    }
-    else if (!_maintenanceStatus.Enabled)
-    {
-        <p class="muted">Disabled. Set <code>Nightmare:DataMaintenance:Enabled</code> to <code>true</code> in configuration, restart Command Center, then reload this page.</p>
-    }
-    else
-    {
-        <p class="muted">Destructive operations require the exact confirmation phrase shown for each action. If an API key is configured, send it in header <code>X-Nightmare-Maintenance-Key</code> (field below).</p>
-        @if (_maintenanceStatus.ApiKeyConfigured)
-        {
-            <div class="row">
-                <label>Maintenance API key</label>
-                <input type="password" class="ops-filter" style="min-width:16rem" @bind="_maintenanceApiKey" autocomplete="off" />
-            </div>
-        }
-        @if (!string.IsNullOrEmpty(_maintenanceMessage))
-        {
-            <p class="muted">@_maintenanceMessage</p>
-        }
-        <div class="row" style="flex-wrap:wrap; gap:0.5rem; align-items:flex-end; margin-top:0.75rem">
-            <div>
-                <label><span class="muted">Phrase:</span> <code>@DataMaintenanceEndpoints.PhraseClearAllTargets</code></label>
-                <input type="text" class="ops-filter" style="min-width:14rem" @bind="_phraseClearTargets" placeholder="Type phrase exactly" disabled="@_maintenanceBusy" />
-            </div>
-            <button type="button" disabled="@_maintenanceBusy" @onclick="ClearAllTargetsAsync">Clear all targets</button>
-        </div>
-        <div class="row" style="flex-wrap:wrap; gap:0.5rem; align-items:flex-end; margin-top:0.75rem">
-            <div>
-                <label><span class="muted">Phrase:</span> <code>@DataMaintenanceEndpoints.PhraseClearAllAssets</code></label>
-                <input type="text" class="ops-filter" style="min-width:14rem" @bind="_phraseClearAssets" placeholder="Type phrase exactly" disabled="@_maintenanceBusy" />
-            </div>
-            <button type="button" disabled="@_maintenanceBusy" @onclick="ClearAllAssetsAsync">Clear all assets</button>
-        </div>
-        <div class="row" style="flex-wrap:wrap; gap:0.5rem; align-items:flex-end; margin-top:0.75rem">
-            <div>
-                <label><span class="muted">Root domain</span></label>
-                <input type="text" class="ops-filter" style="min-width:12rem" @bind="_phraseClearDomainRoot" placeholder="example.com" disabled="@_maintenanceBusy" />
-            </div>
-            <div>
-                <label><span class="muted">Phrase:</span> <code>@DataMaintenanceEndpoints.PhraseClearAssetsForDomain</code></label>
-                <input type="text" class="ops-filter" style="min-width:18rem" @bind="_phraseClearDomain" placeholder="Type phrase exactly" disabled="@_maintenanceBusy" />
-            </div>
-            <button type="button" disabled="@_maintenanceBusy" @onclick="ClearAssetsForDomainAsync">Clear assets for domain</button>
         </div>
     }
 </section>
@@ -402,64 +94,13 @@
     </NightmareDataGrid>
 </section>
 
-<section class="panel">
-    <h2>Event bus (live — recent publishes)</h2>
-    <NightmareDataGrid TGridItem="BusJournalRowDto"
-                       Items="FilteredLiveBus"
-                       @bind-SearchText="_filterLiveBus"
-                       SearchPlaceholder="Filter type, host, payload…"
-                       ScrollPreset="NightmareDataGridScrollPreset.Tall"
-                       Virtualize="true"
-                       ItemSize="40"
-                       ItemKey="@(e => e.Id)"
-                       OverscanCount="5"
-                       HostTabIndex="@(-1)">
-        <PropertyColumn Title="Time (UTC)" Property="@(e => e.OccurredAtUtc)" Format="O" Sortable="true" IsDefaultSortColumn="true" InitialSortDirection="Descending" />
-        <PropertyColumn Title="Type" Property="@(e => e.MessageType)" Sortable="true" />
-        <PropertyColumn Title="Host" Property="@(e => e.HostName)" Sortable="true" />
-        <PropertyColumn Title="Payload (truncated)" Property="@(e => e.PayloadJson)" Sortable="true" />
-    </NightmareDataGrid>
-</section>
-
-<section class="panel">
-    <h2>Historic bus journal</h2>
-    <NightmareDataGrid TGridItem="BusJournalRowDto"
-                       Items="FilteredHistoryBus"
-                       @bind-SearchText="_filterHistoryBus"
-                       SearchPlaceholder="Filter id, direction, type, host, payload…"
-                       ScrollPreset="NightmareDataGridScrollPreset.Tall"
-                       Virtualize="true"
-                       ItemSize="40"
-                       ItemKey="@(e => e.Id)"
-                       OverscanCount="5"
-                       HostTabIndex="@(-1)">
-        <PropertyColumn Title="Id" Property="@(e => e.Id)" Sortable="true" IsDefaultSortColumn="true" InitialSortDirection="Descending" />
-        <PropertyColumn Title="Dir" Property="@(e => e.Direction)" Sortable="true" />
-        <PropertyColumn Title="Time (UTC)" Property="@(e => e.OccurredAtUtc)" Format="O" Sortable="true" />
-        <PropertyColumn Title="Type" Property="@(e => e.MessageType)" Sortable="true" />
-        <PropertyColumn Title="Consumer" Property="@(e => e.ConsumerType)" Sortable="true" />
-        <PropertyColumn Title="Host" Property="@(e => e.HostName)" Sortable="true" />
-        <PropertyColumn Title="Payload (truncated)" Property="@(e => e.PayloadJson)" Sortable="true" />
-    </NightmareDataGrid>
-</section>
-
 @code {
     private readonly CancellationTokenSource _pollCts = new();
     private readonly List<TargetSummary> _targets = [];
     private readonly List<AssetGridRowDto> _assets = [];
-    private readonly List<BusJournalRowDto> _liveBus = [];
-    private readonly List<BusJournalRowDto> _historyBus = [];
-    private OpsSnapshotDto? _snapshot;
-    private MaintenanceStatusDto? _maintenanceStatus;
-    private string _maintenanceApiKey = "";
-    private string _phraseClearTargets = "";
-    private string _phraseClearAssets = "";
-    private string _phraseClearDomain = "";
-    private string _phraseClearDomainRoot = "";
-    private string _maintenanceMessage = "";
-    private bool _maintenanceBusy;
+    private OpsOverviewDto? _overview;
     private string _targetFilter = "";
-    private bool _busyWorkers;
+    private string _filterAssets = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -488,37 +129,13 @@
     {
         try
         {
-            var live = await Http.GetFromJsonAsync<List<BusJournalRowDto>>("/api/bus/live?minutes=3&take=120").ConfigureAwait(false);
-            _liveBus.Clear();
-            if (live is not null)
-                _liveBus.AddRange(live);
+            var overview = await Http.GetFromJsonAsync<OpsOverviewDto>("/api/ops/overview").ConfigureAwait(false);
+            if (overview is not null)
+                _overview = overview;
         }
         catch
         {
-            _liveBus.Clear();
-        }
-
-        try
-        {
-            var hist = await Http.GetFromJsonAsync<List<BusJournalRowDto>>("/api/bus/history?take=350").ConfigureAwait(false);
-            _historyBus.Clear();
-            if (hist is not null)
-                _historyBus.AddRange(hist);
-        }
-        catch
-        {
-            _historyBus.Clear();
-        }
-
-        try
-        {
-            var snap = await Http.GetFromJsonAsync<OpsSnapshotDto>("/api/ops/snapshot").ConfigureAwait(false);
-            if (snap is not null)
-                _snapshot = snap;
-        }
-        catch
-        {
-            // keep last good snapshot
+            // keep last good overview
         }
     }
 
@@ -538,14 +155,6 @@
 
         await ReloadAssetsAsync().ConfigureAwait(false);
         await ReloadVolatileAsync().ConfigureAwait(false);
-        try
-        {
-            _maintenanceStatus = await Http.GetFromJsonAsync<MaintenanceStatusDto>("/api/maintenance/status").ConfigureAwait(false);
-        }
-        catch
-        {
-            _maintenanceStatus = null;
-        }
     }
 
     private async Task ReloadAssetsAsync()
@@ -561,104 +170,6 @@
         catch
         {
             _assets.Clear();
-        }
-    }
-
-    private async Task<HttpResponseMessage> MaintenancePostAsync<T>(string relativeUri, T body)
-    {
-        using var msg = new HttpRequestMessage(HttpMethod.Post, relativeUri);
-        var key = _maintenanceApiKey.Trim();
-        if (!string.IsNullOrEmpty(key))
-            msg.Headers.TryAddWithoutValidation("X-Nightmare-Maintenance-Key", key);
-        msg.Content = JsonContent.Create(body);
-        return await Http.SendAsync(msg).ConfigureAwait(false);
-    }
-
-    private async Task ClearAllTargetsAsync()
-    {
-        _maintenanceBusy = true;
-        _maintenanceMessage = "";
-        try
-        {
-            var resp = await MaintenancePostAsync(
-                "/api/maintenance/clear-all-targets",
-                new MaintenancePhraseBody(_phraseClearTargets.Trim())).ConfigureAwait(false);
-            var txt = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                _maintenanceMessage = $"Targets: {(int)resp.StatusCode} — {txt}";
-                return;
-            }
-            _maintenanceMessage = $"Targets: OK — {txt}";
-            await ReloadAllAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            _maintenanceBusy = false;
-        }
-    }
-
-    private async Task ClearAllAssetsAsync()
-    {
-        _maintenanceBusy = true;
-        _maintenanceMessage = "";
-        try
-        {
-            var resp = await MaintenancePostAsync(
-                "/api/maintenance/clear-all-assets",
-                new MaintenancePhraseBody(_phraseClearAssets.Trim())).ConfigureAwait(false);
-            var txt = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                _maintenanceMessage = $"Assets: {(int)resp.StatusCode} — {txt}";
-                return;
-            }
-            _maintenanceMessage = $"Assets: OK — {txt}";
-            await ReloadAllAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            _maintenanceBusy = false;
-        }
-    }
-
-    private async Task ClearAssetsForDomainAsync()
-    {
-        _maintenanceBusy = true;
-        _maintenanceMessage = "";
-        try
-        {
-            var resp = await MaintenancePostAsync(
-                "/api/maintenance/clear-assets-for-domain",
-                new MaintenanceClearDomainBody(_phraseClearDomainRoot.Trim(), _phraseClearDomain.Trim())).ConfigureAwait(false);
-            var txt = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                _maintenanceMessage = $"Domain assets: {(int)resp.StatusCode} — {txt}";
-                return;
-            }
-            _maintenanceMessage = $"Domain assets: OK — {txt}";
-            await ReloadAllAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            _maintenanceBusy = false;
-        }
-    }
-
-    private async Task SetWorkerAsync(string key, bool enabled)
-    {
-        _busyWorkers = true;
-        try
-        {
-            var resp = await Http.PutAsJsonAsync($"/api/workers/{Uri.EscapeDataString(key)}", new WorkerPatchRequest(enabled)).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
-            await ReloadVolatileAsync().ConfigureAwait(false);
-            await InvokeAsync(StateHasChanged).ConfigureAwait(false);
-        }
-        finally
-        {
-            _busyWorkers = false;
         }
     }
 
