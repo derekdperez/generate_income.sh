@@ -5,7 +5,7 @@ namespace NightmareV2.Application.Gatekeeping;
 
 public interface IAssetPersistence
 {
-    /// <summary>Persists a new asset when unique for (target, canonical key). Returns whether a row was inserted.</summary>
+    /// <summary>Persists a new asset when unique for (target, canonical key). Returns whether a row was inserted. If the recon target no longer exists (cleared DB, in-flight messages), returns (default, false) so the gatekeeper can release dedupe and ack without faulting.</summary>
     Task<(Guid AssetId, bool Inserted)> PersistNewAssetAsync(
         AssetDiscovered message,
         CanonicalAsset canonical,

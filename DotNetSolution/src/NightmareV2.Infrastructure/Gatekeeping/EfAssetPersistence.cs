@@ -1,16 +1,21 @@
 using System.Text.Json;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using NightmareV2.Application.Assets;
 using NightmareV2.Application.Gatekeeping;
 using NightmareV2.Contracts;
 using NightmareV2.Contracts.Events;
 using NightmareV2.Domain.Entities;
 using NightmareV2.Infrastructure.Data;
+using Npgsql;
 
 namespace NightmareV2.Infrastructure.Gatekeeping;
 
-public sealed class EfAssetPersistence(NightmareDbContext db, IPublishEndpoint publish) : IAssetPersistence
+public sealed class EfAssetPersistence(
+    NightmareDbContext db,
+    IPublishEndpoint publish,
+    ILogger<EfAssetPersistence> logger) : IAssetPersistence
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -22,6 +27,15 @@ public sealed class EfAssetPersistence(NightmareDbContext db, IPublishEndpoint p
         CanonicalAsset canonical,
         CancellationToken cancellationToken = default)
     {
+        var targetExists = await db.Targets.AsNoTracking()
+            .AnyAsync(t => t.Id == message.TargetId, cancellationToken)
+            .ConfigureAwait(false);
+        if (!targetExists)
+        {
+            logger.LogDebug("Skip asset persist: target {TargetId} not in recon_targets (stale bus message).", message.TargetId);
+            return (Guid.Empty, false);
+        }
+
         var existingId = await db.Assets.AsNoTracking()
             .Where(a => a.TargetId == message.TargetId && a.CanonicalKey == canonical.CanonicalKey)
             .Select(a => (Guid?)a.Id)
@@ -45,7 +59,19 @@ public sealed class EfAssetPersistence(NightmareDbContext db, IPublishEndpoint p
         };
 
         db.Assets.Add(entity);
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException pg
+            && pg.SqlState == PostgresErrorCodes.ForeignKeyViolation
+            && pg.ConstraintName?.Contains("recon_targets", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            db.Entry(entity).State = EntityState.Detached;
+            logger.LogDebug(ex, "Skip asset persist: FK to recon_targets for target {TargetId} (likely deleted during insert).", message.TargetId);
+            return (Guid.Empty, false);
+        }
+
         return (entity.Id, true);
     }
 
