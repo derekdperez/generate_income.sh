@@ -624,7 +624,9 @@ app.MapGet(
         async (NightmareDbContext db, CancellationToken ct) =>
         {
             var totalTargets = await db.Targets.AsNoTracking().LongCountAsync(ct).ConfigureAwait(false);
-            var totalAssets = await db.Assets.AsNoTracking().LongCountAsync(ct).ConfigureAwait(false);
+            var totalAssetsConfirmed = await db.Assets.AsNoTracking()
+                .LongCountAsync(a => a.LifecycleStatus == AssetLifecycleStatus.Confirmed, ct)
+                .ConfigureAwait(false);
             var totalUrls = await db.Assets.AsNoTracking()
                 .LongCountAsync(a => a.Kind == AssetKind.Url, ct)
                 .ConfigureAwait(false);
@@ -670,7 +672,7 @@ app.MapGet(
             return Results.Ok(
                 new OpsOverviewDto(
                     totalTargets,
-                    totalAssets,
+                    totalAssetsConfirmed,
                     totalUrls,
                     urlsFromFetchedPages,
                     urlsFromScripts,

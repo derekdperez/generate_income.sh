@@ -2,8 +2,9 @@ namespace NightmareV2.Domain.Entities;
 
 public static class AssetLifecycleStatus
 {
-    public const string Discovered = "Discovered";
-    /// <summary>URL queued for probe (e.g. high-value path wordlist); not yet confirmed by HTTP.</summary>
+    /// <summary>Accepted and waiting to be requested/probed.</summary>
     public const string Queued = "Queued";
     public const string Confirmed = "Confirmed";
+    /// <summary>Requested but did not exist / fetch failed (e.g. 404 or non-2xx).</summary>
+    public const string NonExistent = "NonExistent";
 }

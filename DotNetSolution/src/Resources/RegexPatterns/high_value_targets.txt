@@ -286,5 +286,13 @@
     "description": "Detect exposed certificate stores or keystore files that may contain signing or TLS material.",
     "output_filename": "android_keystore_or_jks.txt",
     "importance_score": 10
+  },
+  {
+    "name": "test_filter",
+    "scope": "url",
+    "regex": ".*api.*",
+    "description": "Detect any url with /api/ in it.",
+    "output_filename": "test_filter.txt",
+    "importance_score": 10
   }
 ]

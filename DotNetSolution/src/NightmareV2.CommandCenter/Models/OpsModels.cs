@@ -127,7 +127,7 @@ public sealed record OpsSnapshotDto(
 
 public sealed record OpsOverviewDto(
     long TotalTargets,
-    long TotalAssetsDiscovered,
+    long TotalAssetsConfirmed,
     long TotalUrlAssets,
     long UrlsFromFetchedPages,
     long UrlsFromScripts,

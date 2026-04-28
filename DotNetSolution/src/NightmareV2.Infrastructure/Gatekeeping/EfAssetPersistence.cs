@@ -19,9 +19,6 @@ public sealed class EfAssetPersistence(
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
-    /// <summary>DiscoveredBy prefix for high-value path wordlist URL probes (hvpath consumer).</summary>
-    private const string HighValuePathWordlistPrefix = "hvpath:";
-
     public async Task<(Guid AssetId, bool Inserted)> PersistNewAssetAsync(
         AssetDiscovered message,
         CanonicalAsset canonical,
@@ -77,10 +74,7 @@ public sealed class EfAssetPersistence(
 
     private static string ResolveInitialLifecycleStatus(AssetDiscovered message)
     {
-        if (message.Kind == AssetKind.Url
-            && message.DiscoveredBy.StartsWith(HighValuePathWordlistPrefix, StringComparison.OrdinalIgnoreCase))
-            return AssetLifecycleStatus.Queued;
-        return AssetLifecycleStatus.Discovered;
+        return AssetLifecycleStatus.Queued;
     }
 
     public async Task ConfirmUrlAssetAsync(
@@ -117,7 +111,11 @@ public sealed class EfAssetPersistence(
         {
             await db.Assets
                 .Where(a => a.Id == assetId)
-                .ExecuteUpdateAsync(s => s.SetProperty(a => a.TypeDetailsJson, json), cancellationToken)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(a => a.LifecycleStatus, AssetLifecycleStatus.NonExistent)
+                        .SetProperty(a => a.TypeDetailsJson, json),
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
 
