@@ -6,10 +6,10 @@ public enum NightmareDataGridScrollPreset
     /// <summary>No max-height (table grows with content).</summary>
     None,
 
-    Short,
-    Mid,
+    Compact,
+    Medium,
     Tall,
 
     /// <summary>Tall scroll region with fixed row height for virtualized rows.</summary>
-    VirtualScroll,
+    Virtualized,
 }

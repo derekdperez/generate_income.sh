@@ -141,9 +141,9 @@ public partial class Ops
 
     private IQueryable<BusJournalRowDto> FilteredLiveBus =>
         _liveBus.AsQueryable().Where(e =>
-            Matches(e.MessageType, _filterLiveBus)
-            || Matches(e.HostName, _filterLiveBus)
-            || Matches(e.PayloadJson, _filterLiveBus));
+            GridTextFilter.Matches(e.MessageType, _filterLiveBus)
+            || GridTextFilter.Matches(e.HostName, _filterLiveBus)
+            || GridTextFilter.Matches(e.PayloadJson, _filterLiveBus));
 
     private IQueryable<BusJournalRowDto> FilteredHistoryBus =>
         _historyBus.AsQueryable().Where(e =>

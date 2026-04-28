@@ -1,6 +1,9 @@
 @page "/targets"
 @rendermode InteractiveServer
 @using System.Net
+@using Microsoft.AspNetCore.Components.QuickGrid
+@using NightmareV2.CommandCenter.Components.DataGrid
+@using NightmareV2.CommandCenter.Components.DataGrid.Cells
 @using NightmareV2.CommandCenter.Models
 @inject HttpClient Http
 @inject IJSRuntime Js
@@ -61,32 +64,44 @@
     </section>
 }
 
-<h2>Recent targets (virtualized)</h2>
+<h2>Recent targets</h2>
 @if (_rows.Count == 0)
 {
     <p>No targets yet.</p>
 }
 else
 {
-    <div class="scroll tall">
-        <Virtualize Items="_rows" Context="row">
-            <div style="padding:6px 8px; border-bottom:1px solid #eee; display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between">
-                <div>
-                    <strong>@row.RootDomain</strong>
-                    <span class="muted"> — depth @row.GlobalMaxDepth — @row.CreatedAtUtc.UtcDateTime.ToString("u")</span>
-                </div>
-                <div class="row" style="margin:0">
-                    <button type="button" @onclick="() => StartEdit(row)">Edit</button>
-                    <button type="button" @onclick="() => DeleteAsync(row)">Delete</button>
-                </div>
-            </div>
-        </Virtualize>
-    </div>
+    <section class="panel">
+        <NightmareDataGrid TGridItem="TargetSummary"
+                           Items="_rows.AsQueryable()"
+                           @bind-SearchText="_targetSearch"
+                           SearchPlaceholder="Search root domain or id…"
+                           ScrollPreset="NightmareDataGridScrollPreset.Tall"
+                           Virtualize="true"
+                           ItemSize="44"
+                           ItemKey="@(r => r.Id)"
+                           OverscanCount="8"
+                           RowMatches="@TargetRowMatches"
+                           HostTabIndex="@(-1)">
+            <TemplateColumn Title="Root domain" Context="row" SortBy="@SortTargetRoot">
+                <strong><GridCodeCell Text="@row.RootDomain" /></strong>
+            </TemplateColumn>
+            <PropertyColumn Title="Max depth" Property="@(row => row.GlobalMaxDepth)" Sortable="true" />
+            <TemplateColumn Title="Created (UTC)" Context="row" SortBy="@SortTargetCreated">
+                <GridDateCell Value="@row.CreatedAtUtc" />
+            </TemplateColumn>
+            <TemplateColumn Title="Actions" Context="row">
+                <button type="button" @onclick="@(() => StartEdit(row))">Edit</button>
+                <button type="button" @onclick="@(() => DeleteAsync(row))">Delete</button>
+            </TemplateColumn>
+        </NightmareDataGrid>
+    </section>
 }
 
 @code {
     private readonly TargetForm _form = new();
     private readonly List<TargetSummary> _rows = new();
+    private string _targetSearch = "";
     private string? _status;
     private string? _bulkStatus;
     private TargetEditForm? _editing;
@@ -235,6 +250,16 @@ else
         public string RootDomain { get; set; } = "example.com";
         public int GlobalMaxDepth { get; set; } = 12;
     }
+
+    private static readonly GridSort<TargetSummary> SortTargetRoot =
+        GridSort<TargetSummary>.ByAscending(static r => r.RootDomain);
+
+    private static readonly GridSort<TargetSummary> SortTargetCreated =
+        GridSort<TargetSummary>.ByDescending(static r => r.CreatedAtUtc);
+
+    private static bool TargetRowMatches(TargetSummary r, string q) =>
+        GridTextFilter.Matches(r.RootDomain, q)
+        || GridTextFilter.Matches(r.Id.ToString(), q);
 
     private sealed class TargetEditForm
     {

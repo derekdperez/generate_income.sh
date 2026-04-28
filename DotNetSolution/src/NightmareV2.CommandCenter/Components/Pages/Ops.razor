@@ -105,7 +105,7 @@
         <NightmareDataGrid TGridItem="TrafficRow"
                            Items="BusTrafficRows"
                            ShowToolbar="false"
-                           ScrollPreset="NightmareDataGridScrollPreset.Short"
+                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
                            HostTabIndex="@(-1)">
             <PropertyColumn Title="" Property="@(r => r.Label)" Sortable="true" />
             <PropertyColumn Title="Last 1 hour" Property="@(r => r.LastHour)" Sortable="true" />
@@ -123,7 +123,7 @@
                                Items="FilteredTopDomains"
                                @bind-SearchText="_filterTopDomains"
                                SearchPlaceholder="Filter by domain…"
-                               ScrollPreset="NightmareDataGridScrollPreset.Short"
+                               ScrollPreset="NightmareDataGridScrollPreset.Compact"
                                HostTabIndex="@(-1)">
                 <TemplateColumn Title="Root domain" Context="r" SortBy="@SortTopDomainByRoot">
                     <code class="mono">@r.RootDomain</code>
@@ -137,7 +137,7 @@
                            Items="FilteredDiscoveredBy"
                            @bind-SearchText="_filterDiscoveredBy"
                            SearchPlaceholder="Filter by pipeline key…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Short"
+                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
                            HostTabIndex="@(-1)">
             <TemplateColumn Title="Discovered by" Context="r" SortBy="@SortDiscoveredByPipeline">
                 <code class="mono">@r.DiscoveredBy</code>
@@ -160,7 +160,7 @@
                            Items="FilteredWorkerMetrics"
                            @bind-SearchText="_filterWorkerMetrics"
                            SearchPlaceholder="Filter workers, queues, timestamps…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Mid"
+                           ScrollPreset="NightmareDataGridScrollPreset.Medium"
                            HostTabIndex="@(-1)">
             <PropertyColumn Title="Worker" Property="@(m => m.WorkerKey)" Sortable="true" />
             <TemplateColumn Title="Bus consumes 1h / 24h" Context="m" SortBy="@SortWorkerBus1h">
@@ -194,7 +194,7 @@
                                Items="FilteredRabbitQueues"
                                @bind-SearchText="_filterRabbitQueues"
                                SearchPlaceholder="Filter queue name or worker…"
-                               ScrollPreset="NightmareDataGridScrollPreset.Mid"
+                               ScrollPreset="NightmareDataGridScrollPreset.Medium"
                                Virtualize="true"
                                ItemSize="40"
                                ItemKey="@(q => q.Name)"
@@ -235,7 +235,7 @@
                            Items="FilteredWorkerSummaries"
                            @bind-SearchText="_filterWorkerSummaries"
                            SearchPlaceholder="Filter worker or status…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Short"
+                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
                            HostTabIndex="@(-1)">
             <PropertyColumn Title="Worker" Property="@(s => s.WorkerKey)" Sortable="true" />
             <TemplateColumn Title="Toggle" Context="s" SortBy="@SortWorkerSummaryToggle">
@@ -298,7 +298,7 @@
                            Items="FilteredWorkers"
                            @bind-SearchText="_filterWorkers"
                            SearchPlaceholder="Filter worker key…"
-                           ScrollPreset="NightmareDataGridScrollPreset.Short"
+                           ScrollPreset="NightmareDataGridScrollPreset.Compact"
                            Pagination="_workersPagination"
                            Virtualize="false"
                            HostTabIndex="@(-1)">

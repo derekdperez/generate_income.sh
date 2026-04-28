@@ -4,6 +4,13 @@ using Microsoft.AspNetCore.Components.QuickGrid;
 
 namespace NightmareV2.CommandCenter.Components.DataGrid;
 
+/// <summary>
+/// Shared data grid: wraps <see cref="QuickGrid{TGridItem}"/> with toolbar search, optional client paging,
+/// virtualization, scroll presets, optional row grouping (<see cref="GroupKeySelector"/>), and optional
+/// in-grid row filter (<see cref="RowMatches"/>). Sorting and column templates use QuickGrid columns; use
+/// <c>GridDateCell</c>, <c>GridCodeCell</c>, <c>GridEllipsisCell</c>, and <c>GridNumberCell</c> for common cell renderings.
+/// </summary>
+[CascadingTypeParameter(nameof(TGridItem))]
 public partial class NightmareDataGrid<TGridItem>
 {
     private IReadOnlyList<IGrouping<string, TGridItem>>? _groups;
@@ -45,7 +52,7 @@ public partial class NightmareDataGrid<TGridItem>
 
     [Parameter] public string GridTableClass { get; set; } = "nightmare-qg";
 
-    [Parameter] public NightmareDataGridScrollPreset ScrollPreset { get; set; } = NightmareDataGridScrollPreset.Short;
+    [Parameter] public NightmareDataGridScrollPreset ScrollPreset { get; set; } = NightmareDataGridScrollPreset.Compact;
 
     [Parameter] public string? HostStyle { get; set; }
 
@@ -65,13 +72,13 @@ public partial class NightmareDataGrid<TGridItem>
         {
             var scroll = ScrollPreset switch
             {
-                NightmareDataGridScrollPreset.Short => "nightmare-dg-host short",
-                NightmareDataGridScrollPreset.Mid => "nightmare-dg-host mid",
+                NightmareDataGridScrollPreset.Compact => "nightmare-dg-host short",
+                NightmareDataGridScrollPreset.Medium => "nightmare-dg-host mid",
                 NightmareDataGridScrollPreset.Tall => "nightmare-dg-host tall",
-                NightmareDataGridScrollPreset.VirtualScroll => "nightmare-dg-host vq",
+                NightmareDataGridScrollPreset.Virtualized => "nightmare-dg-host vq",
                 _ => "nightmare-dg-host",
             };
-            if (Virtualize && ScrollPreset != NightmareDataGridScrollPreset.VirtualScroll)
+            if (Virtualize && ScrollPreset != NightmareDataGridScrollPreset.Virtualized)
                 scroll += " vq";
             return scroll;
         }

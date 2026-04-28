@@ -1,6 +1,9 @@
 @page "/high-value-findings"
 @rendermode InteractiveServer
+@using NightmareV2.CommandCenter.Components.DataGrid
+@using NightmareV2.CommandCenter.Components.DataGrid.Cells
 @using NightmareV2.CommandCenter.Models
+@using static Microsoft.AspNetCore.Components.QuickGrid.SortDirection
 @implements IDisposable
 @inject HttpClient Http
 
@@ -18,38 +21,67 @@
 </div>
 
 <section class="panel">
-    <div class="scroll tall">
-        <table class="grid">
-            <thead>
-            <tr>
-                <th>Discovered (UTC)</th><th>Severity</th><th>Type</th><th>Pattern</th><th>Target</th>
-                <th>Source URL</th><th>Worker</th><th>Score</th><th>Snippet</th>
-            </tr>
-            </thead>
-            <tbody>
-            @foreach (var r in _rows)
-            {
-                <tr>
-                    <td>@r.DiscoveredAtUtc.UtcDateTime.ToString("u")</td>
-                    <td><strong>@r.Severity</strong></td>
-                    <td>@r.FindingType</td>
-                    <td class="clip"><code>@r.PatternName</code></td>
-                    <td class="clip">@(r.TargetRootDomain ?? "—")</td>
-                    <td class="clip mono">@r.SourceUrl</td>
-                    <td>@r.WorkerName</td>
-                    <td>@(r.ImportanceScore?.ToString() ?? "—")</td>
-                    <td class="clip mono">@(r.MatchedText ?? "—")</td>
-                </tr>
-            }
-            </tbody>
-        </table>
-    </div>
+    <NightmareDataGrid TGridItem="HighValueFindingRowDto"
+                       Items="_rows.AsQueryable()"
+                       @bind-SearchText="_findingSearch"
+                       SearchPlaceholder="Search severity, type, pattern, URL, worker, snippet…"
+                       ScrollPreset="NightmareDataGridScrollPreset.Tall"
+                       Virtualize="true"
+                       ItemSize="40"
+                       ItemKey="@(r => r.Id)"
+                       OverscanCount="6"
+                       GroupKeySelector="@(r => r.Severity)"
+                       RowMatches="@FindingMatches"
+                       HostTabIndex="@(-1)">
+        <PropertyColumn Title="Discovered (UTC)" Property="@(r => r.DiscoveredAtUtc)" Format="u" Sortable="true" IsDefaultSortColumn="true" InitialSortDirection="Descending" />
+        <TemplateColumn Title="Severity" Context="r" SortBy="@SortFindingSeverity">
+            <strong>@r.Severity</strong>
+        </TemplateColumn>
+        <PropertyColumn Title="Type" Property="@(r => r.FindingType)" Sortable="true" />
+        <TemplateColumn Title="Pattern" Context="r" SortBy="@SortFindingPattern">
+            <GridCodeCell Text="@r.PatternName" />
+        </TemplateColumn>
+        <PropertyColumn Title="Target" Property="@(r => r.TargetRootDomain ?? "")" Sortable="true" />
+        <TemplateColumn Title="Source URL" Context="r" SortBy="@SortFindingUrl">
+            <GridEllipsisCell Text="@r.SourceUrl" Title="@r.SourceUrl" />
+        </TemplateColumn>
+        <PropertyColumn Title="Worker" Property="@(r => r.WorkerName)" Sortable="true" />
+        <TemplateColumn Title="Score" Context="r" SortBy="@SortFindingScore">
+            <GridNumberCell Value="@r.ImportanceScore" />
+        </TemplateColumn>
+        <TemplateColumn Title="Snippet" Context="r">
+            <GridEllipsisCell Text="@r.MatchedText" Title="@r.MatchedText" />
+        </TemplateColumn>
+    </NightmareDataGrid>
 </section>
 
 @code {
     private readonly CancellationTokenSource _pollCts = new();
     private readonly List<HighValueFindingRowDto> _rows = [];
     private bool _criticalOnly;
+    private string _findingSearch = "";
+
+    private static readonly GridSort<HighValueFindingRowDto> SortFindingSeverity =
+        GridSort<HighValueFindingRowDto>.ByAscending(static r => r.Severity);
+
+    private static readonly GridSort<HighValueFindingRowDto> SortFindingPattern =
+        GridSort<HighValueFindingRowDto>.ByAscending(static r => r.PatternName);
+
+    private static readonly GridSort<HighValueFindingRowDto> SortFindingUrl =
+        GridSort<HighValueFindingRowDto>.ByAscending(static r => r.SourceUrl);
+
+    private static readonly GridSort<HighValueFindingRowDto> SortFindingScore =
+        GridSort<HighValueFindingRowDto>.ByDescending(static r => r.ImportanceScore ?? int.MinValue);
+
+    private static bool FindingMatches(HighValueFindingRowDto r, string q) =>
+        GridTextFilter.Matches(r.Severity, q)
+        || GridTextFilter.Matches(r.FindingType, q)
+        || GridTextFilter.Matches(r.PatternName, q)
+        || GridTextFilter.Matches(r.TargetRootDomain, q)
+        || GridTextFilter.Matches(r.SourceUrl, q)
+        || GridTextFilter.Matches(r.WorkerName, q)
+        || GridTextFilter.Matches(r.MatchedText, q)
+        || GridTextFilter.Matches(r.Category, q);
 
     protected override async Task OnInitializedAsync()
     {
