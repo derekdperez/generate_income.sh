@@ -1,10 +1,12 @@
 using System.Net.Http;
+using System.Text.Json;
 using MassTransit;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using NightmareV2.Application.Assets;
 using NightmareV2.Application.FileStore;
 using NightmareV2.CommandCenter;
 using NightmareV2.CommandCenter.Components;
@@ -420,35 +422,97 @@ app.MapGet(
         async (NightmareDbContext db, bool? criticalOnly, int? take, CancellationToken ct) =>
         {
             var limit = Math.Clamp(take ?? 500, 1, 5000);
+            var fetchCount = Math.Clamp(limit * 6, limit, 30000);
             var q = db.HighValueFindings.AsNoTracking()
+                .Where(f => f.SourceAssetId != null)
+                .Join(
+                    db.Assets.AsNoTracking(),
+                    f => f.SourceAssetId!.Value,
+                    a => a.Id,
+                    (f, a) => new { f, a })
                 .Join(
                     db.Targets.AsNoTracking(),
-                    f => f.TargetId,
+                    x => x.f.TargetId,
                     t => t.Id,
-                    (f, t) => new { f, t.RootDomain });
+                    (x, t) => new { x.f, x.a, t.RootDomain });
             if (criticalOnly == true)
                 q = q.Where(x => x.f.Severity == "Critical");
-            var rows = await q.OrderByDescending(x => x.f.DiscoveredAtUtc)
-                .Take(limit)
-                .Select(x => new HighValueFindingRowDto(
-                    x.f.Id,
-                    x.f.TargetId,
-                    x.f.SourceAssetId,
-                    x.f.FindingType,
-                    x.f.Severity,
-                    x.f.PatternName,
-                    x.f.Category,
-                    x.f.MatchedText,
-                    x.f.SourceUrl,
-                    x.f.WorkerName,
-                    x.f.ImportanceScore,
-                    x.f.DiscoveredAtUtc,
-                    x.RootDomain))
+            var rows = await q
+                .OrderByDescending(x => x.f.DiscoveredAtUtc)
+                .Take(fetchCount)
+                .Select(x => new
+                {
+                    Row = new HighValueFindingRowDto(
+                        x.f.Id,
+                        x.f.TargetId,
+                        x.f.SourceAssetId,
+                        x.f.FindingType,
+                        x.f.Severity,
+                        x.f.PatternName,
+                        x.f.Category,
+                        x.f.MatchedText,
+                        x.f.SourceUrl,
+                        x.f.WorkerName,
+                        x.f.ImportanceScore,
+                        x.f.DiscoveredAtUtc,
+                        x.RootDomain),
+                    x.a.LifecycleStatus,
+                    x.a.DiscoveredBy,
+                    x.a.TypeDetailsJson,
+                })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            return Results.Ok(rows);
+            var filtered = rows
+                .Where(x => string.Equals(x.LifecycleStatus, AssetLifecycleStatus.Confirmed, StringComparison.Ordinal))
+                .Where(x => x.DiscoveredBy.StartsWith("hvpath:", StringComparison.OrdinalIgnoreCase))
+                .Where(x => !LooksLikeSoft404(x.TypeDetailsJson))
+                .Select(x => x.Row)
+                .Take(limit)
+                .ToList();
+            return Results.Ok(filtered);
         })
     .WithName("ListHighValueFindings");
+
+static bool LooksLikeSoft404(string? typeDetailsJson)
+{
+    if (string.IsNullOrWhiteSpace(typeDetailsJson))
+        return true;
+
+    UrlFetchSnapshot? snap;
+    try
+    {
+        snap = JsonSerializer.Deserialize<UrlFetchSnapshot>(typeDetailsJson);
+    }
+    catch
+    {
+        return true;
+    }
+
+    if (snap is null)
+        return true;
+    if (snap.StatusCode is 404 or 410)
+        return true;
+    if (snap.StatusCode < 200 || snap.StatusCode >= 300)
+        return true;
+
+    var body = snap.ResponseBody;
+    if (string.IsNullOrWhiteSpace(body))
+        return false;
+
+    var contentType = snap.ContentType ?? "";
+    var textLike = contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)
+        || contentType.Contains("text/plain", StringComparison.OrdinalIgnoreCase)
+        || contentType.Contains("application/xhtml+xml", StringComparison.OrdinalIgnoreCase);
+    if (!textLike)
+        return false;
+
+    var normalized = body.ToLowerInvariant();
+    return normalized.Contains("404 not found", StringComparison.Ordinal)
+        || normalized.Contains("page not found", StringComparison.Ordinal)
+        || normalized.Contains("doesn't exist", StringComparison.Ordinal)
+        || normalized.Contains("cannot be found", StringComparison.Ordinal)
+        || normalized.Contains("the page you are looking for", StringComparison.Ordinal);
+}
 
 app.MapGet(
         "/api/workers",

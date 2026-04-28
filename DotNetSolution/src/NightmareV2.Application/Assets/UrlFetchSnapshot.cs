@@ -11,4 +11,5 @@ public sealed record UrlFetchSnapshot(
     long? ResponseSizeBytes,
     double DurationMs,
     string? ContentType,
-    DateTimeOffset CompletedAtUtc);
+    DateTimeOffset CompletedAtUtc,
+    string? FinalUrl = null);

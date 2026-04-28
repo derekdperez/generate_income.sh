@@ -75,7 +75,8 @@ public sealed class SpiderAssetDiscoveredConsumer(
             response.Content.Headers.ContentLength,
             sw.Elapsed.TotalMilliseconds,
             contentType,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            response.RequestMessage?.RequestUri?.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped));
 
         await persistence.ConfirmUrlAssetAsync(assetId, snapshot, m.CorrelationId, context.CancellationToken)
             .ConfigureAwait(false);
