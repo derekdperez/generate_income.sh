@@ -98,6 +98,8 @@ services:
       Nightmare__ListenPlainHttp: "true"
       # GET /api/diagnostics/self (JSON). Set Nightmare__Diagnostics__ApiKey and send header X-Nightmare-Diagnostics-Key when exposing publicly.
       Nightmare__Diagnostics__Enabled: "true"
+      # POST /api/maintenance/* (destructive). Set Nightmare__DataMaintenance__ApiKey and header X-Nightmare-Maintenance-Key when enabling.
+      # Nightmare__DataMaintenance__Enabled: "true"
     ports:
       - "8080:8080"
     healthcheck:

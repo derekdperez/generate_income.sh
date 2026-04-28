@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using NightmareV2.Application.FileStore;
 using NightmareV2.CommandCenter;
 using NightmareV2.CommandCenter.Components;
+using NightmareV2.CommandCenter.DataMaintenance;
 using NightmareV2.CommandCenter.Diagnostics;
 using NightmareV2.CommandCenter.Hubs;
 using NightmareV2.CommandCenter.Models;
@@ -71,6 +72,7 @@ if (!listenPlainHttp)
 app.UseAntiforgery();
 
 DiagnosticsEndpoints.Map(app);
+DataMaintenanceEndpoints.Map(app);
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()

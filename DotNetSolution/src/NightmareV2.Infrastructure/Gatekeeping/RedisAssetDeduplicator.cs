@@ -21,4 +21,33 @@ public sealed class RedisAssetDeduplicator(IConnectionMultiplexer redis) : IAsse
         var key = KeyPrefix + targetId + ":" + JsonSerializer.Serialize(canonicalKey);
         await db.KeyDeleteAsync(key).ConfigureAwait(false);
     }
+
+    public Task ClearForTargetAsync(Guid targetId, CancellationToken cancellationToken = default) =>
+        DeleteKeysMatchingAsync(KeyPrefix + targetId + ":*", cancellationToken);
+
+    public Task ClearAllAsync(CancellationToken cancellationToken = default) =>
+        DeleteKeysMatchingAsync(KeyPrefix + "*", cancellationToken);
+
+    private async Task DeleteKeysMatchingAsync(string pattern, CancellationToken cancellationToken)
+    {
+        await Task.Run(
+                () =>
+                {
+                    var db = redis.GetDatabase();
+                    foreach (var endpoint in redis.GetEndPoints())
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var server = redis.GetServer(endpoint);
+                        if (!server.IsConnected || server.IsReplica)
+                            continue;
+                        foreach (var key in server.Keys(database: db.Database, pattern: pattern))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            db.KeyDelete(key);
+                        }
+                    }
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 }
