@@ -39,6 +39,13 @@ public static class NightmareDbSchemaPatches
 
         await db.Database.ExecuteSqlRawAsync(
                 """
+                ALTER TABLE stored_assets ADD COLUMN IF NOT EXISTS discovery_context character varying(512) NOT NULL DEFAULT '';
+                """,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await db.Database.ExecuteSqlRawAsync(
+                """
                 CREATE TABLE IF NOT EXISTS high_value_findings (
                     id uuid NOT NULL PRIMARY KEY,
                     target_id uuid NOT NULL REFERENCES recon_targets(id) ON DELETE CASCADE,

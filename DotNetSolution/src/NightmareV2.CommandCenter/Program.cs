@@ -342,6 +342,7 @@ app.MapGet(
                     a.RawValue,
                     a.Depth,
                     a.DiscoveredBy,
+                    a.DiscoveryContext,
                     a.DiscoveredAtUtc,
                     a.LifecycleStatus))
                 .ToListAsync(ct)

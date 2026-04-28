@@ -13,6 +13,8 @@ public class StoredAsset
     public string RawValue { get; set; } = "";
     public int Depth { get; set; }
     public string DiscoveredBy { get; set; } = "";
+    /// <summary>Human-readable description of how the asset was found (parent page, wordlist category, etc.).</summary>
+    public string DiscoveryContext { get; set; } = "";
     public DateTimeOffset DiscoveredAtUtc { get; set; }
 
     /// <summary><see cref="AssetLifecycleStatus"/> values.</summary>

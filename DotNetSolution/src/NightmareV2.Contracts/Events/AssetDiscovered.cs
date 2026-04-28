@@ -15,4 +15,6 @@ public record AssetDiscovered(
     Guid CorrelationId,
     AssetAdmissionStage AdmissionStage,
     /// <summary>Set when <see cref="AdmissionStage"/> is <see cref="AssetAdmissionStage.Indexed"/>.</summary>
-    Guid? AssetId);
+    Guid? AssetId,
+    /// <summary>Human-readable provenance (parent URL, wordlist, etc.). Kept short for DB and bus payloads.</summary>
+    string DiscoveryContext = "");

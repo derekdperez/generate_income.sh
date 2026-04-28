@@ -36,6 +36,7 @@ public sealed class EfAssetPersistence(NightmareDbContext db, IPublishEndpoint p
             RawValue = message.RawValue,
             Depth = message.Depth,
             DiscoveredBy = message.DiscoveredBy,
+            DiscoveryContext = message.DiscoveryContext ?? "",
             DiscoveredAtUtc = message.OccurredAt,
             LifecycleStatus = AssetLifecycleStatus.Discovered,
         };

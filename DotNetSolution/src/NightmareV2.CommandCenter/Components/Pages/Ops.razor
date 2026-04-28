@@ -283,7 +283,7 @@
         <table class="grid">
             <thead>
             <tr>
-                <th>Discovered (UTC)</th><th>Kind</th><th>Status</th><th>Depth</th><th>Raw</th><th>By</th>
+                <th>Discovered (UTC)</th><th>Kind</th><th>Status</th><th>Depth</th><th>Raw</th><th>Pipeline</th><th>How found</th>
             </tr>
             </thead>
             <tbody>
@@ -295,7 +295,8 @@
                     <td>@a.LifecycleStatus</td>
                     <td>@a.Depth</td>
                     <td class="clip">@a.RawValue</td>
-                    <td>@a.DiscoveredBy</td>
+                    <td><code>@a.DiscoveredBy</code></td>
+                    <td class="clip small" title="@a.DiscoveryContext">@(string.IsNullOrWhiteSpace(a.DiscoveryContext) ? "—" : a.DiscoveryContext)</td>
                 </tr>
             }
             </tbody>

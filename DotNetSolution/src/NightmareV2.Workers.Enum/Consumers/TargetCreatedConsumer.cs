@@ -39,7 +39,8 @@ public sealed class TargetCreatedConsumer(ILogger<TargetCreatedConsumer> logger,
                         OccurredAt: DateTimeOffset.UtcNow,
                         CorrelationId: correlation,
                         AdmissionStage: AssetAdmissionStage.Raw,
-                        AssetId: null),
+                        AssetId: null,
+                        DiscoveryContext: "Enumeration stub: suggested subdomain emitted when target was created"),
                     context.CancellationToken)
                 .ConfigureAwait(false);
         }

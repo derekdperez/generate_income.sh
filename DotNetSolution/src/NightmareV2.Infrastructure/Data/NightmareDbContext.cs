@@ -28,6 +28,7 @@ public sealed class NightmareDbContext(DbContextOptions<NightmareDbContext> opti
             e.Property(x => x.CanonicalKey).HasMaxLength(2048).IsRequired();
             e.Property(x => x.RawValue).HasMaxLength(4096).IsRequired();
             e.Property(x => x.DiscoveredBy).HasMaxLength(128).IsRequired();
+            e.Property(x => x.DiscoveryContext).HasMaxLength(512).IsRequired().HasColumnName("discovery_context");
             e.Property(x => x.LifecycleStatus).HasMaxLength(32).IsRequired();
             e.Property(x => x.TypeDetailsJson);
             e.HasIndex(x => new { x.TargetId, x.CanonicalKey }).IsUnique();

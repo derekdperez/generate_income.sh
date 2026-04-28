@@ -56,6 +56,7 @@ public sealed class HighValuePathGuessConsumer(
                     continue;
 
                 var url = uri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
+                var ctx = TruncateDiscoveryContext($"High-value paths: category \"{category}\" from host {baseUrl} → {url}");
                 await context.Publish(
                         new AssetDiscovered(
                             m.TargetId,
@@ -68,7 +69,8 @@ public sealed class HighValuePathGuessConsumer(
                             DateTimeOffset.UtcNow,
                             m.CorrelationId,
                             AssetAdmissionStage.Raw,
-                            null),
+                            null,
+                            ctx),
                         ct)
                     .ConfigureAwait(false);
                 published++;
@@ -78,4 +80,7 @@ public sealed class HighValuePathGuessConsumer(
         if (published > 0)
             logger.LogInformation("HighValuePaths: queued {Count} URL probes for host {Host}", published, host);
     }
+
+    private static string TruncateDiscoveryContext(string s, int maxChars = 512) =>
+        s.Length <= maxChars ? s : s[..(maxChars - 1)] + "…";
 }

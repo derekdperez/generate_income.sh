@@ -81,6 +81,8 @@ public sealed class SpiderAssetDiscoveredConsumer(
             .ConfigureAwait(false);
 
         var ct = contentType ?? "";
+        var parentPage = fetchUri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
+        var spiderContext = TruncateDiscoveryContext($"Spider: link extracted from fetched page {parentPage}");
         foreach (var link in LinkHarvest.Extract(body, ct, fetchUri).Take(MaxLinksPerAsset))
         {
             var kind = LinkHarvest.GuessKindForUrl(link);
@@ -96,11 +98,15 @@ public sealed class SpiderAssetDiscoveredConsumer(
                         DateTimeOffset.UtcNow,
                         m.CorrelationId,
                         AssetAdmissionStage.Raw,
-                        null),
+                        null,
+                        spiderContext),
                     context.CancellationToken)
                 .ConfigureAwait(false);
         }
     }
+
+    private static string TruncateDiscoveryContext(string s, int maxChars = 512) =>
+        s.Length <= maxChars ? s : s[..(maxChars - 1)] + "…";
 
     private static bool ShouldFetch(AssetKind kind) =>
         kind is AssetKind.Url or AssetKind.ApiEndpoint or AssetKind.JavaScriptFile or AssetKind.MarkdownBody

@@ -17,6 +17,7 @@ public sealed record AssetGridRowDto(
     string RawValue,
     int Depth,
     string DiscoveredBy,
+    string DiscoveryContext,
     DateTimeOffset DiscoveredAtUtc,
     string LifecycleStatus);
 

@@ -105,7 +105,8 @@ public sealed class GatekeeperOrchestrator(
                 DateTimeOffset.UtcNow,
                 message.CorrelationId,
                 AssetAdmissionStage.Indexed,
-                assetId),
+                assetId,
+                message.DiscoveryContext),
             cancellationToken);
     }
 }
