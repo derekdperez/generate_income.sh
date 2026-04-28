@@ -99,7 +99,7 @@
     }
     else
     {
-        <p class="muted">Per-worker bus consumes (journal) and DB rows attributed to <code>discovered_by</code>. Spider: new Raw URLs emitted to the bus appear as <code>spider-worker</code> rows. Rabbit columns sum queues whose names match that worker (heuristic). <strong>Ready + unacked</strong> approximates messages waiting to be processed (incl. in-flight unacked).</p>
+        <p class="muted">Per-worker bus consumes (journal) correlate to the MassTransit <strong>consumer</strong> CLR type recorded on each consume row. DB “assets attributed” counts rows by <code>discovered_by</code> (Spider uses <code>spider-worker</code>; HighValue workers mostly emit findings or child URLs, so those columns may stay low). Rabbit columns sum queues whose names match that worker (heuristic). <strong>Ready + unacked</strong> approximates messages waiting to be processed (incl. in-flight unacked).</p>
         <table class="grid">
             <thead>
             <tr>

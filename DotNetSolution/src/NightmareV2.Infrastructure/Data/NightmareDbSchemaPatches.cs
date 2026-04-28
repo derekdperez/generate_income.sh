@@ -18,6 +18,14 @@ public static class NightmareDbSchemaPatches
 
         await db.Database.ExecuteSqlRawAsync(
                 """
+                ALTER TABLE bus_journal
+                    ALTER COLUMN consumer_type TYPE character varying(512);
+                """,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await db.Database.ExecuteSqlRawAsync(
+                """
                 CREATE TABLE IF NOT EXISTS high_value_findings (
                     id uuid NOT NULL PRIMARY KEY,
                     target_id uuid NOT NULL REFERENCES recon_targets(id) ON DELETE CASCADE,

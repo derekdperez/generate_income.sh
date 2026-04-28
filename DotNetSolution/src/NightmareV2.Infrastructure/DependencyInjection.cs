@@ -4,7 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 using NightmareV2.Application.Gatekeeping;
 using NightmareV2.Application.Workers;
 using NightmareV2.Infrastructure.Data;
+using NightmareV2.Application.FileStore;
 using NightmareV2.Application.HighValue;
+using NightmareV2.Infrastructure.FileStore;
 using NightmareV2.Infrastructure.Gatekeeping;
 using NightmareV2.Infrastructure.HighValue;
 using NightmareV2.Infrastructure.Messaging;
@@ -20,6 +22,12 @@ public static class DependencyInjection
         var redisConn = configuration.GetConnectionString("Redis") ?? "localhost:6379";
         var pgConn = configuration.GetConnectionString("Postgres")
                      ?? "Host=localhost;Port=5432;Database=nightmare_v2;Username=nightmare;Password=nightmare";
+        var fileStoreConn = configuration.GetConnectionString("FileStore")
+            ?? configuration.GetConnectionString("Postgres")?.Replace(
+                "Database=nightmare_v2",
+                "Database=nightmare_v2_files",
+                StringComparison.OrdinalIgnoreCase)
+            ?? "Host=localhost;Port=5432;Database=nightmare_v2_files;Username=nightmare;Password=nightmare";
 
         services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConn));
 
@@ -27,6 +35,10 @@ public static class DependencyInjection
 
         services.AddDbContext<NightmareDbContext>(ConfigureNpgsql);
         services.AddDbContextFactory<NightmareDbContext>(ConfigureNpgsql);
+
+        void ConfigureFileStore(DbContextOptionsBuilder options) => options.UseNpgsql(fileStoreConn);
+        services.AddDbContextFactory<FileStoreDbContext>(ConfigureFileStore);
+        services.AddSingleton<IFileStore, EfFileStore>();
 
         services.AddSingleton<IAssetCanonicalizer, DefaultAssetCanonicalizer>();
         services.AddSingleton<IAssetDeduplicator, RedisAssetDeduplicator>();

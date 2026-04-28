@@ -7,6 +7,7 @@ x-dotnet-build-args: &dotnet-build-args
 
 x-common-env: &common-env
   ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=nightmare_v2;Username=nightmare;Password=nightmare
+  ConnectionStrings__FileStore: Host=postgres;Port=5432;Database=nightmare_v2_files;Username=nightmare;Password=nightmare
   ConnectionStrings__Redis: redis:6379
   RabbitMq__Host: rabbitmq
   RabbitMq__Username: nightmare
@@ -23,6 +24,7 @@ services:
       POSTGRES_DB: nightmare_v2
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init-02-filestore-db.sql:/docker-entrypoint-initdb.d/02-filestore-db.sql:ro
     ports:
       - "5432:5432"
     healthcheck:

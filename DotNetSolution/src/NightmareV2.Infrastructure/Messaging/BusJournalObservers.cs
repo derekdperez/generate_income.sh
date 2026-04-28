@@ -80,7 +80,7 @@ public sealed class BusJournalConsumeObserver(
 
     public Task PostConsume<T>(ConsumeContext<T> context)
         where T : class =>
-        WriteAsync("Consume", typeof(T).Name, context.Message!, typeof(T).FullName, context.CancellationToken);
+        WriteAsync("Consume", typeof(T).Name, context.Message!, ResolveConsumerClrName(context), context.CancellationToken);
 
     public Task PostConsume(ConsumeContext context) => Task.CompletedTask;
 
@@ -90,12 +90,30 @@ public sealed class BusJournalConsumeObserver(
 
     public Task PreConsume(ConsumeContext context) => Task.CompletedTask;
 
+    /// <summary>
+    /// <see cref="IConsumeObserver.PostConsume{T}"/> receives <c>ConsumeContext&lt;T&gt;</c> where <c>T</c> is the message type.
+    /// Ops metrics match on the actual <see cref="IConsumer{T}"/> CLR type, which appears as the first matching generic argument.
+    /// </summary>
+    private static string? ResolveConsumerClrName<T>(ConsumeContext<T> context)
+        where T : class
+    {
+        foreach (var arg in context.GetType().GetGenericArguments())
+        {
+            if (typeof(IConsumer<T>).IsAssignableFrom(arg))
+                return arg.FullName;
+        }
+
+        return typeof(T).FullName;
+    }
+
     private async Task WriteAsync(string direction, string messageType, object message, string? consumerType, CancellationToken ct)
     {
         await BusJournalWriteGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            if (consumerType is { Length: > 512 } longCt)
+                consumerType = Truncate(longCt, 512);
             db.BusJournal.Add(
                 new BusJournalEntry
                 {

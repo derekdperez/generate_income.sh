@@ -353,6 +353,10 @@ internal static class OpsSnapshotBuilder
         if (n.Contains("target-created") || n.Contains("target_created")
             || (n.Contains("enum") && (n.Contains("target") || n.Contains("worker"))))
             return WorkerKeys.Enumeration;
+        if (n.Contains("highvaluepath") || n.Contains("high-value-path") || n.Contains("hvpath"))
+            return WorkerKeys.HighValuePaths;
+        if (n.Contains("highvalue") || n.Contains("high-value") || n.Contains("high_value") || n.Contains("scannable"))
+            return WorkerKeys.HighValueRegex;
         return null;
     }
 
