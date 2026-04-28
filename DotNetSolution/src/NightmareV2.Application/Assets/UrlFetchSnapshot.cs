@@ -12,4 +12,8 @@ public sealed record UrlFetchSnapshot(
     double DurationMs,
     string? ContentType,
     DateTimeOffset CompletedAtUtc,
-    string? FinalUrl = null);
+    string? FinalUrl = null)
+{
+    /// <summary>Same as <see cref="ResponseSizeBytes"/>; use when mirroring HTTP Content-Length semantics.</summary>
+    public long? ContentLength => ResponseSizeBytes;
+}

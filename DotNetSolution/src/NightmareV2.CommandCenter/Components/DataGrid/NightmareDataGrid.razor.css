@@ -1,4 +1,9 @@
 /* Shared scroll host + QuickGrid table (sticky thead). ::deep crosses this component’s scope boundary. */
+.nightmare-dg-rowcount {
+    margin: 0 0 0.4rem;
+    font-size: 11px;
+}
+
 .nightmare-dg-toolbar {
     display: flex;
     gap: 8px;

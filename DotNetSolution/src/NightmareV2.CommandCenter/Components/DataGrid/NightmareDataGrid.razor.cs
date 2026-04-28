@@ -7,7 +7,8 @@ namespace NightmareV2.CommandCenter.Components.DataGrid;
 /// <summary>
 /// Shared data grid: wraps <see cref="QuickGrid{TGridItem}"/> with toolbar search, optional client paging,
 /// virtualization, scroll presets, optional row grouping (<see cref="GroupKeySelector"/>), and optional
-/// in-grid row filter (<see cref="RowMatches"/>). Sorting and column templates use QuickGrid columns; use
+/// in-grid row filter (<see cref="RowMatches"/>), and an optional visible row count (<see cref="ShowRowCount"/>).
+/// Sorting and column templates use QuickGrid columns; use
 /// <c>GridDateCell</c>, <c>GridCodeCell</c>, <c>GridEllipsisCell</c>, and <c>GridNumberCell</c> for common cell renderings.
 /// </summary>
 [CascadingTypeParameter(nameof(TGridItem))]
@@ -63,6 +64,11 @@ public partial class NightmareDataGrid<TGridItem>
     [Parameter(CaptureUnmatchedValues = true)]
     public Dictionary<string, object>? AdditionalAttributes { get; set; }
 
+    /// <summary>When true, shows the number of rows after search / <see cref="RowMatches"/> filtering (same set passed to QuickGrid).</summary>
+    [Parameter] public bool ShowRowCount { get; set; } = true;
+
+    private int _visibleRowCount;
+
     private bool ToolbarVisible =>
         ShowToolbar ?? (ShowSearch || Pagination is not null || ToolbarTemplate is not null);
 
@@ -89,10 +95,12 @@ public partial class NightmareDataGrid<TGridItem>
         if (GroupKeySelector is null)
         {
             _groups = null;
+            _visibleRowCount = GetEffectiveItems().Count();
             return;
         }
 
         var list = GetEffectiveItems().ToList();
+        _visibleRowCount = list.Count;
         _groups = list
             .GroupBy(GroupKeySelector, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
