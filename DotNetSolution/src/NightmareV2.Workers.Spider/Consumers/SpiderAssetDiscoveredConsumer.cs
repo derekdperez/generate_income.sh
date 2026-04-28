@@ -81,6 +81,9 @@ public sealed class SpiderAssetDiscoveredConsumer(
         await persistence.ConfirmUrlAssetAsync(assetId, snapshot, m.CorrelationId, context.CancellationToken)
             .ConfigureAwait(false);
 
+        if (!response.IsSuccessStatusCode)
+            return;
+
         var ct = contentType ?? "";
         var parentPage = fetchUri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
         var spiderContext = TruncateDiscoveryContext($"Spider: link extracted from fetched page {parentPage}");

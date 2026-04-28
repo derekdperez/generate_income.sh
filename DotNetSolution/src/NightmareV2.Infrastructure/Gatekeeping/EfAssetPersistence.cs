@@ -90,14 +90,25 @@ public sealed class EfAssetPersistence(
         CancellationToken cancellationToken = default)
     {
         var json = JsonSerializer.Serialize(snapshot, JsonOpts);
-        await db.Assets
-            .Where(a => a.Id == assetId)
-            .ExecuteUpdateAsync(
-                s => s
-                    .SetProperty(a => a.LifecycleStatus, AssetLifecycleStatus.Confirmed)
-                    .SetProperty(a => a.TypeDetailsJson, json),
-                cancellationToken)
-            .ConfigureAwait(false);
+        var isHttpSuccess = snapshot.StatusCode is >= 200 and < 300;
+        if (isHttpSuccess)
+        {
+            await db.Assets
+                .Where(a => a.Id == assetId)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(a => a.LifecycleStatus, AssetLifecycleStatus.Confirmed)
+                        .SetProperty(a => a.TypeDetailsJson, json),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await db.Assets
+                .Where(a => a.Id == assetId)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.TypeDetailsJson, json), cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         var meta = await db.Assets.AsNoTracking()
             .Where(a => a.Id == assetId)
@@ -105,6 +116,9 @@ public sealed class EfAssetPersistence(
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
         if (meta is null)
+            return;
+
+        if (!isHttpSuccess)
             return;
 
         try
