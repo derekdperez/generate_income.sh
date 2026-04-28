@@ -15,6 +15,7 @@ using NightmareV2.CommandCenter.DataMaintenance;
 using NightmareV2.CommandCenter.Diagnostics;
 using NightmareV2.CommandCenter.Hubs;
 using NightmareV2.CommandCenter.Models;
+using NightmareV2.Contracts;
 using NightmareV2.Contracts.Events;
 using NightmareV2.Domain.Entities;
 using NightmareV2.Infrastructure;
