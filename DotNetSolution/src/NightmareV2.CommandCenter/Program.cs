@@ -462,10 +462,35 @@ app.MapGet(
                 })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            var filtered = rows
+            var scopedRows = rows
                 .Where(x => string.Equals(x.LifecycleStatus, AssetLifecycleStatus.Confirmed, StringComparison.Ordinal))
                 .Where(x => x.DiscoveredBy.StartsWith("hvpath:", StringComparison.OrdinalIgnoreCase))
-                .Where(x => !LooksLikeSoft404(x.TypeDetailsJson))
+                .ToList();
+
+            var targetIds = scopedRows
+                .Select(x => x.Row.TargetId)
+                .Distinct()
+                .ToList();
+            var hvConfirmedByTarget = (await db.Assets.AsNoTracking()
+                    .Where(a => targetIds.Contains(a.TargetId))
+                    .Where(a => a.DiscoveredBy.StartsWith("hvpath:"))
+                    .Where(a => a.LifecycleStatus == AssetLifecycleStatus.Confirmed)
+                    .Select(a => new { a.TargetId, a.RawValue })
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false))
+                .GroupBy(x => x.TargetId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(x => NormalizeUrlForCompare(x.RawValue))
+                        .Where(x => x is not null)
+                        .Select(x => x!)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+            var filtered = scopedRows
+                .Select(x => new { x.Row, SnapshotOk = TryParseSnapshot(x.TypeDetailsJson, out var snap), Snapshot = snap })
+                .Where(x => x.SnapshotOk)
+                .Where(x => !LooksLikeSoft404(x.Snapshot))
+                .Where(x => RedirectIsAllowed(x.Row, x.Snapshot, hvConfirmedByTarget))
                 .Select(x => x.Row)
                 .Take(limit)
                 .ToList();
@@ -473,21 +498,55 @@ app.MapGet(
         })
     .WithName("ListHighValueFindings");
 
-static bool LooksLikeSoft404(string? typeDetailsJson)
+static bool RedirectIsAllowed(
+    HighValueFindingRowDto row,
+    UrlFetchSnapshot snap,
+    IReadOnlyDictionary<Guid, HashSet<string>> hvConfirmedByTarget)
 {
-    if (string.IsNullOrWhiteSpace(typeDetailsJson))
+    var source = NormalizeUrlForCompare(row.SourceUrl);
+    if (source is null)
+        return false;
+
+    var final = NormalizeUrlForCompare(snap.FinalUrl) ?? source;
+    var redirected = !string.Equals(source, final, StringComparison.OrdinalIgnoreCase);
+    if (!redirected)
         return true;
 
-    UrlFetchSnapshot? snap;
+    if (!hvConfirmedByTarget.TryGetValue(row.TargetId, out var allowedUrls))
+        return false;
+    return allowedUrls.Contains(final);
+}
+
+static string? NormalizeUrlForCompare(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+        return null;
+    if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var u))
+        return null;
+    if (u.Scheme is not ("http" or "https"))
+        return null;
+    var canonical = u.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
+    return canonical.TrimEnd('/');
+}
+
+static bool TryParseSnapshot(string? typeDetailsJson, out UrlFetchSnapshot snapshot)
+{
+    snapshot = default!;
+    if (string.IsNullOrWhiteSpace(typeDetailsJson))
+        return false;
     try
     {
-        snap = JsonSerializer.Deserialize<UrlFetchSnapshot>(typeDetailsJson);
+        snapshot = JsonSerializer.Deserialize<UrlFetchSnapshot>(typeDetailsJson)!;
+        return snapshot is not null;
     }
     catch
     {
-        return true;
+        return false;
     }
+}
 
+static bool LooksLikeSoft404(UrlFetchSnapshot? snap)
+{
     if (snap is null)
         return true;
     if (snap.StatusCode is 404 or 410)
