@@ -21,8 +21,17 @@
 </div>
 
 <section class="panel">
+    <div class="row">
+        <label>Column filters</label>
+        <input type="text" class="ops-filter" placeholder="Severity" @bind="_findingSeverityFilter" />
+        <input type="text" class="ops-filter" placeholder="Type" @bind="_findingTypeFilter" />
+        <input type="text" class="ops-filter" placeholder="Pattern" @bind="_findingPatternFilter" />
+        <input type="text" class="ops-filter" placeholder="Target" @bind="_findingTargetFilter" />
+        <input type="text" class="ops-filter" placeholder="Worker" @bind="_findingWorkerFilter" />
+        <button type="button" @onclick="ClearFindingFilters">Clear all filters</button>
+    </div>
     <NightmareDataGrid TGridItem="HighValueFindingRowDto"
-                       Items="_rows.AsQueryable()"
+                       Items="FilteredFindings"
                        @bind-SearchText="_findingSearch"
                        SearchPlaceholder="Search severity, type, pattern, URL, worker, snippet…"
                        ScrollPreset="NightmareDataGridScrollPreset.Tall"
@@ -43,7 +52,9 @@
         </TemplateColumn>
         <PropertyColumn Title="Target" Property="@(r => r.TargetRootDomain ?? "")" Sortable="true" />
         <TemplateColumn Title="Source URL" Context="r" SortBy="@SortFindingUrl">
-            <GridEllipsisCell Text="@r.SourceUrl" Title="@r.SourceUrl" />
+            <a href="@r.SourceUrl" target="_blank" rel="noopener noreferrer">
+                <GridEllipsisCell Text="@r.SourceUrl" Title="@r.SourceUrl" />
+            </a>
         </TemplateColumn>
         <PropertyColumn Title="Worker" Property="@(r => r.WorkerName)" Sortable="true" />
         <TemplateColumn Title="Score" Context="r" SortBy="@SortFindingScore">
@@ -60,6 +71,11 @@
     private readonly List<HighValueFindingRowDto> _rows = [];
     private bool _criticalOnly;
     private string _findingSearch = "";
+    private string _findingSeverityFilter = "";
+    private string _findingTypeFilter = "";
+    private string _findingPatternFilter = "";
+    private string _findingTargetFilter = "";
+    private string _findingWorkerFilter = "";
 
     private static readonly GridSort<HighValueFindingRowDto> SortFindingSeverity =
         GridSort<HighValueFindingRowDto>.ByAscending(static r => r.Severity);
@@ -82,6 +98,24 @@
         || GridTextFilter.Matches(r.WorkerName, q)
         || GridTextFilter.Matches(r.MatchedText, q)
         || GridTextFilter.Matches(r.Category, q);
+
+    private IQueryable<HighValueFindingRowDto> FilteredFindings =>
+        _rows.AsQueryable().Where(r =>
+            GridTextFilter.Matches(r.Severity, _findingSeverityFilter)
+            && GridTextFilter.Matches(r.FindingType, _findingTypeFilter)
+            && GridTextFilter.Matches(r.PatternName, _findingPatternFilter)
+            && GridTextFilter.Matches(r.TargetRootDomain, _findingTargetFilter)
+            && GridTextFilter.Matches(r.WorkerName, _findingWorkerFilter));
+
+    private void ClearFindingFilters()
+    {
+        _findingSearch = "";
+        _findingSeverityFilter = "";
+        _findingTypeFilter = "";
+        _findingPatternFilter = "";
+        _findingTargetFilter = "";
+        _findingWorkerFilter = "";
+    }
 
     protected override async Task OnInitializedAsync()
     {
