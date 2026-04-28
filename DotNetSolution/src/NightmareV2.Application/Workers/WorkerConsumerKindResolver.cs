@@ -16,6 +16,10 @@ public static class WorkerConsumerKindResolver
             return WorkerKeys.Enumeration;
         if (consumerTypeFullName.Contains("Workers.PortScan.Consumers.PortScanRequestedConsumer", StringComparison.Ordinal))
             return WorkerKeys.PortScan;
+        if (consumerTypeFullName.Contains("Workers.HighValue.Consumers.HighValueRegexConsumer", StringComparison.Ordinal))
+            return WorkerKeys.HighValueRegex;
+        if (consumerTypeFullName.Contains("Workers.HighValue.Consumers.HighValuePathGuessConsumer", StringComparison.Ordinal))
+            return WorkerKeys.HighValuePaths;
         return null;
     }
 }

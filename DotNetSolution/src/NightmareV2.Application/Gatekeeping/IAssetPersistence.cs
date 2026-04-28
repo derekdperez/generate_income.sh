@@ -11,5 +11,9 @@ public interface IAssetPersistence
         CanonicalAsset canonical,
         CancellationToken cancellationToken = default);
 
-    Task ConfirmUrlAssetAsync(Guid assetId, UrlFetchSnapshot snapshot, CancellationToken cancellationToken = default);
+    Task ConfirmUrlAssetAsync(
+        Guid assetId,
+        UrlFetchSnapshot snapshot,
+        Guid correlationId,
+        CancellationToken cancellationToken = default);
 }

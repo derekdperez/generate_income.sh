@@ -77,7 +77,8 @@ public sealed class SpiderAssetDiscoveredConsumer(
             contentType,
             DateTimeOffset.UtcNow);
 
-        await persistence.ConfirmUrlAssetAsync(assetId, snapshot, context.CancellationToken).ConfigureAwait(false);
+        await persistence.ConfirmUrlAssetAsync(assetId, snapshot, m.CorrelationId, context.CancellationToken)
+            .ConfigureAwait(false);
 
         var ct = contentType ?? "";
         foreach (var link in LinkHarvest.Extract(body, ct, fetchUri).Take(MaxLinksPerAsset))

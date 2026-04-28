@@ -26,6 +26,8 @@ internal static class OpsSnapshotBuilder
         (WorkerKeys.Spider, "SpiderAssetDiscoveredConsumer"),
         (WorkerKeys.Enumeration, "Workers.Enum.Consumers.TargetCreatedConsumer"),
         (WorkerKeys.PortScan, "PortScanRequestedConsumer"),
+        (WorkerKeys.HighValueRegex, "Workers.HighValue.Consumers.HighValueRegexConsumer"),
+        (WorkerKeys.HighValuePaths, "Workers.HighValue.Consumers.HighValuePathGuessConsumer"),
     ];
 
     public static void RegisterHttpClient(WebApplicationBuilder builder)
@@ -62,7 +64,15 @@ internal static class OpsSnapshotBuilder
 
         var rabbitByWorker = AggregateRabbitByWorker(queues);
 
-        var order = new[] { WorkerKeys.Gatekeeper, WorkerKeys.Spider, WorkerKeys.Enumeration, WorkerKeys.PortScan };
+        var order = new[]
+        {
+            WorkerKeys.Gatekeeper,
+            WorkerKeys.Spider,
+            WorkerKeys.Enumeration,
+            WorkerKeys.PortScan,
+            WorkerKeys.HighValueRegex,
+            WorkerKeys.HighValuePaths,
+        };
         var metricTasks = order.Select(key => BuildOneWorkerDetailAsync(db, key, h1, h24, rabbitByWorker, cancellationToken));
         var metrics = (await Task.WhenAll(metricTasks).ConfigureAwait(false)).ToList();
 

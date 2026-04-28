@@ -1,14 +1,16 @@
 using System.Text.Json;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using NightmareV2.Application.Assets;
 using NightmareV2.Application.Gatekeeping;
+using NightmareV2.Contracts;
 using NightmareV2.Contracts.Events;
 using NightmareV2.Domain.Entities;
 using NightmareV2.Infrastructure.Data;
 
 namespace NightmareV2.Infrastructure.Gatekeeping;
 
-public sealed class EfAssetPersistence(NightmareDbContext db) : IAssetPersistence
+public sealed class EfAssetPersistence(NightmareDbContext db, IPublishEndpoint publish) : IAssetPersistence
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -43,7 +45,11 @@ public sealed class EfAssetPersistence(NightmareDbContext db) : IAssetPersistenc
         return (entity.Id, true);
     }
 
-    public async Task ConfirmUrlAssetAsync(Guid assetId, UrlFetchSnapshot snapshot, CancellationToken cancellationToken = default)
+    public async Task ConfirmUrlAssetAsync(
+        Guid assetId,
+        UrlFetchSnapshot snapshot,
+        Guid correlationId,
+        CancellationToken cancellationToken = default)
     {
         var json = JsonSerializer.Serialize(snapshot, JsonOpts);
         await db.Assets
@@ -54,5 +60,31 @@ public sealed class EfAssetPersistence(NightmareDbContext db) : IAssetPersistenc
                     .SetProperty(a => a.TypeDetailsJson, json),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        var meta = await db.Assets.AsNoTracking()
+            .Where(a => a.Id == assetId)
+            .Select(a => new { a.TargetId, a.RawValue })
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (meta is null)
+            return;
+
+        try
+        {
+            await publish.Publish(
+                    new ScannableContentAvailable(
+                        assetId,
+                        meta.TargetId,
+                        meta.RawValue ?? "",
+                        correlationId == Guid.Empty ? NewId.NextGuid() : correlationId,
+                        DateTimeOffset.UtcNow,
+                        ScannableContentSource.UrlHttpResponse),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Bus publish must not fail persistence; workers can still use stored JSON if needed.
+        }
     }
 }

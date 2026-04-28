@@ -19,6 +19,8 @@ public static class NightmareDbSeeder
             WorkerKeys.Spider,
             WorkerKeys.Enumeration,
             WorkerKeys.PortScan,
+            WorkerKeys.HighValueRegex,
+            WorkerKeys.HighValuePaths,
         };
         foreach (var key in required)
         {

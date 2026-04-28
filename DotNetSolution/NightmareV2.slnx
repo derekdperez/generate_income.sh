@@ -9,5 +9,6 @@
     <Project Path="src/NightmareV2.Workers.Enum/NightmareV2.Workers.Enum.csproj" />
     <Project Path="src/NightmareV2.Workers.PortScan/NightmareV2.Workers.PortScan.csproj" />
     <Project Path="src/NightmareV2.Workers.Spider/NightmareV2.Workers.Spider.csproj" />
+    <Project Path="src/NightmareV2.Workers.HighValue/NightmareV2.Workers.HighValue.csproj" />
   </Folder>
 </Solution>

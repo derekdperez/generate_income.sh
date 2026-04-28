@@ -1,0 +1,94 @@
+@page "/high-value-findings"
+@rendermode InteractiveServer
+@using NightmareV2.CommandCenter.Models
+@implements IDisposable
+@inject HttpClient Http
+
+<PageTitle>High value findings · Nightmare v2</PageTitle>
+
+<h1>High value findings</h1>
+<p class="muted">Regex matches from stored HTTP responses and sensitive path confirmations. Path probes are queued by <code>HighValuePaths</code> and fetched by the normal Spider pipeline.</p>
+
+<div class="row">
+    <label>
+        <input type="checkbox" @bind="_criticalOnly" @bind:after="ReloadAsync" />
+        Critical only
+    </label>
+    <button type="button" @onclick="ReloadAsync">Refresh</button>
+</div>
+
+<section class="panel">
+    <div class="scroll tall">
+        <table class="grid">
+            <thead>
+            <tr>
+                <th>Discovered (UTC)</th><th>Severity</th><th>Type</th><th>Pattern</th><th>Target</th>
+                <th>Source URL</th><th>Worker</th><th>Score</th><th>Snippet</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var r in _rows)
+            {
+                <tr>
+                    <td>@r.DiscoveredAtUtc.UtcDateTime.ToString("u")</td>
+                    <td><strong>@r.Severity</strong></td>
+                    <td>@r.FindingType</td>
+                    <td class="clip"><code>@r.PatternName</code></td>
+                    <td class="clip">@(r.TargetRootDomain ?? "—")</td>
+                    <td class="clip mono">@r.SourceUrl</td>
+                    <td>@r.WorkerName</td>
+                    <td>@(r.ImportanceScore?.ToString() ?? "—")</td>
+                    <td class="clip mono">@(r.MatchedText ?? "—")</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private readonly CancellationTokenSource _pollCts = new();
+    private readonly List<HighValueFindingRowDto> _rows = [];
+    private bool _criticalOnly;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync().ConfigureAwait(false);
+        _ = PollAsync();
+    }
+
+    private async Task PollAsync()
+    {
+        try
+        {
+            while (!_pollCts.IsCancellationRequested)
+            {
+                await Task.Delay(4000, _pollCts.Token).ConfigureAwait(false);
+                await ReloadAsync().ConfigureAwait(false);
+                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            var qs = _criticalOnly ? "?criticalOnly=true&take=800" : "?take=800";
+            var list = await Http.GetFromJsonAsync<List<HighValueFindingRowDto>>($"/api/high-value-findings{qs}")
+                .ConfigureAwait(false);
+            _rows.Clear();
+            if (list is not null)
+                _rows.AddRange(list);
+        }
+        catch
+        {
+            _rows.Clear();
+        }
+    }
+
+    public void Dispose() => _pollCts.Cancel();
+}

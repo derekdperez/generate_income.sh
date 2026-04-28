@@ -150,5 +150,23 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  worker-highvalue:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+      args:
+        <<: *dotnet-build-args
+        PROJECT_DIR: NightmareV2.Workers.HighValue
+        APP_DLL: NightmareV2.Workers.HighValue.dll
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   pgdata:

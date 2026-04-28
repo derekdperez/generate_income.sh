@@ -167,6 +167,41 @@ app.MapGet(
     .WithName("ListAssets");
 
 app.MapGet(
+        "/api/high-value-findings",
+        async (NightmareDbContext db, bool? criticalOnly, int? take, CancellationToken ct) =>
+        {
+            var limit = Math.Clamp(take ?? 500, 1, 5000);
+            var q = db.HighValueFindings.AsNoTracking()
+                .Join(
+                    db.Targets.AsNoTracking(),
+                    f => f.TargetId,
+                    t => t.Id,
+                    (f, t) => new { f, t.RootDomain });
+            if (criticalOnly == true)
+                q = q.Where(x => x.f.Severity == "Critical");
+            var rows = await q.OrderByDescending(x => x.f.DiscoveredAtUtc)
+                .Take(limit)
+                .Select(x => new HighValueFindingRowDto(
+                    x.f.Id,
+                    x.f.TargetId,
+                    x.f.SourceAssetId,
+                    x.f.FindingType,
+                    x.f.Severity,
+                    x.f.PatternName,
+                    x.f.Category,
+                    x.f.MatchedText,
+                    x.f.SourceUrl,
+                    x.f.WorkerName,
+                    x.f.ImportanceScore,
+                    x.f.DiscoveredAtUtc,
+                    x.RootDomain))
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            return Results.Ok(rows);
+        })
+    .WithName("ListHighValueFindings");
+
+app.MapGet(
         "/api/workers",
         async (NightmareDbContext db, CancellationToken ct) =>
         {

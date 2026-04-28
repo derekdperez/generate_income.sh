@@ -9,6 +9,7 @@ public sealed class NightmareDbContext(DbContextOptions<NightmareDbContext> opti
     public DbSet<StoredAsset> Assets => Set<StoredAsset>();
     public DbSet<BusJournalEntry> BusJournal => Set<BusJournalEntry>();
     public DbSet<WorkerSwitch> WorkerSwitches => Set<WorkerSwitch>();
+    public DbSet<HighValueFinding> HighValueFindings => Set<HighValueFinding>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -54,6 +55,30 @@ public sealed class NightmareDbContext(DbContextOptions<NightmareDbContext> opti
             e.ToTable("worker_switches");
             e.HasKey(x => x.WorkerKey);
             e.Property(x => x.WorkerKey).HasMaxLength(64);
+        });
+
+        modelBuilder.Entity<HighValueFinding>(e =>
+        {
+            e.ToTable("high_value_findings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TargetId).HasColumnName("target_id");
+            e.Property(x => x.SourceAssetId).HasColumnName("source_asset_id");
+            e.Property(x => x.FindingType).HasColumnName("finding_type").HasMaxLength(64).IsRequired();
+            e.Property(x => x.Severity).HasColumnName("severity").HasMaxLength(32).IsRequired();
+            e.Property(x => x.PatternName).HasColumnName("pattern_name").HasMaxLength(256).IsRequired();
+            e.Property(x => x.Category).HasColumnName("category").HasMaxLength(128);
+            e.Property(x => x.MatchedText).HasColumnName("matched_text");
+            e.Property(x => x.SourceUrl).HasColumnName("source_url").HasMaxLength(4096).IsRequired();
+            e.Property(x => x.WorkerName).HasColumnName("worker_name").HasMaxLength(128).IsRequired();
+            e.Property(x => x.ImportanceScore).HasColumnName("importance_score");
+            e.Property(x => x.DiscoveredAtUtc).HasColumnName("discovered_at_utc");
+            e.HasIndex(x => x.TargetId);
+            e.HasIndex(x => x.DiscoveredAtUtc);
+            e.HasOne(x => x.Target)
+                .WithMany()
+                .HasForeignKey(x => x.TargetId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

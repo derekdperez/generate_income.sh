@@ -8,4 +8,6 @@ public static class WorkerKeys
     /// <summary>Matches <c>worker_switches.worker_key</c> seeded as <c>Enum</c>.</summary>
     public const string Enumeration = "Enum";
     public const string PortScan = "PortScan";
+    public const string HighValueRegex = "HighValueRegex";
+    public const string HighValuePaths = "HighValuePaths";
 }

@@ -4,7 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 using NightmareV2.Application.Gatekeeping;
 using NightmareV2.Application.Workers;
 using NightmareV2.Infrastructure.Data;
+using NightmareV2.Application.HighValue;
 using NightmareV2.Infrastructure.Gatekeeping;
+using NightmareV2.Infrastructure.HighValue;
 using NightmareV2.Infrastructure.Messaging;
 using NightmareV2.Infrastructure.Workers;
 using StackExchange.Redis;
@@ -30,6 +32,7 @@ public static class DependencyInjection
         services.AddSingleton<IAssetDeduplicator, RedisAssetDeduplicator>();
         services.AddSingleton<ITargetScopeEvaluator, DnsTargetScopeEvaluator>();
         services.AddScoped<IAssetPersistence, EfAssetPersistence>();
+        services.AddScoped<IHighValueFindingWriter, EfHighValueFindingWriter>();
         services.AddScoped<IWorkerToggleReader, EfWorkerToggleReader>();
         services.AddSingleton<BusJournalPublishObserver>();
         services.AddSingleton<BusJournalConsumeObserver>();

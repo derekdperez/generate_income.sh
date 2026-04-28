@@ -89,6 +89,21 @@ public sealed record WorkerDetailStatsDto(
     IReadOnlyList<string> MatchedRabbitQueueNames);
 
 /// <summary>Aggregated Ops dashboard payload (polled every few seconds).</summary>
+public sealed record HighValueFindingRowDto(
+    Guid Id,
+    Guid TargetId,
+    Guid? SourceAssetId,
+    string FindingType,
+    string Severity,
+    string PatternName,
+    string? Category,
+    string? MatchedText,
+    string SourceUrl,
+    string WorkerName,
+    int? ImportanceScore,
+    DateTimeOffset DiscoveredAtUtc,
+    string? TargetRootDomain);
+
 public sealed record OpsSnapshotDto(
     IReadOnlyList<WorkerSwitchDto> Workers,
     WorkerActivitySnapshotDto WorkerActivity,
