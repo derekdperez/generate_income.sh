@@ -422,6 +422,7 @@
         await ReloadHttpQueueAsync().ConfigureAwait(false);
         await ReloadHttpQueueSettingsAsync().ConfigureAwait(false);
         await ReloadVolatileAsync().ConfigureAwait(false);
+        await ReloadBusAsync().ConfigureAwait(false);
         try
         {
             _maintenanceStatus = await Http.GetFromJsonAsync<MaintenanceStatusDto>("/api/maintenance/status").ConfigureAwait(false);
@@ -451,6 +452,33 @@
         catch
         {
             _assets.Clear();
+        }
+    }
+
+    private async Task ReloadBusAsync()
+    {
+        try
+        {
+            var live = await Http.GetFromJsonAsync<List<BusJournalRowDto>>("/api/bus/live?minutes=5&take=200").ConfigureAwait(false);
+            _liveBus.Clear();
+            if (live is not null)
+                _liveBus.AddRange(live);
+        }
+        catch
+        {
+            _liveBus.Clear();
+        }
+
+        try
+        {
+            var hist = await Http.GetFromJsonAsync<List<BusJournalRowDto>>("/api/bus/history?take=400").ConfigureAwait(false);
+            _historyBus.Clear();
+            if (hist is not null)
+                _historyBus.AddRange(hist);
+        }
+        catch
+        {
+            _historyBus.Clear();
         }
     }
 
@@ -645,6 +673,34 @@
             var resp = await MaintenancePostAsync("/api/maintenance/clear-assets-filtered", body).ConfigureAwait(false);
             var txt = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             _maintenanceMessage = resp.IsSuccessStatusCode ? $"Deleted filtered assets: {txt}" : $"Delete filtered assets failed ({(int)resp.StatusCode}): {txt}";
+            if (resp.IsSuccessStatusCode)
+                await ReloadAllAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task ClearAssetsMatchingAssetGridFiltersAsync()
+    {
+        var kind = string.IsNullOrWhiteSpace(_filterKindCol) ? null : _filterKindCol.Trim();
+        var status = string.IsNullOrWhiteSpace(_filterStatusCol) ? null : _filterStatusCol.Trim();
+        var discoveredBy = string.IsNullOrWhiteSpace(_filterPipelineCol) ? null : _filterPipelineCol.Trim();
+        if (kind is null && status is null && discoveredBy is null)
+        {
+            _maintenanceMessage = "Set at least one Assets column filter (Kind, Status, or Pipeline) before deleting.";
+            return;
+        }
+
+        _maintenanceBusy = true;
+        _maintenanceMessage = "";
+        try
+        {
+            var body = new MaintenanceClearAssetsFilteredBody(_phraseClearFiltered.Trim(), kind, status, discoveredBy);
+            var resp = await MaintenancePostAsync("/api/maintenance/clear-assets-filtered", body).ConfigureAwait(false);
+            var txt = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            _maintenanceMessage = resp.IsSuccessStatusCode ? $"Deleted assets (grid filters): {txt}" : $"Delete failed ({(int)resp.StatusCode}): {txt}";
             if (resp.IsSuccessStatusCode)
                 await ReloadAllAsync().ConfigureAwait(false);
         }
