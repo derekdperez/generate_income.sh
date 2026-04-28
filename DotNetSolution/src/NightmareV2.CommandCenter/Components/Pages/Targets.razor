@@ -72,8 +72,14 @@
 else
 {
     <section class="panel">
+        <div class="row">
+            <label>Column filters</label>
+            <input type="text" class="ops-filter" placeholder="Root domain" @bind="_targetRootFilter" />
+            <input type="text" class="ops-filter" placeholder="Max depth" @bind="_targetDepthFilter" />
+            <button type="button" @onclick="ClearTargetFilters">Clear all filters</button>
+        </div>
         <NightmareDataGrid TGridItem="TargetSummary"
-                           Items="_rows.AsQueryable()"
+                           Items="FilteredTargets"
                            @bind-SearchText="_targetSearch"
                            SearchPlaceholder="Search root domain or id…"
                            ScrollPreset="NightmareDataGridScrollPreset.Tall"
@@ -102,6 +108,8 @@ else
     private readonly TargetForm _form = new();
     private readonly List<TargetSummary> _rows = new();
     private string _targetSearch = "";
+    private string _targetRootFilter = "";
+    private string _targetDepthFilter = "";
     private string? _status;
     private string? _bulkStatus;
     private TargetEditForm? _editing;
@@ -260,6 +268,18 @@ else
     private static bool TargetRowMatches(TargetSummary r, string q) =>
         GridTextFilter.Matches(r.RootDomain, q)
         || GridTextFilter.Matches(r.Id.ToString(), q);
+
+    private IQueryable<TargetSummary> FilteredTargets =>
+        _rows.AsQueryable().Where(r =>
+            GridTextFilter.Matches(r.RootDomain, _targetRootFilter)
+            && GridTextFilter.Matches(r.GlobalMaxDepth.ToString(), _targetDepthFilter));
+
+    private void ClearTargetFilters()
+    {
+        _targetSearch = "";
+        _targetRootFilter = "";
+        _targetDepthFilter = "";
+    }
 
     private sealed class TargetEditForm
     {
