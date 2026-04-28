@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Linq;
 using Microsoft.AspNetCore.Components.QuickGrid;
 using NightmareV2.CommandCenter.Components.DataGrid;
@@ -8,127 +7,8 @@ namespace NightmareV2.CommandCenter.Components.Pages;
 
 public partial class Ops
 {
-    private readonly PaginationState _workersPagination = new() { ItemsPerPage = 4 };
-
-    private static readonly GridSort<AssetCountByDomainDto> SortTopDomainByRoot =
-        GridSort<AssetCountByDomainDto>.ByAscending(static r => r.RootDomain);
-
-    private static readonly GridSort<DiscoveredByCountDto> SortDiscoveredByPipeline =
-        GridSort<DiscoveredByCountDto>.ByAscending(static r => r.DiscoveredBy);
-
-    private static readonly GridSort<WorkerDetailStatsDto> SortWorkerBus1h =
-        GridSort<WorkerDetailStatsDto>.ByDescending(static m => m.BusConsumesLast1Hour);
-
-    private static readonly GridSort<WorkerDetailStatsDto> SortWorkerLastConsume =
-        GridSort<WorkerDetailStatsDto>.ByDescending(static m => m.LastConsumeUtc);
-
-    private static readonly GridSort<WorkerDetailStatsDto> SortWorkerDbAssets1h =
-        GridSort<WorkerDetailStatsDto>.ByDescending(static m => m.DbAssetsAttributedLast1Hour);
-
-    private static readonly GridSort<WorkerDetailStatsDto> SortWorkerRabbitReady =
-        GridSort<WorkerDetailStatsDto>.ByDescending(static m => m.RabbitMessagesReady);
-
-    private static readonly GridSort<RabbitQueueBriefDto> SortRabbitQueueName =
-        GridSort<RabbitQueueBriefDto>.ByAscending(static q => q.Name);
-
-    private static readonly GridSort<WorkerKindSummaryDto> SortWorkerSummaryToggle =
-        GridSort<WorkerKindSummaryDto>.ByAscending(static s => s.ToggleEnabled);
-
-    private static readonly GridSort<WorkerKindSummaryDto> SortWorkerSummaryLastActivity =
-        GridSort<WorkerKindSummaryDto>.ByDescending(static s => s.LastActivityUtc);
-
-    private static readonly GridSort<WorkerInstanceActivityDto> SortInstanceToggle =
-        GridSort<WorkerInstanceActivityDto>.ByAscending(static i => i.ToggleEnabled);
-
-    private static readonly GridSort<WorkerInstanceActivityDto> SortInstancePayload =
-        GridSort<WorkerInstanceActivityDto>.ByAscending(static i => i.LastPayloadPreview);
-
-    private static readonly GridSort<WorkerSwitchDto> SortWorkerSwitchEnabled =
-        GridSort<WorkerSwitchDto>.ByAscending(static w => w.IsEnabled);
-
     private static readonly GridSort<AssetGridRowDto> SortAssetDiscoveryContext =
         GridSort<AssetGridRowDto>.ByAscending(static a => a.DiscoveryContext);
-
-    private static string InstanceRowKey(WorkerInstanceActivityDto i) =>
-        string.Concat(
-            i.HostName,
-            "|",
-            i.ConsumerShortName,
-            "|",
-            i.LastCompletedAtUtc.Ticks.ToString(CultureInfo.InvariantCulture),
-            "|",
-            i.LastMessageType);
-
-    private sealed record TrafficRow(string Label, long LastHour, long Last24Hours);
-
-    private string _filterTopDomains = "";
-    private string _filterDiscoveredBy = "";
-    private string _filterWorkerMetrics = "";
-    private string _filterRabbitQueues = "";
-    private string _filterWorkerSummaries = "";
-    private string _filterWorkerInstances = "";
-    private string _filterWorkers = "";
-    private string _filterAssets = "";
-    private string _filterLiveBus = "";
-    private string _filterHistoryBus = "";
-
-    private IQueryable<TrafficRow> BusTrafficRows =>
-        _snapshot is null
-            ? Enumerable.Empty<TrafficRow>().AsQueryable()
-            : new[]
-            {
-                new TrafficRow("Publishes", _snapshot.BusTraffic.PublishesLast1Hour, _snapshot.BusTraffic.PublishesLast24Hours),
-                new TrafficRow("Consumes", _snapshot.BusTraffic.ConsumesLast1Hour, _snapshot.BusTraffic.ConsumesLast24Hours),
-            }.AsQueryable();
-
-    private IQueryable<AssetCountByDomainDto> FilteredTopDomains =>
-        _snapshot is null
-            ? Enumerable.Empty<AssetCountByDomainDto>().AsQueryable()
-            : _snapshot.Assets.TopDomainsByAssetCount.AsQueryable().Where(r => GridTextFilter.Matches(r.RootDomain, _filterTopDomains));
-
-    private IQueryable<DiscoveredByCountDto> FilteredDiscoveredBy =>
-        _snapshot is null
-            ? Enumerable.Empty<DiscoveredByCountDto>().AsQueryable()
-            : _snapshot.Assets.AssetsByDiscoveredBy.AsQueryable().Where(r => GridTextFilter.Matches(r.DiscoveredBy, _filterDiscoveredBy));
-
-    private IQueryable<WorkerDetailStatsDto> FilteredWorkerMetrics =>
-        _snapshot is null || _snapshot.WorkerMetrics is null
-            ? Enumerable.Empty<WorkerDetailStatsDto>().AsQueryable()
-            : _snapshot.WorkerMetrics.AsQueryable().Where(m =>
-                GridTextFilter.Matches(m.WorkerKey, _filterWorkerMetrics)
-                || (m.LastConsumeUtc != null
-                    && GridTextFilter.Matches(m.LastConsumeUtc.GetValueOrDefault().UtcDateTime.ToString("O", CultureInfo.InvariantCulture), _filterWorkerMetrics))
-                || GridTextFilter.Matches(string.Join(' ', m.MatchedRabbitQueueNames), _filterWorkerMetrics));
-
-    private IQueryable<RabbitQueueBriefDto> FilteredRabbitQueues =>
-        _snapshot is null
-            ? Enumerable.Empty<RabbitQueueBriefDto>().AsQueryable()
-            : _snapshot.RabbitQueues.AsQueryable().Where(q =>
-                GridTextFilter.Matches(q.Name, _filterRabbitQueues)
-                || GridTextFilter.Matches(q.LikelyWorkerKey, _filterRabbitQueues));
-
-    private IQueryable<WorkerKindSummaryDto> FilteredWorkerSummaries =>
-        _snapshot is null || _snapshot.WorkerActivity is null
-            ? Enumerable.Empty<WorkerKindSummaryDto>().AsQueryable()
-            : _snapshot.WorkerActivity.Summaries.AsQueryable().Where(s =>
-                GridTextFilter.Matches(s.WorkerKey, _filterWorkerSummaries)
-                || GridTextFilter.Matches(s.RollupActivityLabel, _filterWorkerSummaries));
-
-    private IQueryable<WorkerInstanceActivityDto> FilteredWorkerInstances =>
-        _snapshot is null || _snapshot.WorkerActivity is null
-            ? Enumerable.Empty<WorkerInstanceActivityDto>().AsQueryable()
-            : _snapshot.WorkerActivity.Instances.AsQueryable().Where(i =>
-                GridTextFilter.Matches(i.HostName, _filterWorkerInstances)
-                || GridTextFilter.Matches(i.WorkerKind, _filterWorkerInstances)
-                || GridTextFilter.Matches(i.ConsumerShortName, _filterWorkerInstances)
-                || GridTextFilter.Matches(i.ActivityLabel, _filterWorkerInstances)
-                || GridTextFilter.Matches(i.LastMessageType, _filterWorkerInstances)
-                || GridTextFilter.Matches(i.LastPayloadPreview, _filterWorkerInstances));
-
-    private IQueryable<WorkerSwitchDto> FilteredWorkers =>
-        _snapshot is null
-            ? Enumerable.Empty<WorkerSwitchDto>().AsQueryable()
-            : _snapshot.Workers.AsQueryable().Where(w => GridTextFilter.Matches(w.WorkerKey, _filterWorkers));
 
     private IQueryable<AssetGridRowDto> FilteredAssets =>
         _assets.AsQueryable().Where(a =>
@@ -138,19 +18,4 @@ public partial class Ops
             || GridTextFilter.Matches(a.DiscoveredBy, _filterAssets)
             || GridTextFilter.Matches(a.DiscoveryContext, _filterAssets)
             || GridTextFilter.Matches(a.CanonicalKey, _filterAssets));
-
-    private IQueryable<BusJournalRowDto> FilteredLiveBus =>
-        _liveBus.AsQueryable().Where(e =>
-            GridTextFilter.Matches(e.MessageType, _filterLiveBus)
-            || GridTextFilter.Matches(e.HostName, _filterLiveBus)
-            || GridTextFilter.Matches(e.PayloadJson, _filterLiveBus));
-
-    private IQueryable<BusJournalRowDto> FilteredHistoryBus =>
-        _historyBus.AsQueryable().Where(e =>
-            GridTextFilter.Matches(e.Direction, _filterHistoryBus)
-            || GridTextFilter.Matches(e.MessageType, _filterHistoryBus)
-            || GridTextFilter.Matches(e.ConsumerType, _filterHistoryBus)
-            || GridTextFilter.Matches(e.HostName, _filterHistoryBus)
-            || GridTextFilter.Matches(e.PayloadJson, _filterHistoryBus)
-            || e.Id.ToString(CultureInfo.InvariantCulture).Contains(_filterHistoryBus, StringComparison.OrdinalIgnoreCase));
 }
