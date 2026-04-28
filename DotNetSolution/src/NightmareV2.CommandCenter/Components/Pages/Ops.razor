@@ -10,13 +10,170 @@
 <p class="muted">Live bus shows recent publishes. History includes publishes and consumes as each host records them. Toggles are checked at the start of each message: disabling <strong>Gatekeeper</strong> skips Raw admissions (no Indexed fan-out); disabling <strong>Spider</strong> / <strong>Enum</strong> / <strong>PortScan</strong> skips that worker’s step for that message (already-running HTTP on one message may still finish).</p>
 
 <section class="panel">
+    <h2>Data overview</h2>
+    @if (_snapshot is null)
+    {
+        <p>Loading summary…</p>
+    }
+    else
+    {
+        <p class="muted">Counts are from Postgres (<code>stored_assets</code>, <code>recon_targets</code>, <code>bus_journal</code>). Rabbit queue depth requires <code>RabbitMq:ManagementUrl</code> (set in Docker compose).</p>
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total assets</div>
+                <div class="stat-value">@_snapshot.Assets.TotalAssets</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Targets</div>
+                <div class="stat-value">@_snapshot.Assets.TotalTargets</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Assets last 1h / 24h</div>
+                <div class="stat-value">@_snapshot.Assets.AssetsLast1Hour / @_snapshot.Assets.AssetsLast24Hours</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Last asset discovered (UTC)</div>
+                <div class="stat-value small">@(_snapshot.Assets.LastAssetDiscoveredUtc is { } la ? la.UtcDateTime.ToString("O") : "—")</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Lifecycle: Discovered / Confirmed</div>
+                <div class="stat-value">@_snapshot.Assets.AssetsInDiscoveredState / @_snapshot.Assets.AssetsConfirmedState</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Fetchable still “Discovered”</div>
+                <div class="stat-value" title="URL-like kinds not yet confirmed (often waiting on Spider / queue)">@_snapshot.Assets.FetchableAssetsStillDiscovered</div>
+            </div>
+        </div>
+
+        <h3 class="subhead">Bus journal traffic</h3>
+        <table class="grid tight">
+            <thead>
+            <tr><th></th><th>Last 1 hour</th><th>Last 24 hours</th></tr>
+            </thead>
+            <tbody>
+            <tr><td>Publishes</td><td>@_snapshot.BusTraffic.PublishesLast1Hour</td><td>@_snapshot.BusTraffic.PublishesLast24Hours</td></tr>
+            <tr><td>Consumes</td><td>@_snapshot.BusTraffic.ConsumesLast1Hour</td><td>@_snapshot.BusTraffic.ConsumesLast24Hours</td></tr>
+            </tbody>
+        </table>
+
+        <h3 class="subhead">Assets by root domain (top @(_snapshot.Assets.TopDomainsByAssetCount.Count))</h3>
+        @if (_snapshot.Assets.TopDomainsByAssetCount.Count == 0)
+        {
+            <p class="muted">No assets yet.</p>
+        }
+        else
+        {
+            <div class="scroll short">
+                <table class="grid">
+                    <thead><tr><th>Root domain</th><th>Assets</th></tr></thead>
+                    <tbody>
+                    @foreach (var row in _snapshot.Assets.TopDomainsByAssetCount)
+                    {
+                        <tr><td class="clip"><code>@row.RootDomain</code></td><td>@row.Count</td></tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <h3 class="subhead">Assets by <code>discovered_by</code></h3>
+        <div class="scroll short">
+            <table class="grid">
+                <thead><tr><th>Discovered by</th><th>Count</th></tr></thead>
+                <tbody>
+                @foreach (var row in _snapshot.Assets.AssetsByDiscoveredBy)
+                {
+                    <tr><td class="clip"><code>@row.DiscoveredBy</code></td><td>@row.Count</td></tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="panel">
+    <h2>Worker metrics</h2>
+    @if (_snapshot is null)
+    {
+        <p>Loading…</p>
+    }
+    else
+    {
+        <p class="muted">Per-worker bus consumes (journal) and DB rows attributed to <code>discovered_by</code>. Spider: new Raw URLs emitted to the bus appear as <code>spider-worker</code> rows. Rabbit columns sum queues whose names match that worker (heuristic). <strong>Ready + unacked</strong> approximates messages waiting to be processed (incl. in-flight unacked).</p>
+        <table class="grid">
+            <thead>
+            <tr>
+                <th>Worker</th>
+                <th>Bus consumes<br/><span class="th-sub">1h / 24h</span></th>
+                <th>Last consume (UTC)</th>
+                <th>DB assets attributed<br/><span class="th-sub">1h / 24h</span></th>
+                <th>Rabbit ready / unacked</th>
+                <th>Matched queues</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var m in _snapshot.WorkerMetrics)
+            {
+                <tr>
+                    <td><code>@m.WorkerKey</code></td>
+                    <td>@m.BusConsumesLast1Hour / @m.BusConsumesLast24Hours</td>
+                    <td class="small">@(m.LastConsumeUtc is { } t ? t.UtcDateTime.ToString("O") : "—")</td>
+                    <td>@m.DbAssetsAttributedLast1Hour / @m.DbAssetsAttributedLast24Hours</td>
+                    <td>
+                        @if (_snapshot.RabbitManagementAvailable)
+                        {
+                            <span>@m.RabbitMessagesReady / @m.RabbitMessagesUnacked</span>
+                        }
+                        else
+                        {
+                            <span class="muted">n/a</span>
+                        }
+                    </td>
+                    <td class="clip small">@(m.MatchedRabbitQueueNames.Count == 0 ? "—" : string.Join(", ", m.MatchedRabbitQueueNames))</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+
+        @if (_snapshot.RabbitManagementAvailable && _snapshot.RabbitQueues.Count > 0)
+        {
+            <h3 class="subhead">All Rabbit queues (management API)</h3>
+            <div class="scroll short">
+                <table class="grid">
+                    <thead>
+                    <tr><th>Queue</th><th>Msgs</th><th>Ready</th><th>Unacked</th><th>Consumers</th><th>Guess worker</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var q in _snapshot.RabbitQueues)
+                    {
+                        <tr>
+                            <td class="clip"><code>@q.Name</code></td>
+                            <td>@q.Messages</td>
+                            <td>@q.MessagesReady</td>
+                            <td>@q.MessagesUnacknowledged</td>
+                            <td>@q.Consumers</td>
+                            <td>@(q.LikelyWorkerKey ?? "—")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else if (!_snapshot.RabbitManagementAvailable)
+        {
+            <p class="muted">RabbitMQ management URL not configured or unreachable — queue depths hidden. Set <code>RabbitMq:ManagementUrl</code> (e.g. <code>http://rabbitmq:15672</code> in Docker).</p>
+        }
+    }
+</section>
+
+<section class="panel">
     <h2>Worker activity (from bus journal)</h2>
     <p class="muted">Each container/process writes consumes to the shared journal with its hostname. <strong>Hot / Recently active</strong> means a message <em>completed</em> on that instance recently — not live in-flight work. <strong>Stale</strong> usually means the container is gone or idle. Unknown consumers appear under <code>Other</code>.</p>
-    @if (_workerActivity is null)
+    @if (_snapshot?.WorkerActivity is null)
     {
         <p>Loading activity…</p>
     }
-    else if (_workerActivity.Summaries.Count == 0 && _workerActivity.Instances.Count == 0)
+    else if (_snapshot.WorkerActivity.Summaries.Count == 0 && _snapshot.WorkerActivity.Instances.Count == 0)
     {
         <p>No consume activity recorded in the last 24 hours.</p>
     }
@@ -28,7 +185,7 @@
             <tr><th>Worker</th><th>Toggle</th><th>Instances (24h)</th><th>Last completed (UTC)</th><th>Roll-up status</th></tr>
             </thead>
             <tbody>
-            @foreach (var s in _workerActivity.Summaries)
+            @foreach (var s in _snapshot.WorkerActivity.Summaries)
             {
                 <tr>
                     <td><code>@s.WorkerKey</code></td>
@@ -42,7 +199,7 @@
         </table>
 
         <h3 class="subhead">By host &amp; consumer</h3>
-        @if (_workerActivity.Instances.Count == 0)
+        @if (_snapshot.WorkerActivity.Instances.Count == 0)
         {
             <p class="muted">No per-instance consume rows (journal may only have publishes).</p>
         }
@@ -56,7 +213,7 @@
                 </tr>
                 </thead>
                 <tbody>
-                @foreach (var i in _workerActivity.Instances)
+                @foreach (var i in _snapshot.WorkerActivity.Instances)
                 {
                     <tr>
                         <td class="clip"><code>@i.HostName</code></td>
@@ -77,7 +234,11 @@
 
 <section class="panel">
     <h2>Workers</h2>
-    @if (_workers.Count == 0)
+    @if (_snapshot is null)
+    {
+        <p>Loading…</p>
+    }
+    else if (_snapshot.Workers.Count == 0)
     {
         <p>No worker switches (seed the database).</p>
     }
@@ -88,7 +249,7 @@
             <tr><th>Key</th><th>Enabled</th><th>Updated (UTC)</th><th></th></tr>
             </thead>
             <tbody>
-            @foreach (var w in _workers)
+            @foreach (var w in _snapshot.Workers)
             {
                 <tr>
                     <td><code>@w.WorkerKey</code></td>
@@ -192,11 +353,10 @@
 @code {
     private readonly CancellationTokenSource _pollCts = new();
     private readonly List<TargetSummary> _targets = [];
-    private readonly List<WorkerSwitchDto> _workers = [];
     private readonly List<AssetGridRowDto> _assets = [];
     private readonly List<BusJournalRowDto> _liveBus = [];
     private readonly List<BusJournalRowDto> _historyBus = [];
-    private WorkerActivitySnapshotDto? _workerActivity;
+    private OpsSnapshotDto? _snapshot;
     private string _targetFilter = "";
     private bool _busyWorkers;
 
@@ -237,13 +397,8 @@
             if (hist is not null)
                 _historyBus.AddRange(hist);
 
-            var w = await Http.GetFromJsonAsync<List<WorkerSwitchDto>>("/api/workers").ConfigureAwait(false);
-            _workers.Clear();
-            if (w is not null)
-                _workers.AddRange(w);
-
-            var act = await Http.GetFromJsonAsync<WorkerActivitySnapshotDto>("/api/workers/activity").ConfigureAwait(false);
-            _workerActivity = act;
+            var snap = await Http.GetFromJsonAsync<OpsSnapshotDto>("/api/ops/snapshot").ConfigureAwait(false);
+            _snapshot = snap;
         }
         catch
         {

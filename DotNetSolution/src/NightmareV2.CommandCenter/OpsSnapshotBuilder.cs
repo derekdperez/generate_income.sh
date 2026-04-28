@@ -1,0 +1,362 @@
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
+using NightmareV2.Application.Workers;
+using NightmareV2.CommandCenter.Models;
+using NightmareV2.Contracts;
+using NightmareV2.Domain.Entities;
+using NightmareV2.Infrastructure.Data;
+
+namespace NightmareV2.CommandCenter;
+
+internal static class OpsSnapshotBuilder
+{
+    private const string HttpClientName = "ops-rabbit";
+
+    private static readonly JsonSerializerOptions RabbitJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    private static readonly (string Key, string ConsumerSubstring)[] WorkerConsumeMarkers =
+    [
+        (WorkerKeys.Gatekeeper, "Gatekeeper.Consumers.AssetDiscoveredConsumer"),
+        (WorkerKeys.Spider, "SpiderAssetDiscoveredConsumer"),
+        (WorkerKeys.Enumeration, "Workers.Enum.Consumers.TargetCreatedConsumer"),
+        (WorkerKeys.PortScan, "PortScanRequestedConsumer"),
+    ];
+
+    public static void RegisterHttpClient(WebApplicationBuilder builder)
+    {
+        builder.Services.AddHttpClient(HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(12));
+    }
+
+    public static async Task<OpsSnapshotDto> BuildAsync(
+        NightmareDbContext db,
+        IHttpClientFactory httpFactory,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var h1 = now.AddHours(-1);
+        var h24 = now.AddHours(-24);
+
+        var workersTask = db.WorkerSwitches.AsNoTracking()
+            .OrderBy(w => w.WorkerKey)
+            .Select(w => new WorkerSwitchDto(w.WorkerKey, w.IsEnabled, w.UpdatedAtUtc))
+            .ToListAsync(cancellationToken);
+        var activityTask = WorkerActivityQuery.BuildSnapshotAsync(db, cancellationToken);
+        var assetsTask = LoadAssetSummaryAsync(db, h1, h24, cancellationToken);
+        var busTask = LoadBusTrafficAsync(db, h1, h24, cancellationToken);
+        var rabbitTask = TryLoadRabbitQueuesAsync(httpFactory, configuration, cancellationToken);
+
+        await Task.WhenAll(workersTask, activityTask, assetsTask, busTask, rabbitTask).ConfigureAwait(false);
+
+        var workers = await workersTask.ConfigureAwait(false);
+        var activity = await activityTask.ConfigureAwait(false);
+        var assets = await assetsTask.ConfigureAwait(false);
+        var busTraffic = await busTask.ConfigureAwait(false);
+        var (queues, rabbitOk) = await rabbitTask.ConfigureAwait(false);
+
+        var rabbitByWorker = AggregateRabbitByWorker(queues);
+
+        var order = new[] { WorkerKeys.Gatekeeper, WorkerKeys.Spider, WorkerKeys.Enumeration, WorkerKeys.PortScan };
+        var metricTasks = order.Select(key => BuildOneWorkerDetailAsync(db, key, h1, h24, rabbitByWorker, cancellationToken));
+        var metrics = (await Task.WhenAll(metricTasks).ConfigureAwait(false)).ToList();
+
+        return new OpsSnapshotDto(
+            workers,
+            activity,
+            assets,
+            busTraffic,
+            metrics,
+            queues,
+            rabbitOk);
+    }
+
+    private static async Task<AssetOpsSummaryDto> LoadAssetSummaryAsync(
+        NightmareDbContext db,
+        DateTimeOffset h1,
+        DateTimeOffset h24,
+        CancellationToken ct)
+    {
+        var totalAssets = await db.Assets.AsNoTracking().LongCountAsync(ct).ConfigureAwait(false);
+        var totalTargets = await db.Targets.AsNoTracking().LongCountAsync(ct).ConfigureAwait(false);
+        var assets1h = await db.Assets.AsNoTracking().LongCountAsync(a => a.DiscoveredAtUtc >= h1, ct).ConfigureAwait(false);
+        var assets24h = await db.Assets.AsNoTracking().LongCountAsync(a => a.DiscoveredAtUtc >= h24, ct).ConfigureAwait(false);
+        var lastAssetUtc = await db.Assets.AsNoTracking()
+            .OrderByDescending(a => a.DiscoveredAtUtc)
+            .Select(a => (DateTimeOffset?)a.DiscoveredAtUtc)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+
+        var discoveredCount = await db.Assets.AsNoTracking()
+            .LongCountAsync(a => a.LifecycleStatus == AssetLifecycleStatus.Discovered, ct)
+            .ConfigureAwait(false);
+        var confirmedCount = await db.Assets.AsNoTracking()
+            .LongCountAsync(a => a.LifecycleStatus == AssetLifecycleStatus.Confirmed, ct)
+            .ConfigureAwait(false);
+
+        var fetchableDiscovered = await db.Assets.AsNoTracking()
+            .LongCountAsync(
+                a => a.LifecycleStatus == AssetLifecycleStatus.Discovered
+                    && (a.Kind == AssetKind.Url
+                        || a.Kind == AssetKind.ApiEndpoint
+                        || a.Kind == AssetKind.JavaScriptFile
+                        || a.Kind == AssetKind.MarkdownBody
+                        || a.Kind == AssetKind.Subdomain
+                        || a.Kind == AssetKind.Domain),
+                ct)
+            .ConfigureAwait(false);
+
+        var topDomains = await db.Assets.AsNoTracking()
+            .Join(
+                db.Targets.AsNoTracking(),
+                a => a.TargetId,
+                t => t.Id,
+                (a, t) => t.RootDomain)
+            .GroupBy(d => d)
+            .Select(g => new AssetCountByDomainDto(g.Key, g.LongCount()))
+            .OrderByDescending(x => x.Count)
+            .Take(25)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var byDiscoveredBy = await db.Assets.AsNoTracking()
+            .GroupBy(a => a.DiscoveredBy)
+            .Select(g => new DiscoveredByCountDto(g.Key, g.LongCount()))
+            .OrderByDescending(x => x.Count)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return new AssetOpsSummaryDto(
+            totalAssets,
+            totalTargets,
+            assets1h,
+            assets24h,
+            lastAssetUtc,
+            discoveredCount,
+            confirmedCount,
+            fetchableDiscovered,
+            topDomains,
+            byDiscoveredBy);
+    }
+
+    private static async Task<BusTrafficSummaryDto> LoadBusTrafficAsync(
+        NightmareDbContext db,
+        DateTimeOffset h1,
+        DateTimeOffset h24,
+        CancellationToken ct)
+    {
+        var p1 = await db.BusJournal.AsNoTracking()
+            .LongCountAsync(e => e.Direction == "Publish" && e.OccurredAtUtc >= h1, ct)
+            .ConfigureAwait(false);
+        var p24 = await db.BusJournal.AsNoTracking()
+            .LongCountAsync(e => e.Direction == "Publish" && e.OccurredAtUtc >= h24, ct)
+            .ConfigureAwait(false);
+        var c1 = await db.BusJournal.AsNoTracking()
+            .LongCountAsync(e => e.Direction == "Consume" && e.OccurredAtUtc >= h1, ct)
+            .ConfigureAwait(false);
+        var c24 = await db.BusJournal.AsNoTracking()
+            .LongCountAsync(e => e.Direction == "Consume" && e.OccurredAtUtc >= h24, ct)
+            .ConfigureAwait(false);
+        return new BusTrafficSummaryDto(p1, p24, c1, c24);
+    }
+
+    private static async Task<WorkerDetailStatsDto> BuildOneWorkerDetailAsync(
+        NightmareDbContext db,
+        string workerKey,
+        DateTimeOffset h1,
+        DateTimeOffset h24,
+        Dictionary<string, RabbitAgg> rabbitByWorker,
+        CancellationToken ct)
+    {
+        var marker = WorkerConsumeMarkers.First(m => m.Key == workerKey).ConsumerSubstring;
+
+        var bus1Task = db.BusJournal.AsNoTracking()
+            .LongCountAsync(
+                e => e.Direction == "Consume" && e.ConsumerType != null && e.ConsumerType.Contains(marker)
+                    && e.OccurredAtUtc >= h1,
+                ct);
+        var bus24Task = db.BusJournal.AsNoTracking()
+            .LongCountAsync(
+                e => e.Direction == "Consume" && e.ConsumerType != null && e.ConsumerType.Contains(marker)
+                    && e.OccurredAtUtc >= h24,
+                ct);
+        var lastTask = db.BusJournal.AsNoTracking()
+            .Where(e => e.Direction == "Consume" && e.ConsumerType != null && e.ConsumerType.Contains(marker))
+            .OrderByDescending(e => e.Id)
+            .Select(e => (DateTimeOffset?)e.OccurredAtUtc)
+            .FirstOrDefaultAsync(ct);
+        var attrTask = LoadAttributedAssetsAsync(db, workerKey, h1, h24, ct);
+
+        await Task.WhenAll(bus1Task, bus24Task, lastTask, attrTask).ConfigureAwait(false);
+
+        var c1 = await bus1Task.ConfigureAwait(false);
+        var c24 = await bus24Task.ConfigureAwait(false);
+        var last = await lastTask.ConfigureAwait(false);
+        var (a1, a24) = await attrTask.ConfigureAwait(false);
+
+        if (!rabbitByWorker.TryGetValue(workerKey, out var rb))
+            rb = new RabbitAgg();
+
+        return new WorkerDetailStatsDto(
+            workerKey,
+            c1,
+            c24,
+            last,
+            a1,
+            a24,
+            rb.Ready,
+            rb.Unacked,
+            rb.Names);
+    }
+
+    private static async Task<(long H1, long H24)> LoadAttributedAssetsAsync(
+        NightmareDbContext db,
+        string workerKey,
+        DateTimeOffset h1,
+        DateTimeOffset h24,
+        CancellationToken ct)
+    {
+        var by = DiscoveredByForWorker(workerKey);
+        if (by is null)
+            return (0, 0);
+
+        var a1 = await db.Assets.AsNoTracking()
+            .LongCountAsync(a => a.DiscoveredBy == by && a.DiscoveredAtUtc >= h1, ct)
+            .ConfigureAwait(false);
+        var a24 = await db.Assets.AsNoTracking()
+            .LongCountAsync(a => a.DiscoveredBy == by && a.DiscoveredAtUtc >= h24, ct)
+            .ConfigureAwait(false);
+        return (a1, a24);
+    }
+
+    private static string? DiscoveredByForWorker(string workerKey) =>
+        workerKey switch
+        {
+            WorkerKeys.Gatekeeper => "gatekeeper",
+            WorkerKeys.Spider => "spider-worker",
+            WorkerKeys.Enumeration => "enum-worker-stub",
+            _ => null,
+        };
+
+    private sealed class RabbitAgg
+    {
+        public long Ready;
+        public long Unacked;
+        public readonly List<string> Names = [];
+    }
+
+    private static Dictionary<string, RabbitAgg> AggregateRabbitByWorker(IReadOnlyList<RabbitQueueBriefDto> queues)
+    {
+        var d = new Dictionary<string, RabbitAgg>(StringComparer.Ordinal);
+        foreach (var q in queues)
+        {
+            if (q.LikelyWorkerKey is not { } key)
+                continue;
+            if (!d.TryGetValue(key, out var agg))
+            {
+                agg = new RabbitAgg();
+                d[key] = agg;
+            }
+
+            agg.Ready += q.MessagesReady;
+            agg.Unacked += q.MessagesUnacknowledged;
+            agg.Names.Add(q.Name);
+        }
+
+        foreach (var agg in d.Values)
+            agg.Names.Sort(StringComparer.OrdinalIgnoreCase);
+        return d;
+    }
+
+    private static async Task<(List<RabbitQueueBriefDto> Queues, bool Ok)> TryLoadRabbitQueuesAsync(
+        IHttpClientFactory httpFactory,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var baseUrl = configuration["RabbitMq:ManagementUrl"]?.Trim();
+        if (string.IsNullOrEmpty(baseUrl))
+            return ([], false);
+
+        var vhost = configuration["RabbitMq:VirtualHost"];
+        if (string.IsNullOrEmpty(vhost))
+            vhost = "/";
+        var vhostSeg = Uri.EscapeDataString(vhost);
+        var url = $"{baseUrl.TrimEnd('/')}/api/queues/{vhostSeg}";
+
+        var user = configuration["RabbitMq:Username"] ?? "guest";
+        var pass = configuration["RabbitMq:Password"] ?? "guest";
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            var token = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{user}:{pass}"));
+            req.Headers.Authorization = new AuthenticationHeaderValue("Basic", token);
+
+            var client = httpFactory.CreateClient(HttpClientName);
+            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+                return ([], false);
+
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var rows = JsonSerializer.Deserialize<List<RabbitMgmtQueueRow>>(json, RabbitJson) ?? [];
+
+            var list = new List<RabbitQueueBriefDto>(rows.Count);
+            foreach (var r in rows)
+            {
+                var name = r.Name ?? "";
+                if (name.StartsWith("amq.", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                list.Add(
+                    new RabbitQueueBriefDto(
+                        name,
+                        r.Messages,
+                        r.MessagesReady,
+                        r.MessagesUnacknowledged,
+                        r.Consumers,
+                        GuessWorkerFromQueueName(name)));
+            }
+
+            list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            return (list, true);
+        }
+        catch
+        {
+            return ([], false);
+        }
+    }
+
+    private static string? GuessWorkerFromQueueName(string queueName)
+    {
+        var n = queueName.ToLowerInvariant();
+        if (n.Contains("spider"))
+            return WorkerKeys.Spider;
+        if (n.Contains("gatekeeper"))
+            return WorkerKeys.Gatekeeper;
+        if (n.Contains("port-scan") || n.Contains("portscan"))
+            return WorkerKeys.PortScan;
+        if (n.Contains("target-created") || n.Contains("target_created")
+            || (n.Contains("enum") && (n.Contains("target") || n.Contains("worker"))))
+            return WorkerKeys.Enumeration;
+        return null;
+    }
+
+    private sealed class RabbitMgmtQueueRow
+    {
+        public string? Name { get; set; }
+        public int Messages { get; set; }
+
+        [JsonPropertyName("messages_ready")]
+        public int MessagesReady { get; set; }
+
+        [JsonPropertyName("messages_unacknowledged")]
+        public int MessagesUnacknowledged { get; set; }
+
+        public int Consumers { get; set; }
+    }
+}

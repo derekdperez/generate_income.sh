@@ -46,3 +46,54 @@ public sealed record WorkerKindSummaryDto(
 public sealed record WorkerActivitySnapshotDto(
     IReadOnlyList<WorkerKindSummaryDto> Summaries,
     IReadOnlyList<WorkerInstanceActivityDto> Instances);
+
+public sealed record AssetCountByDomainDto(string RootDomain, long Count);
+
+public sealed record DiscoveredByCountDto(string DiscoveredBy, long Count);
+
+public sealed record AssetOpsSummaryDto(
+    long TotalAssets,
+    long TotalTargets,
+    long AssetsLast1Hour,
+    long AssetsLast24Hours,
+    DateTimeOffset? LastAssetDiscoveredUtc,
+    long AssetsInDiscoveredState,
+    long AssetsConfirmedState,
+    long FetchableAssetsStillDiscovered,
+    IReadOnlyList<AssetCountByDomainDto> TopDomainsByAssetCount,
+    IReadOnlyList<DiscoveredByCountDto> AssetsByDiscoveredBy);
+
+public sealed record BusTrafficSummaryDto(
+    long PublishesLast1Hour,
+    long PublishesLast24Hours,
+    long ConsumesLast1Hour,
+    long ConsumesLast24Hours);
+
+public sealed record RabbitQueueBriefDto(
+    string Name,
+    int Messages,
+    int MessagesReady,
+    int MessagesUnacknowledged,
+    int Consumers,
+    string? LikelyWorkerKey);
+
+public sealed record WorkerDetailStatsDto(
+    string WorkerKey,
+    long BusConsumesLast1Hour,
+    long BusConsumesLast24Hours,
+    DateTimeOffset? LastConsumeUtc,
+    long DbAssetsAttributedLast1Hour,
+    long DbAssetsAttributedLast24Hours,
+    long RabbitMessagesReady,
+    long RabbitMessagesUnacked,
+    IReadOnlyList<string> MatchedRabbitQueueNames);
+
+/// <summary>Aggregated Ops dashboard payload (polled every few seconds).</summary>
+public sealed record OpsSnapshotDto(
+    IReadOnlyList<WorkerSwitchDto> Workers,
+    WorkerActivitySnapshotDto WorkerActivity,
+    AssetOpsSummaryDto Assets,
+    BusTrafficSummaryDto BusTraffic,
+    IReadOnlyList<WorkerDetailStatsDto> WorkerMetrics,
+    IReadOnlyList<RabbitQueueBriefDto> RabbitQueues,
+    bool RabbitManagementAvailable);

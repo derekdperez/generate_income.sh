@@ -12,6 +12,7 @@ x-common-env: &common-env
   RabbitMq__Username: nightmare
   RabbitMq__Password: nightmare
   RabbitMq__VirtualHost: /
+  RabbitMq__ManagementUrl: http://rabbitmq:15672
 
 services:
   postgres:

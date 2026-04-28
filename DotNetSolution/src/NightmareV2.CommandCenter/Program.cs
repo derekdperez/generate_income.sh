@@ -1,3 +1,4 @@
+using System.Net.Http;
 using MassTransit;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -14,6 +15,8 @@ using NightmareV2.Infrastructure.Data;
 using NightmareV2.Infrastructure.Messaging;
 
 var builder = WebApplication.CreateBuilder(args);
+
+OpsSnapshotBuilder.RegisterHttpClient(builder);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -184,6 +187,15 @@ app.MapGet(
             return Results.Ok(snap);
         })
     .WithName("WorkerActivity");
+
+app.MapGet(
+        "/api/ops/snapshot",
+        async (NightmareDbContext db, IHttpClientFactory httpFactory, IConfiguration configuration, CancellationToken ct) =>
+        {
+            var snap = await OpsSnapshotBuilder.BuildAsync(db, httpFactory, configuration, ct).ConfigureAwait(false);
+            return Results.Ok(snap);
+        })
+    .WithName("OpsSnapshot");
 
 app.MapPut(
         "/api/workers/{key}",
