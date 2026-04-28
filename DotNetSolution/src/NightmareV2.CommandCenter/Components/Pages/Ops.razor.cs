@@ -38,7 +38,7 @@ public partial class Ops
              || GridTextFilter.Matches(q.RequestUrl, _filterQueueSearch)
              || GridTextFilter.Matches(q.DomainKey, _filterQueueSearch)
              || GridTextFilter.Matches(q.State, _filterQueueSearch)
-             || GridTextFilter.Matches(q.LastHttpStatus?.ToString(), _filterQueueSearch)
+             || GridTextFilter.Matches(q.LastHttpStatus == null ? "" : q.LastHttpStatus.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), _filterQueueSearch)
              || GridTextFilter.Matches(q.LastError, _filterQueueSearch))
             && GridTextFilter.Matches(q.AssetKind, _filterQueueKindCol)
             && GridTextFilter.Matches(q.RequestUrl, _filterQueueRawCol)

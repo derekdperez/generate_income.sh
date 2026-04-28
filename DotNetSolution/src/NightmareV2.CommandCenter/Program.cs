@@ -548,18 +548,23 @@ app.MapGet(
                 })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            var scopedRows = rows
+            var confirmedRows = rows
                 .Where(x => string.Equals(x.LifecycleStatus, AssetLifecycleStatus.Confirmed, StringComparison.Ordinal))
-                .Where(x => x.DiscoveredBy.StartsWith("hvpath:", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             var allowedHighValuePaths = LoadHighValuePathSet();
 
-            var filtered = scopedRows
-                .Select(x => new { x.Row, SnapshotOk = TryParseSnapshot(x.TypeDetailsJson, out var snap), Snapshot = snap })
+            var filtered = confirmedRows
+                .Select(x => new
+                {
+                    x.Row,
+                    x.DiscoveredBy,
+                    SnapshotOk = TryParseSnapshot(x.TypeDetailsJson, out var snap),
+                    Snapshot = snap,
+                })
                 .Where(x => x.SnapshotOk)
                 .Where(x => !LooksLikeSoft404(x.Snapshot))
-                .Where(x => RedirectIsAllowed(x.Row, x.Snapshot, allowedHighValuePaths))
+                .Where(x => FindingSourceIsAllowed(x.Row, x.DiscoveredBy, x.Snapshot, allowedHighValuePaths))
                 .Select(x => x.Row)
                 .Take(limit)
                 .ToList();
@@ -567,7 +572,22 @@ app.MapGet(
         })
     .WithName("ListHighValueFindings");
 
-static bool RedirectIsAllowed(
+static bool FindingSourceIsAllowed(
+    HighValueFindingRowDto row,
+    string discoveredBy,
+    UrlFetchSnapshot snap,
+    IReadOnlySet<string> allowedHighValuePaths)
+{
+    // Regex findings can be raised from any confirmed URL response. The previous page query
+    // incorrectly limited every high-value finding to hvpath:* assets, which hid confirmed
+    // assets that matched the high-value regex scanner.
+    if (!discoveredBy.StartsWith("hvpath:", StringComparison.OrdinalIgnoreCase))
+        return true;
+
+    return HighValuePathRedirectIsAllowed(row, snap, allowedHighValuePaths);
+}
+
+static bool HighValuePathRedirectIsAllowed(
     HighValueFindingRowDto row,
     UrlFetchSnapshot snap,
     IReadOnlySet<string> allowedHighValuePaths)
@@ -576,10 +596,11 @@ static bool RedirectIsAllowed(
     if (source is null)
         return false;
 
-    // Legacy snapshots may not include FinalUrl; fail closed to avoid leaking redirected/non-list pages.
+    // Older confirmed snapshots may not include FinalUrl. Treat them as displayable after the
+    // confirmed-status and soft-404 checks above; otherwise historical high-value assets vanish.
     var final = NormalizeUrlForCompare(snap.FinalUrl);
     if (final is null)
-        return false;
+        return true;
 
     var redirected = !string.Equals(source, final, StringComparison.OrdinalIgnoreCase);
     if (!redirected)

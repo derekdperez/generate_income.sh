@@ -368,7 +368,7 @@ public sealed class HttpRequestQueueWorker(
         item.ResponseHeadersJson = JsonSerializer.Serialize(snapshot.ResponseHeaders, JsonOptions);
         item.ResponseBody = snapshot.ResponseBody;
         item.ResponseContentType = snapshot.ContentType;
-        item.ResponseContentLength = snapshot.ContentLength;
+        item.ResponseContentLength = snapshot.ResponseSizeBytes;
         item.FinalUrl = snapshot.FinalUrl;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -396,7 +396,7 @@ public sealed class HttpRequestQueueWorker(
         row.ResponseHeadersJson = JsonSerializer.Serialize(snapshot.ResponseHeaders, JsonOptions);
         row.ResponseBody = snapshot.ResponseBody;
         row.ResponseContentType = snapshot.ContentType;
-        row.ResponseContentLength = snapshot.ContentLength;
+        row.ResponseContentLength = snapshot.ResponseSizeBytes;
         row.FinalUrl = snapshot.FinalUrl;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
