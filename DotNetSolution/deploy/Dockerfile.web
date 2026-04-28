@@ -18,6 +18,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV ASPNETCORE_URLS=http://+:8080
+# Avoid HTTPS redirect/HSTS when only HTTP is bound (matches compose Nightmare__ListenPlainHttp).
+ENV Nightmare__ListenPlainHttp=true
 EXPOSE 8080
 COPY --from=build /app/publish .
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
