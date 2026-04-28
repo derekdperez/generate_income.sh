@@ -492,14 +492,29 @@
             _liveBus.Clear();
             if (live is not null)
                 _liveBus.AddRange(live);
+        }
+        catch
+        {
+            _liveBus.Clear();
+        }
 
+        try
+        {
             var hist = await Http.GetFromJsonAsync<List<BusJournalRowDto>>("/api/bus/history?take=350").ConfigureAwait(false);
             _historyBus.Clear();
             if (hist is not null)
                 _historyBus.AddRange(hist);
+        }
+        catch
+        {
+            _historyBus.Clear();
+        }
 
+        try
+        {
             var snap = await Http.GetFromJsonAsync<OpsSnapshotDto>("/api/ops/snapshot").ConfigureAwait(false);
-            _snapshot = snap;
+            if (snap is not null)
+                _snapshot = snap;
         }
         catch
         {

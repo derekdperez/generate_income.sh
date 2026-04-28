@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NightmareV2.Application.Assets;
 using NightmareV2.Application.FileStore;
+using NightmareV2.Application.HighValue;
 using NightmareV2.CommandCenter;
 using NightmareV2.CommandCenter.Components;
 using NightmareV2.CommandCenter.DataMaintenance;
@@ -467,30 +468,13 @@ app.MapGet(
                 .Where(x => x.DiscoveredBy.StartsWith("hvpath:", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            var targetIds = scopedRows
-                .Select(x => x.Row.TargetId)
-                .Distinct()
-                .ToList();
-            var hvConfirmedByTarget = (await db.Assets.AsNoTracking()
-                    .Where(a => targetIds.Contains(a.TargetId))
-                    .Where(a => a.DiscoveredBy.StartsWith("hvpath:"))
-                    .Where(a => a.LifecycleStatus == AssetLifecycleStatus.Confirmed)
-                    .Select(a => new { a.TargetId, a.RawValue })
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false))
-                .GroupBy(x => x.TargetId)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Select(x => NormalizeUrlForCompare(x.RawValue))
-                        .Where(x => x is not null)
-                        .Select(x => x!)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase));
+            var allowedHighValuePaths = LoadHighValuePathSet();
 
             var filtered = scopedRows
                 .Select(x => new { x.Row, SnapshotOk = TryParseSnapshot(x.TypeDetailsJson, out var snap), Snapshot = snap })
                 .Where(x => x.SnapshotOk)
                 .Where(x => !LooksLikeSoft404(x.Snapshot))
-                .Where(x => RedirectIsAllowed(x.Row, x.Snapshot, hvConfirmedByTarget))
+                .Where(x => RedirectIsAllowed(x.Row, x.Snapshot, allowedHighValuePaths))
                 .Select(x => x.Row)
                 .Take(limit)
                 .ToList();
@@ -501,20 +485,23 @@ app.MapGet(
 static bool RedirectIsAllowed(
     HighValueFindingRowDto row,
     UrlFetchSnapshot snap,
-    IReadOnlyDictionary<Guid, HashSet<string>> hvConfirmedByTarget)
+    IReadOnlySet<string> allowedHighValuePaths)
 {
     var source = NormalizeUrlForCompare(row.SourceUrl);
     if (source is null)
         return false;
 
-    var final = NormalizeUrlForCompare(snap.FinalUrl) ?? source;
+    // Legacy snapshots may not include FinalUrl; fail closed to avoid leaking redirected/non-list pages.
+    var final = NormalizeUrlForCompare(snap.FinalUrl);
+    if (final is null)
+        return false;
+
     var redirected = !string.Equals(source, final, StringComparison.OrdinalIgnoreCase);
     if (!redirected)
         return true;
-
-    if (!hvConfirmedByTarget.TryGetValue(row.TargetId, out var allowedUrls))
+    if (!Uri.TryCreate(final, UriKind.Absolute, out var finalUri))
         return false;
-    return allowedUrls.Contains(final);
+    return allowedHighValuePaths.Contains(NormalizeWordlistPath(finalUri.AbsolutePath));
 }
 
 static string? NormalizeUrlForCompare(string? url)
@@ -527,6 +514,33 @@ static string? NormalizeUrlForCompare(string? url)
         return null;
     var canonical = u.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
     return canonical.TrimEnd('/');
+}
+
+static IReadOnlySet<string> LoadHighValuePathSet()
+{
+    var dir = Path.Combine(AppContext.BaseDirectory, "Resources", "Wordlists", "high_value");
+    var list = HighValueWordlistCatalog.LoadFromDirectory(dir);
+    var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var (_, lines) in list)
+    {
+        foreach (var line in lines)
+            set.Add(NormalizeWordlistPath(line));
+    }
+
+    return set;
+}
+
+static string NormalizeWordlistPath(string path)
+{
+    var p = path.Trim();
+    if (p.Length == 0)
+        return "/";
+    var q = p.IndexOfAny(['?', '#']);
+    if (q >= 0)
+        p = p[..q];
+    if (!p.StartsWith('/'))
+        p = "/" + p;
+    return p.TrimEnd('/');
 }
 
 static bool TryParseSnapshot(string? typeDetailsJson, out UrlFetchSnapshot snapshot)
