@@ -12,6 +12,13 @@ public static class NightmareDbSchemaPatches
     {
         await db.Database.ExecuteSqlRawAsync(
                 """
+                CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                """,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await db.Database.ExecuteSqlRawAsync(
+                """
                 ALTER TABLE bus_journal ADD COLUMN IF NOT EXISTS host_name character varying(256) NOT NULL DEFAULT '';
                 """,
                 cancellationToken)

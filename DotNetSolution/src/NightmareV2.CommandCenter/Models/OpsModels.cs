@@ -176,3 +176,15 @@ public sealed record HttpRequestQueueRowDto(
     string? ResponseContentType,
     long? ResponseContentLength,
     string? FinalUrl);
+
+
+public sealed record HttpRequestQueueMetricsDto(
+    long QueuedCount,
+    long ReadyRetryCount,
+    long ScheduledRetryCount,
+    long InFlightCount,
+    long FailedCount,
+    long CompletedLastHourCount,
+    long BacklogCount,
+    DateTimeOffset? OldestQueuedAtUtc,
+    long? OldestQueuedAgeSeconds);

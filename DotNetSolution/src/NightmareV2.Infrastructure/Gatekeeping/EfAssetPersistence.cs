@@ -39,7 +39,10 @@ public sealed class EfAssetPersistence(
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
         if (existingId is { } existing)
+        {
+            await EnsureQueuedAssetHasHttpRequestAsync(existing, cancellationToken).ConfigureAwait(false);
             return (existing, false);
+        }
 
         var entity = new StoredAsset
         {
@@ -56,6 +59,8 @@ public sealed class EfAssetPersistence(
         };
 
         db.Assets.Add(entity);
+        EnqueueHttpRequestIfNeeded(entity);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -64,13 +69,58 @@ public sealed class EfAssetPersistence(
             && pg.SqlState == PostgresErrorCodes.ForeignKeyViolation
             && pg.ConstraintName?.Contains("recon_targets", StringComparison.OrdinalIgnoreCase) == true)
         {
-            db.Entry(entity).State = EntityState.Detached;
+            DetachPendingAssetGraph(entity);
             logger.LogDebug(ex, "Skip asset persist: FK to recon_targets for target {TargetId} (likely deleted during insert).", message.TargetId);
             return (Guid.Empty, false);
         }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException pg
+            && pg.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            DetachPendingAssetGraph(entity);
 
-        EnqueueHttpRequestIfNeeded(entity);
+            var existingAfterRace = await db.Assets.AsNoTracking()
+                .Where(a => a.TargetId == message.TargetId && a.CanonicalKey == canonical.CanonicalKey)
+                .Select(a => (Guid?)a.Id)
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (existingAfterRace is { } racedExisting)
+            {
+                await EnsureQueuedAssetHasHttpRequestAsync(racedExisting, cancellationToken).ConfigureAwait(false);
+                return (racedExisting, false);
+            }
 
+            logger.LogDebug(ex, "Skip asset persist: unique violation while inserting asset {CanonicalKey}.", canonical.CanonicalKey);
+            return (Guid.Empty, false);
+        }
+
+        return (entity.Id, true);
+    }
+
+    private void DetachPendingAssetGraph(StoredAsset asset)
+    {
+        db.Entry(asset).State = EntityState.Detached;
+        foreach (var entry in db.ChangeTracker.Entries<HttpRequestQueueItem>()
+                     .Where(e => e.Entity.AssetId == asset.Id && e.State == EntityState.Added))
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
+
+    private async Task EnsureQueuedAssetHasHttpRequestAsync(Guid assetId, CancellationToken cancellationToken)
+    {
+        var asset = await db.Assets
+            .FirstOrDefaultAsync(a => a.Id == assetId, cancellationToken)
+            .ConfigureAwait(false);
+        if (asset is null || asset.LifecycleStatus != AssetLifecycleStatus.Queued)
+            return;
+
+        var hasQueueItem = await db.HttpRequestQueue.AsNoTracking()
+            .AnyAsync(q => q.AssetId == assetId, cancellationToken)
+            .ConfigureAwait(false);
+        if (hasQueueItem)
+            return;
+
+        EnqueueHttpRequestIfNeeded(asset);
         try
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -79,10 +129,8 @@ public sealed class EfAssetPersistence(
             && pg.SqlState == PostgresErrorCodes.UniqueViolation
             && pg.ConstraintName?.Contains("http_request_queue", StringComparison.OrdinalIgnoreCase) == true)
         {
-            logger.LogDebug(ex, "HTTP request queue row already exists for asset {AssetId}.", entity.Id);
+            logger.LogDebug(ex, "HTTP request queue row already exists for asset {AssetId}.", assetId);
         }
-
-        return (entity.Id, true);
     }
 
     private static string ResolveInitialLifecycleStatus(AssetDiscovered message)

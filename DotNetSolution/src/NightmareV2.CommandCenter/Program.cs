@@ -47,35 +47,7 @@ var skipStartupDatabase = app.Configuration.GetValue("Nightmare:SkipStartupDatab
         "1",
         StringComparison.OrdinalIgnoreCase);
 
-if (!skipStartupDatabase)
-{
-    using (var scope = app.Services.CreateScope())
-    {
-        var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
-        await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
-        await NightmareDbSchemaPatches.ApplyAfterEnsureCreatedAsync(db).ConfigureAwait(false);
-        await NightmareDbSeeder.SeedWorkerSwitchesAsync(db).ConfigureAwait(false);
-
-        try
-        {
-            var fileStoreFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<FileStoreDbContext>>();
-            await using var fs = await fileStoreFactory.CreateDbContextAsync().ConfigureAwait(false);
-            await fs.Database.EnsureCreatedAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            var log = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-            log.LogWarning(ex, "File store database unavailable; create database nightmare_v2_files or set ConnectionStrings:FileStore.");
-        }
-    }
-}
-else
-{
-    var startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-    startupLog.LogWarning(
-        "Startup database EnsureCreated skipped (Nightmare:SkipStartupDatabase or NIGHTMARE_SKIP_STARTUP_DATABASE=1). "
-        + "APIs that need Postgres will still fail until a database is reachable.");
-}
+await InitializeStartupDatabasesAsync(app, skipStartupDatabase).ConfigureAwait(false);
 
 var listenPlainHttp = app.Configuration.GetValue("Nightmare:ListenPlainHttp", false);
 
@@ -397,6 +369,53 @@ app.MapGet(
             return Results.Ok(rows);
         })
     .WithName("ListHttpRequestQueue");
+
+app.MapGet(
+        "/api/http-request-queue/metrics",
+        async (NightmareDbContext db, CancellationToken ct) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var oneHourAgo = now.AddHours(-1);
+
+            var queued = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.Queued, ct)
+                .ConfigureAwait(false);
+            var retry = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.Retry && q.NextAttemptAtUtc <= now, ct)
+                .ConfigureAwait(false);
+            var scheduledRetry = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.Retry && q.NextAttemptAtUtc > now, ct)
+                .ConfigureAwait(false);
+            var inFlight = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.InFlight, ct)
+                .ConfigureAwait(false);
+            var failed = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.Failed, ct)
+                .ConfigureAwait(false);
+            var completedLastHour = await db.HttpRequestQueue.AsNoTracking()
+                .LongCountAsync(q => q.State == HttpRequestQueueState.Succeeded && q.CompletedAtUtc >= oneHourAgo, ct)
+                .ConfigureAwait(false);
+            var oldestQueuedAt = await db.HttpRequestQueue.AsNoTracking()
+                .Where(q => q.State == HttpRequestQueueState.Queued
+                    || (q.State == HttpRequestQueueState.Retry && q.NextAttemptAtUtc <= now))
+                .OrderBy(q => q.CreatedAtUtc)
+                .Select(q => (DateTimeOffset?)q.CreatedAtUtc)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            return Results.Ok(
+                new HttpRequestQueueMetricsDto(
+                    queued,
+                    retry,
+                    scheduledRetry,
+                    inFlight,
+                    failed,
+                    completedLastHour,
+                    queued + retry,
+                    oldestQueuedAt,
+                    oldestQueuedAt is null ? null : (long)(now - oldestQueuedAt.Value).TotalSeconds));
+        })
+    .WithName("GetHttpRequestQueueMetrics");
 
 app.MapGet(
         "/api/bus/live",
@@ -818,5 +837,72 @@ app.MapPut(
             return Results.NoContent();
         })
     .WithName("PatchWorker");
+
+
+static async Task InitializeStartupDatabasesAsync(WebApplication app, bool skipStartupDatabase)
+{
+    var startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    if (skipStartupDatabase)
+    {
+        startupLog.LogWarning(
+            "Startup database EnsureCreated skipped (Nightmare:SkipStartupDatabase or NIGHTMARE_SKIP_STARTUP_DATABASE=1). "
+            + "APIs that need Postgres will still fail until a database is reachable.");
+        return;
+    }
+
+    var continueOnFailure = app.Configuration.GetValue("Nightmare:ContinueOnStartupDatabaseFailure", true);
+    var retryDelays = new[]
+    {
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(15),
+    };
+
+    for (var attempt = 1; attempt <= retryDelays.Length + 1; attempt++)
+    {
+        try
+        {
+            using var scope = app.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<NightmareDbContext>();
+            await db.Database.EnsureCreatedAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+            await NightmareDbSchemaPatches.ApplyAfterEnsureCreatedAsync(db, app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+            await NightmareDbSeeder.SeedWorkerSwitchesAsync(db, app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+
+            try
+            {
+                var fileStoreFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<FileStoreDbContext>>();
+                await using var fs = await fileStoreFactory.CreateDbContextAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+                await fs.Database.EnsureCreatedAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
+            {
+                startupLog.LogWarning(ex, "File store database unavailable; create database nightmare_v2_files or set ConnectionStrings:FileStore.");
+            }
+
+            startupLog.LogInformation("Startup database initialization completed.");
+            return;
+        }
+        catch (Exception ex) when (attempt <= retryDelays.Length && !app.Lifetime.ApplicationStopping.IsCancellationRequested)
+        {
+            startupLog.LogWarning(
+                ex,
+                "Startup database initialization failed on attempt {Attempt}; retrying.",
+                attempt);
+            await Task.Delay(retryDelays[attempt - 1], app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
+        {
+            if (!continueOnFailure)
+                throw;
+
+            startupLog.LogError(
+                ex,
+                "Startup database initialization failed after retries. Command Center will continue to serve /health and diagnostics, but database-backed APIs will fail until Postgres/schema is fixed.");
+            return;
+        }
+    }
+}
 
 app.Run();

@@ -11,4 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.QuickGrid" Version="10.0.0" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\Resources\Wordlists\high_value\*.txt" Link="Resources\Wordlists\high_value\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

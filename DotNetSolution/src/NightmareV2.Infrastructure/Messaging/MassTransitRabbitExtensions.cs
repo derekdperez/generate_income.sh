@@ -25,6 +25,15 @@ public static class MassTransitRabbitExtensions
         services.TryAddSingleton<BusJournalPublishObserver>();
         services.TryAddSingleton<BusJournalConsumeObserver>();
 
+        services.Configure<MassTransitHostOptions>(options =>
+        {
+            options.WaitUntilStarted = false;
+            options.StartTimeout = TimeSpan.FromSeconds(
+                Math.Clamp(configuration.GetValue("RabbitMq:StartTimeoutSeconds", 15), 1, 120));
+            options.StopTimeout = TimeSpan.FromSeconds(
+                Math.Clamp(configuration.GetValue("RabbitMq:StopTimeoutSeconds", 30), 1, 120));
+        });
+
         services.AddMassTransit(x =>
         {
             configureConsumers(x);

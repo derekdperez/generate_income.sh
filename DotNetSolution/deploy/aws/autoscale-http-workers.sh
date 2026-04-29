@@ -10,10 +10,10 @@ target="${HTTP_QUEUE_TARGET_BACKLOG_PER_TASK:-100}"
 min_tasks="${HTTP_QUEUE_MIN_TASKS:-1}"
 max_tasks="${HTTP_QUEUE_MAX_TASKS:-50}"
 
-queue_json="$(curl -fsS "${COMMAND_CENTER_URL%/}/api/http-request-queue?take=5000")"
+metrics_json="$(curl -fsS "${COMMAND_CENTER_URL%/}/api/http-request-queue/metrics")"
 
 queued_count="$(
-  printf '%s' "$queue_json"     | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(sum(1 for r in rows if str(r.get("state","")).lower() in ("queued","retryscheduled","retry_scheduled")))'
+  printf '%s' "$metrics_json" | python3 -c 'import json,sys; m=json.load(sys.stdin); print(int(m.get("backlogCount", 0)))'
 )"
 
 running_count="$(

@@ -302,6 +302,11 @@ public sealed class HttpRequestQueueWorker(
         {
             await RetryOrFailAsync(item, ex.Message, ct).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "HTTP request queue item {QueueItemId} failed with an unexpected worker error.", item.Id);
+            await RetryOrFailAsync(item, ex.Message, ct).ConfigureAwait(false);
+        }
     }
 
     private async Task<UrlFetchSnapshot> SendAsync(HttpRequestQueueItem item, CancellationToken ct)
@@ -321,8 +326,8 @@ public sealed class HttpRequestQueueWorker(
         foreach (var h in response.Content.Headers)
             respHeaders[h.Key] = string.Join(", ", h.Value);
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        var truncatedBody = body.Length > MaxBodyCaptureChars ? body[..MaxBodyCaptureChars] : body;
+        var truncatedBody = await BoundedHttpContentReader.ReadAsStringAsync(response.Content, MaxBodyCaptureChars, ct)
+            .ConfigureAwait(false);
         var contentType = response.Content.Headers.ContentType?.ToString();
 
         var snapshot = new UrlFetchSnapshot(
