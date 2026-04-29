@@ -52,31 +52,11 @@ public static class NightmareDbSchemaPatches
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // EF historically created the PK column as quoted "Id" (case-sensitive). Raw SQL FKs use unquoted id (lowercase).
-        await db.Database.ExecuteSqlRawAsync(
-                """
-                DO $rename_stored_asset_pk$
-                BEGIN
-                    IF EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'public' AND table_name = 'stored_assets' AND column_name = 'Id'
-                    ) AND NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'public' AND table_name = 'stored_assets' AND column_name = 'id'
-                    ) THEN
-                        ALTER TABLE stored_assets RENAME COLUMN "Id" TO id;
-                    END IF;
-                END
-                $rename_stored_asset_pk$;
-                """,
-                cancellationToken)
-            .ConfigureAwait(false);
-
         await db.Database.ExecuteSqlRawAsync(
                 """
                 CREATE TABLE IF NOT EXISTS high_value_findings (
                     id uuid NOT NULL PRIMARY KEY,
-                    target_id uuid NOT NULL REFERENCES recon_targets(id) ON DELETE CASCADE,
+                    target_id uuid NOT NULL REFERENCES recon_targets("Id") ON DELETE CASCADE,
                     source_asset_id uuid NULL,
                     finding_type character varying(64) NOT NULL,
                     severity character varying(32) NOT NULL,
@@ -122,7 +102,7 @@ public static class NightmareDbSchemaPatches
 
                 CREATE TABLE IF NOT EXISTS http_request_queue (
                     id uuid NOT NULL PRIMARY KEY,
-                    asset_id uuid NOT NULL REFERENCES stored_assets(id) ON DELETE CASCADE,
+                    asset_id uuid NOT NULL REFERENCES stored_assets("Id") ON DELETE CASCADE,
                     target_id uuid NOT NULL,
                     asset_kind integer NOT NULL,
                     method character varying(16) NOT NULL DEFAULT 'GET',
@@ -185,31 +165,31 @@ public static class NightmareDbSchemaPatches
                 )
                 SELECT
                     gen_random_uuid(),
-                    a.id,
-                    a.target_id,
-                    a.kind,
+                    a."Id",
+                    a."TargetId",
+                    a."Kind",
                     'GET',
                     CASE
-                        WHEN a.kind IN (0, 1) THEN 'https://' || trim(trailing '/' from a.raw_value) || '/'
-                        WHEN position('://' in a.raw_value) > 0 THEN a.raw_value
-                        ELSE 'https://' || a.raw_value
+                        WHEN a."Kind" IN (0, 1) THEN 'https://' || trim(trailing '/' from a."RawValue") || '/'
+                        WHEN position('://' in a."RawValue") > 0 THEN a."RawValue"
+                        ELSE 'https://' || a."RawValue"
                     END,
                     lower(
                         CASE
-                            WHEN a.kind IN (0, 1) THEN trim(trailing '/' from a.raw_value)
-                            ELSE regexp_replace(regexp_replace(a.raw_value, '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''), '[:/].*$', '')
+                            WHEN a."Kind" IN (0, 1) THEN trim(trailing '/' from a."RawValue")
+                            ELSE regexp_replace(regexp_replace(a."RawValue", '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''), '[:/].*$', '')
                         END
                     ),
                     'Queued',
                     0,
-                    COALESCE(a.discovered_at_utc, now()),
+                    COALESCE(a."DiscoveredAtUtc", now()),
                     now(),
                     now()
                 FROM stored_assets a
-                WHERE a.lifecycle_status = 'Queued'
-                  AND a.kind IN (0, 1, 10, 11, 12, 33)
+                WHERE a."LifecycleStatus" = 'Queued'
+                  AND a."Kind" IN (0, 1, 10, 11, 12, 33)
                   AND NOT EXISTS (
-                      SELECT 1 FROM http_request_queue q WHERE q.asset_id = a.id
+                      SELECT 1 FROM http_request_queue q WHERE q.asset_id = a."Id"
                   );
                 """,
                 cancellationToken)
