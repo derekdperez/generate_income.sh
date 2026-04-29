@@ -216,8 +216,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Project Specific:
-# AI debug harness output (machine-specific; paste into chat only when needed)
-debug_results.json
+# AI debug harness output (DotNetSolution; machine-specific)
+DotNetSolution/debug_results.json
 output/
 *.zip
 packed.json
