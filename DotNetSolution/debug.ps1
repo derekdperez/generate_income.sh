@@ -93,8 +93,13 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 if ($results.Count -eq 0) {
     [System.IO.File]::WriteAllText($outputPath, '[]', $utf8NoBom)
 } else {
-    # ConvertTo-Json serializes Generic.List as an object; use a real array for a JSON array root.
+    # ConvertTo-Json serializes Generic.List as an object; use PSCustomObjects in a real array.
     $objects = @($results | ForEach-Object { [PSCustomObject]$_ })
-    $json = ConvertTo-Json -InputObject $objects -Depth 10
+    # Windows PowerShell 5.1: single-element arrays must be wrapped or JSON root is an object, not [...].
+    if ($objects.Count -eq 1) {
+        $json = ConvertTo-Json -Depth 10 @(,$objects[0])
+    } else {
+        $json = ConvertTo-Json -Depth 10 $objects
+    }
     [System.IO.File]::WriteAllText($outputPath, $json, $utf8NoBom)
 }
