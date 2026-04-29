@@ -9,3 +9,7 @@
 
 # Last successful deploy fingerprint (incremental deploy skips docker build when unchanged)
 deploy/.last-deploy-stamp
+
+# Fast deploy fingerprints
+deploy/.last-deploy-fingerprints
+deploy/.current-deploy-fingerprints

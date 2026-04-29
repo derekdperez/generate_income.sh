@@ -1,15 +1,28 @@
 # Build context: DotNetSolution repository root (parent of this folder).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-ARG BUILD_SOURCE_STAMP=unknown
-LABEL org.opencontainers.image.revision="${BUILD_SOURCE_STAMP}"
 WORKDIR /src
-COPY Directory.Build.props ./
+
+# Copy project files first so NuGet restore is cached when only .cs files change.
+COPY Directory.Build.props NightmareV2.slnx ./
+COPY src/NightmareV2.Application/NightmareV2.Application.csproj src/NightmareV2.Application/
+COPY src/NightmareV2.CommandCenter/NightmareV2.CommandCenter.csproj src/NightmareV2.CommandCenter/
+COPY src/NightmareV2.Contracts/NightmareV2.Contracts.csproj src/NightmareV2.Contracts/
+COPY src/NightmareV2.Domain/NightmareV2.Domain.csproj src/NightmareV2.Domain/
+COPY src/NightmareV2.Infrastructure/NightmareV2.Infrastructure.csproj src/NightmareV2.Infrastructure/
+COPY src/NightmareV2.Gatekeeper/NightmareV2.Gatekeeper.csproj src/NightmareV2.Gatekeeper/
+COPY src/NightmareV2.Workers.Enum/NightmareV2.Workers.Enum.csproj src/NightmareV2.Workers.Enum/
+COPY src/NightmareV2.Workers.HighValue/NightmareV2.Workers.HighValue.csproj src/NightmareV2.Workers.HighValue/
+COPY src/NightmareV2.Workers.PortScan/NightmareV2.Workers.PortScan.csproj src/NightmareV2.Workers.PortScan/
+COPY src/NightmareV2.Workers.Spider/NightmareV2.Workers.Spider.csproj src/NightmareV2.Workers.Spider/
+RUN dotnet restore "src/NightmareV2.CommandCenter/NightmareV2.CommandCenter.csproj"
+
 COPY src ./src
 RUN dotnet publish "src/NightmareV2.CommandCenter/NightmareV2.CommandCenter.csproj" \
-    -c Release -o /app/publish
+    -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 ARG BUILD_SOURCE_STAMP=unknown
+LABEL org.opencontainers.image.revision="${BUILD_SOURCE_STAMP}"
 ENV NIGHTMARE_BUILD_STAMP=${BUILD_SOURCE_STAMP}
 # Npgsql can dlopen Kerberos for Postgres auth negotiation; slim runtime image omits it by default.
 # curl: Docker HEALTHCHECK + manual probes.

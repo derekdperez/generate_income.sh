@@ -2,9 +2,9 @@
 # One-command local / EC2 deploy for the full Nightmare v2 .NET stack (Docker Compose).
 # Re-runnable: safe to run again.
 #
-# Default (incremental): if git + deploy recipe fingerprint matches deploy/.last-deploy-stamp from the
-# last successful run, skips "docker compose build" (slow --pull / layer rebuild) and only runs
-# "compose up" to recreate containers. Use -fresh to always rebuild images with --no-cache.
+# Default (incremental): fingerprints each app service and rebuilds only the service images whose
+# own source/shared dependencies changed. It does not pull base images or force-recreate unchanged
+# containers on every deploy. Use -fresh to always rebuild all images with --no-cache.
 #
 # Dependencies (Linux): Docker Engine + Compose are installed automatically via get.docker.com and
 # your distro package manager when missing (requires sudo). Set NIGHTMARE_SKIP_INSTALL=1 to only verify.
@@ -16,10 +16,12 @@
 #
 # Optional environment:
 #   NIGHTMARE_GIT_PULL=1   Run git pull --ff-only in the repo before building (remote must be ff-only).
-#   NIGHTMARE_NO_CACHE=1   docker compose build --no-cache (also implied by -fresh)
+#   NIGHTMARE_NO_CACHE=1      docker compose build --no-cache (also implied by -fresh)
+#   NIGHTMARE_PULL_IMAGES=1    docker compose build --pull. Defaults to 0 for fast deploys.
+#   NIGHTMARE_FORCE_RECREATE=1 Force recreate containers. Defaults to 0 for fast deploys.
 #   NIGHTMARE_SKIP_INSTALL=1   Do not install Docker / curl / git; fail if docker or compose is missing.
 #   NIGHTMARE_DEPLOY_FRESH=1   Same as passing -fresh on the command line.
-#   COMPOSE_BAKE=true|false   Multi-service compose builds may use "bake"; scripts default to false for stability.
+#   COMPOSE_BAKE=true|false    Multi-service compose builds may use "bake"; scripts default to false for stability.
 #
 # If you see: unknown shorthand flag: 'd' in -d
 #   you ran "docker compose ..." without the Compose plugin — "compose" was ignored and
@@ -43,12 +45,19 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: ./deploy/deploy.sh [-fresh]
 
-  (default)  Incremental: skip "docker compose build" when this checkout matches
-             deploy/.last-deploy-stamp (git tree + deploy/docker-compose.yml + Dockerfiles).
+  (default)  Fast incremental: rebuild only service image(s) whose source/shared
+             dependency fingerprint changed, then run compose up without forcing
+             unchanged containers to restart.
 
-  -fresh     Always run "docker compose build --pull --no-cache" then recreate containers.
+  -fresh     Rebuild all service images with --pull --no-cache and force recreate.
 
-Environment: NIGHTMARE_GIT_PULL=1  NIGHTMARE_SKIP_INSTALL=1  NIGHTMARE_DEPLOY_FRESH=1  NIGHTMARE_NO_CACHE=1
+Environment:
+  NIGHTMARE_GIT_PULL=1
+  NIGHTMARE_SKIP_INSTALL=1
+  NIGHTMARE_DEPLOY_FRESH=1
+  NIGHTMARE_NO_CACHE=1
+  NIGHTMARE_PULL_IMAGES=1
+  NIGHTMARE_FORCE_RECREATE=1
 EOF
       exit 0
       ;;
@@ -75,7 +84,7 @@ echo "Applying stack from: $ROOT"
 nightmare_compose_full_redeploy
 
 echo ""
-echo "Nightmare v2 is running (images match current BUILD_SOURCE_STAMP)."
+echo "Nightmare v2 is running."
 echo "  Command Center:  http://localhost:8080/  (use host public IP on EC2)"
 echo "  RabbitMQ admin:  http://localhost:15672/  (user/pass: nightmare / nightmare)"
 echo "  Postgres:        localhost:5432  db=nightmare_v2 (+ file blobs db nightmare_v2_files)  user=nightmare"
