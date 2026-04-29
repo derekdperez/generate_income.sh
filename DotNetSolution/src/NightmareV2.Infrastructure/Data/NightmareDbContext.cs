@@ -27,6 +27,8 @@ public sealed class NightmareDbContext(DbContextOptions<NightmareDbContext> opti
         {
             e.ToTable("stored_assets");
             e.HasKey(x => x.Id);
+            // Match raw SQL patches / FKs (PostgreSQL: unquoted "id"); legacy DBs may have quoted "Id" — see NightmareDbSchemaPatches.
+            e.Property(x => x.Id).HasColumnName("id");
             e.Property(x => x.CanonicalKey).HasMaxLength(2048).IsRequired();
             e.Property(x => x.RawValue).HasMaxLength(4096).IsRequired();
             e.Property(x => x.DiscoveredBy).HasMaxLength(128).IsRequired();

@@ -52,6 +52,26 @@ public static class NightmareDbSchemaPatches
                 cancellationToken)
             .ConfigureAwait(false);
 
+        // EF historically created the PK column as quoted "Id" (case-sensitive). Raw SQL FKs use unquoted id (lowercase).
+        await db.Database.ExecuteSqlRawAsync(
+                """
+                DO $rename_stored_asset_pk$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'stored_assets' AND column_name = 'Id'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'stored_assets' AND column_name = 'id'
+                    ) THEN
+                        ALTER TABLE stored_assets RENAME COLUMN "Id" TO id;
+                    END IF;
+                END
+                $rename_stored_asset_pk$;
+                """,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         await db.Database.ExecuteSqlRawAsync(
                 """
                 CREATE TABLE IF NOT EXISTS high_value_findings (
